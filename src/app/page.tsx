@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import InstructorList from "@/components/InstructorList";
 
 // 06_implementation_spec.md 1절: 좌측 목록 + 우측 상세 패널
@@ -8,7 +9,15 @@ export default function Home() {
     <div className="flex h-screen bg-gray-50">
       {/* 좌측 목록 영역 */}
       <div className="w-[420px] border-r border-gray-200 bg-white flex flex-col">
-        <InstructorList />
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center h-full text-gray-500">
+              데이터를 불러오는 중...
+            </div>
+          }
+        >
+          <InstructorList />
+        </Suspense>
       </div>
 
       {/* 우측 상세 패널 — 06_implementation_spec.md 1절: 첫 진입 시 빈 상태 */}

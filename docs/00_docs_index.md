@@ -14,6 +14,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 7. `07_build_guide.md`
 8. `08_decision_log.md`
 9. `09_work_split.md`
+10. `10_execution_plan.md`
 
 ## Source of Truth Priority
 - 정책 충돌 시: `01_core_policy.md`
@@ -24,6 +25,69 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 구현 순서 및 작업 방식 참고: `07_build_guide.md`
 - 변경 이력 확인: `08_decision_log.md`
 - 병렬 구현 책임 경계 확인: `09_work_split.md`
+- 현재 구현 웨이브 운영 규칙 확인: `10_execution_plan.md`
+
+## Current Execution Plan
+
+이 섹션은 현재 구현 웨이브에서 병렬 작업을 어떻게 실행할지 안내한다.
+상세 작업 정의와 책임 경계는 `09_work_split.md`를 따른다.
+현재 웨이브에서 문서 해석 충돌이 생기면 `08_decision_log.md`를 먼저 확인하고, 그래도 해결되지 않으면 blocker로 보고한다.
+
+### Current Objective
+- 단기간에 하나의 제품을 만들기 위해 여러 기능을 병렬로 구현한다.
+- 병렬 구현 전, 문서 계약과 파일 책임 경계가 실제 구현과 머지 단계에서도 유효한지 먼저 검증한다.
+
+### Current Phase
+- 현재 단계는 파일럿 검증 단계다.
+- 파일럿 목적:
+  - `04_data_pipeline.md`가 실제 구현 계약으로 충분한지 검증
+  - `05_api_spec.md`, `06_implementation_spec.md`가 API-UI 연결 계약으로 충분한지 검증
+  - `09_work_split.md`의 파일 책임 경계가 실제 git 머지에서도 유효한지 검증
+
+### Pilot Order
+1. 파일럿 1 — Notion 단일 소스 수집 → 정규화 → `instructors` 저장 → 목록 API 반영
+2. 파일럿 2 — 만족도 저장 → 집계 갱신 → 전체 score 재계산 → 상세 API 재조회
+3. 파일럿 3 — Track C / Track D 병렬 구현 → 별도 브랜치 작업 → 순차 머지 → 충돌 검증
+4. Pilot 4-1 — 계약시트 Google Sheets API 외부 수집 검증 (현재 검증 웨이브 이후 추가 파일럿)
+
+### Execution Gate
+- 아래 조건이 충족되면 본 병렬 구현으로 넘어간다.
+  - 파일럿 1 통과
+  - 파일럿 2 통과
+  - 파일럿 3 통과
+  - Pilot 4-1 통과
+  - 주요 문서 gap 없음
+  - 공유 파일 충돌 규칙 확정
+
+### Active Source of Truth For Parallel Work
+- 정책: `01_core_policy.md`
+- 데이터 구조: `03_data_model.md`
+- 파이프라인 규칙: `04_data_pipeline.md`
+- API 계약: `05_api_spec.md`
+- 화면 동작: `06_implementation_spec.md`
+- 작업 경계: `09_work_split.md`
+- 결정 이력: `08_decision_log.md`
+
+### Shared File Guardrail
+- `prisma/schema.prisma`는 Track A 완료 후 고정한다.
+- `src/types/api.ts`는 공유 타입 계약 파일이므로 필요한 엔드포인트 타입만 추가한다.
+- 같은 파일을 두 개 이상의 트랙이 동시에 수정하지 않는다.
+- 문서에 없는 새로운 공유 규칙이 필요하면 먼저 `08_decision_log.md`에 기록한다.
+
+### Merge Rule
+- 기본 머지 순서는 `09_work_split.md`를 따른다.
+- 병렬 구현 중에도 같은 파일을 동시에 수정한 경우 완료로 보지 않는다.
+- 기능 구현 성공보다 문서 계약 준수와 충돌 없는 머지를 우선 검증한다.
+
+### Blocker Rule
+- 문서에 없는 판단이 필요하면 임의로 구현하지 않는다.
+- 문서 간 충돌, 문서-코드 불일치, 공유 파일 경계 위반은 blocker로 보고한다.
+- blocker 보고 시 파일 경로와 근거 라인을 함께 남긴다.
+
+### After Pilots
+- 파일럿 1, 2, 3과 Pilot 4-1이 모두 통과하면 본 병렬 구현 웨이브를 시작한다.
+- 실제 트랙별 실행 프롬프트와 작업 단위는 별도 실행 계획 문서 또는 작업 지시문으로 관리한다.
+
 
 ## File Roles
 
@@ -63,6 +127,10 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 병렬 구현을 위한 작업 분할 구조를 정의한다.
 - 작업별 책임 범위, 선행 의존성, 완료 기준을 포함한다.
 
+### `10_execution_plan.md`
+- 현재 구현 웨이브를 어떤 순서와 규칙으로 실행할지 정의한다.
+- 파일럿 순서, 본 병렬 구현 시작 조건, 공유 파일 가드레일, 머지 규칙, blocker 보고 규칙을 포함한다.
+
 ## Legacy Reference
 
 - `구현명세서_v2.md`는 참고용 legacy 문서로만 사용한다.
@@ -80,6 +148,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 구현 순서가 헷갈리면 `07_build_guide.md`를 확인한다.
 - 기존 정책과 다른 변경이 필요하면 먼저 `08_decision_log.md`에 기록하고 관련 문서를 수정한다.
 - 병렬 구현 단위와 책임 경계를 확인하려면 `09_work_split.md`를 확인한다.
+- 현재 웨이브의 파일럿 순서, 머지 규칙, blocker 처리 기준은 `10_execution_plan.md`를 확인한다.
 
 ## Update Rule
 - 정책이 바뀌면 먼저 `01_core_policy.md`를 수정한다.
@@ -88,5 +157,6 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 수집/병합 규칙이 바뀌면 `04_data_pipeline.md`를 수정한다.
 - API 계약이 바뀌면 `05_api_spec.md`를 수정한다.
 - 화면 동작이 바뀌면 `06_implementation_spec.md`를 수정한다.
+- 현재 구현 웨이브의 실행 순서나 머지 규칙이 바뀌면 `10_execution_plan.md`를 수정한다.
 - `구현명세서_v2.md`는 참고만 하고 수정하지 않는다.
 - 중요한 변경은 `08_decision_log.md`에 반드시 남긴다.

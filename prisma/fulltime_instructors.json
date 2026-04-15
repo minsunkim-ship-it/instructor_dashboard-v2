@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "updated_at": "2026-04-15",
+  "instructors": [
+    {
+      "name": "정백",
+      "active": true
+    },
+    {
+      "name": "신동원",
+      "active": true
+    },
+    {
+      "name": "공지연",
+      "active": true
+    },
+    {
+      "name": "김용담",
+      "active": true
+    },
+    {
+      "name": "김재성",
+      "active": true
+    }
+  ]
+}

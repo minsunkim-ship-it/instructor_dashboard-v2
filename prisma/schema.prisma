@@ -1,0 +1,105 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// 강사 마스터 레코드 — 03_data_model.md 4-1절
+model Instructor {
+  id                   String    @id @default(uuid()) @db.Uuid
+  instructorId         String?   @map("instructor_id")
+  name                 String
+  displayName          String    @map("display_name")
+  affiliation          String?
+  categories           String[]  @default([])
+  specialties          String[]  @default([])
+  profileSummary       String?   @map("profile_summary")
+  contactEmail         String?   @map("contact_email")
+  contactPhone         String?   @map("contact_phone")
+  isFulltime           Boolean   @default(false) @map("is_fulltime")
+  isPracticeCoach      Boolean   @default(false) @map("is_practice_coach")
+  flag                 String?
+  baseFeeHourly        Int?      @map("base_fee_hourly")
+  feeNote              String?   @map("fee_note")
+  rank                 Int?
+  score                Decimal?  @db.Decimal(5, 1)
+  scoreBreakdown       Json      @default("{}") @map("score_breakdown")
+  scorePolicyVersion   String?   @map("score_policy_version")
+  scoreCalculatedAt    DateTime? @map("score_calculated_at") @db.Timestamptz
+  satisfactionAvg      Decimal?  @map("satisfaction_avg") @db.Decimal(3, 2)
+  satisfactionCount    Int       @default(0) @map("satisfaction_count")
+  satisfactionIsImputed Boolean  @default(false) @map("satisfaction_is_imputed")
+  totalCourses         Int       @default(0) @map("total_courses")
+  recentCourses6mo     Int       @default(0) @map("recent_courses_6mo")
+  lastActivityAt       DateTime? @map("last_activity_at") @db.Timestamptz
+  memoRaw              String?   @map("memo_raw")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  teachingHistories    TeachingHistory[]
+  satisfactionRecords  SatisfactionRecord[]
+
+  @@map("instructors")
+}
+
+/// 강사 출강 이력 — 03_data_model.md 4-2절 (읽기 계약용)
+model TeachingHistory {
+  id               String    @id @default(uuid()) @db.Uuid
+  instructorDbId   String    @map("instructor_db_id") @db.Uuid
+  companyName      String?   @map("company_name")
+  courseName       String?   @map("course_name")
+  courseId         String?   @map("course_id")
+  startDate        DateTime? @map("start_date") @db.Date
+  endDate          DateTime? @map("end_date") @db.Date
+  dateLabel        String?   @map("date_label")
+  dealFeeHourly    Int?      @map("deal_fee_hourly")
+  feeExtra         String?   @map("fee_extra")
+  totalHours       Decimal?  @map("total_hours") @db.Decimal(5, 2)
+  totalSessions    Int?      @map("total_sessions")
+  contractType     String?   @map("contract_type")
+  detailType       String?   @map("detail_type")
+  specialNotes     String?   @map("special_notes")
+  sourceType       String    @map("source_type")
+  sourceRef        Json      @default("{}") @map("source_ref")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  instructor       Instructor @relation(fields: [instructorDbId], references: [id])
+
+  @@map("teaching_histories")
+}
+
+/// 만족도 기록 — 03_data_model.md 4-4절
+model SatisfactionRecord {
+  id               String    @id @default(uuid()) @db.Uuid
+  instructorDbId   String    @map("instructor_db_id") @db.Uuid
+  score            Decimal   @db.Decimal(3, 2)
+  companyName      String?   @map("company_name")
+  courseName       String?   @map("course_name")
+  responseDate     DateTime? @map("response_date") @db.Date
+  respondentCount  Int?      @map("respondent_count")
+  comment          String?
+  sourceType       String    @map("source_type")
+  sourceRef        Json      @default("{}") @map("source_ref")
+  createdBy        String?   @map("created_by")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  instructor       Instructor @relation(fields: [instructorDbId], references: [id])
+
+  @@map("satisfaction_records")
+}
+
+/// 점수 정책 버전 — 03_data_model.md 5-4절
+model ScorePolicyVersion {
+  id                        String   @id @default(uuid()) @db.Uuid
+  version                   String
+  weights                   Json
+  missingSatisfactionPolicy String   @map("missing_satisfaction_policy")
+  recencyDecayDays          Int      @default(180) @map("recency_decay_days")
+  active                    Boolean  @default(true)
+  updatedAt                 DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("score_policy_versions")
+}

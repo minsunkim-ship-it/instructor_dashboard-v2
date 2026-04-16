@@ -648,3 +648,14 @@
   - 새 회사를 붙이는 작업인지, 아니면 운영 UI/후속 기능을 만드는 작업인지 범위를 먼저 고정할 것
   - 그 외 필수 blocker는 현재 없음. 즉 내일은 바로 다음 회사 adapter 구현으로 시작 가능하다.
 
+#### grouped `validated-plan` 병렬 실행 규칙
+- 결정:
+  - 기존 `11_wave1_tasks.md`는 태스크 의미, 참조 문서, 완료 기준을 유지하는 기준 문서로 남긴다.
+  - 실제 병렬 실행은 `T1~T9` 개별 태스크 단위가 아니라 grouped workstream으로 수행한다.
+  - 권장 구조는 `Group 1(T1,T2,T3)`, `Group 2(T4,T9)`, `Group 3(T6,T7,T8)` 병렬 실행 후, 마지막에 `T5`를 단일 통합 단계로 수행하는 방식이다.
+  - 병렬 실행 안전장치로 `공통 고정 항목 + 그룹별 수정 가능 범위 + 충돌 파일 담당 그룹`을 별도 문서로 관리한다.
+  - grouped `validated-plan` 실행에서 `11_wave1_tasks.md`의 파일 경계와 병렬 파일 담당 그룹 정의가 충돌하면, 병렬 실행 시에는 파일 담당 그룹 문서가 우선한다.
+- 반영 문서:
+  - `00_docs_index.md`
+  - `10_execution_plan.md`
+  - `12_parallel_bundle_guardrails.md`

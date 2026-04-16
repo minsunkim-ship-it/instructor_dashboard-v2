@@ -15,6 +15,8 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 8. `08_decision_log.md`
 9. `09_work_split.md`
 10. `10_execution_plan.md`
+11. `11_wave1_tasks.md`
+12. `12_parallel_bundle_guardrails.md`
 
 ## Source of Truth Priority
 - 정책 충돌 시: `01_core_policy.md`
@@ -26,6 +28,8 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 변경 이력 확인: `08_decision_log.md`
 - 병렬 구현 책임 경계 확인: `09_work_split.md`
 - 현재 구현 웨이브 운영 규칙 확인: `10_execution_plan.md`
+- Wave 1 태스크별 파일 경계와 완료 기준 확인: `11_wave1_tasks.md`
+- grouped `validated-plan` 병렬 실행 시 공통 고정 항목 / 파일 담당 그룹 확인: `12_parallel_bundle_guardrails.md`
 
 ## Current Execution Plan
 
@@ -34,28 +38,30 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 현재 웨이브에서 문서 해석 충돌이 생기면 `08_decision_log.md`를 먼저 확인하고, 그래도 해결되지 않으면 blocker로 보고한다.
 
 ### Current Objective
-- 단기간에 하나의 제품을 만들기 위해 여러 기능을 병렬로 구현한다.
-- 병렬 구현 전, 문서 계약과 파일 책임 경계가 실제 구현과 머지 단계에서도 유효한지 먼저 검증한다.
+- 파일럿 검증을 모두 통과했으며, 본 병렬 구현 Wave 1을 실행 중이다.
+- Wave 1의 목표는 데모 가능한 MVP(Must-have)와 운영에 가까운 핵심 기능(Should-have)을 완성하는 것이다.
 
 ### Current Phase
-- 현재 단계는 파일럿 검증 단계다.
-- 파일럿 목적:
-  - `04_data_pipeline.md`가 실제 구현 계약으로 충분한지 검증
-  - `05_api_spec.md`, `06_implementation_spec.md`가 API-UI 연결 계약으로 충분한지 검증
-  - `09_work_split.md`의 파일 책임 경계가 실제 git 머지에서도 유효한지 검증
+- 현재 단계는 Wave 1 본 구현 단계다.
+- 파일럿 검증 웨이브(파일럿 1~3, Pilot 4-1~4-5)는 완료 상태다.
+- Wave 1 태스크 정의와 실행 순서는 `11_wave1_tasks.md`를 따른다.
+- Wave 1 범위:
+  - Must-have: 상세 패널 UI, 만족도 작성 UI, page.tsx 연결, GET /api/status, POST /api/refresh, 누락 스키마 보강
+  - Should-have: 실습코치 판정, Fee 우선순위 체인, fee_histories 적재, Fallback 배너
 
-### Pilot Order
+### Pilot Order (완료)
 1. 파일럿 1 — Notion 단일 소스 수집 → 정규화 → `instructors` 저장 → 목록 API 반영
 2. 파일럿 2 — 만족도 저장 → 집계 갱신 → 전체 score 재계산 → 상세 API 재조회
 3. 파일럿 3 — Track C / Track D 병렬 구현 → 별도 브랜치 작업 → 순차 머지 → 충돌 검증
-4. Pilot 4-1 — 계약시트 Google Sheets API 외부 수집 검증 (현재 검증 웨이브 이후 추가 파일럿)
+4. Pilot 4-1 — 계약시트 Google Sheets API 외부 수집 검증
 
-### Execution Gate
-- 아래 조건이 충족되면 본 병렬 구현으로 넘어간다.
+### Execution Gate (통과 완료)
+- 아래 조건이 모두 충족되어 Wave 1 본 구현으로 진입했다.
   - 파일럿 1 통과
   - 파일럿 2 통과
   - 파일럿 3 통과
   - Pilot 4-1 통과
+  - Pilot 4-2~4-5 통과
   - 주요 문서 gap 없음
   - 공유 파일 충돌 규칙 확정
 
@@ -85,8 +91,10 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - blocker 보고 시 파일 경로와 근거 라인을 함께 남긴다.
 
 ### After Pilots
-- 파일럿 1, 2, 3과 Pilot 4-1이 모두 통과하면 본 병렬 구현 웨이브를 시작한다.
-- 실제 트랙별 실행 프롬프트와 작업 단위는 별도 실행 계획 문서 또는 작업 지시문으로 관리한다.
+- 파일럿 1~3과 Pilot 4-1~4-5가 모두 통과하여 Wave 1 본 구현에 진입했다.
+- Wave 1의 태스크별 실행 지시는 `11_wave1_tasks.md`에서 관리한다.
+- Wave 1의 실행 순서와 시작 조건은 `10_execution_plan.md`에서 관리한다.
+- grouped `validated-plan` 병렬 실행의 공통 고정 항목 / 파일 담당 그룹은 `12_parallel_bundle_guardrails.md`에서 관리한다.
 
 
 ## File Roles
@@ -131,6 +139,15 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 현재 구현 웨이브를 어떤 순서와 규칙으로 실행할지 정의한다.
 - 파일럿 순서, 본 병렬 구현 시작 조건, 공유 파일 가드레일, 머지 규칙, blocker 보고 규칙을 포함한다.
 
+### `11_wave1_tasks.md`
+- Wave 1 본 구현에서 수행할 개별 태스크를 정의한다.
+- 각 태스크의 구현 범위, 참조 문서, 파일 경계, 선행 의존성, 완료 기준을 포함한다.
+- AI 에이전트가 실행 지시서로 사용하는 문서다.
+
+### `12_parallel_bundle_guardrails.md`
+- Wave 1 태스크를 grouped `validated-plan` 작업 묶음으로 실행할 때의 공통 고정 항목, 수정 가능 범위, 파일 담당 그룹을 정의한다.
+- `11_wave1_tasks.md`의 태스크 의미는 유지하되, 실제 병렬 실행 시 수정 권한과 통합 순서를 고정한다.
+
 ## Legacy Reference
 
 - `구현명세서_v2.md`는 참고용 legacy 문서로만 사용한다.
@@ -149,6 +166,8 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 기존 정책과 다른 변경이 필요하면 먼저 `08_decision_log.md`에 기록하고 관련 문서를 수정한다.
 - 병렬 구현 단위와 책임 경계를 확인하려면 `09_work_split.md`를 확인한다.
 - 현재 웨이브의 파일럿 순서, 머지 규칙, blocker 처리 기준은 `10_execution_plan.md`를 확인한다.
+- Wave 1의 개별 태스크 범위, 파일 경계, 완료 기준은 `11_wave1_tasks.md`를 확인한다.
+- grouped `validated-plan` 병렬 실행 전에는 반드시 `12_parallel_bundle_guardrails.md`를 확인한다.
 
 ## Update Rule
 - 정책이 바뀌면 먼저 `01_core_policy.md`를 수정한다.
@@ -158,5 +177,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - API 계약이 바뀌면 `05_api_spec.md`를 수정한다.
 - 화면 동작이 바뀌면 `06_implementation_spec.md`를 수정한다.
 - 현재 구현 웨이브의 실행 순서나 머지 규칙이 바뀌면 `10_execution_plan.md`를 수정한다.
+- Wave 1 태스크의 범위, 파일 경계, 완료 기준이 바뀌면 `11_wave1_tasks.md`를 수정한다.
+- grouped `validated-plan` 병렬 실행 규칙, 공통 고정 항목, 파일 담당 그룹이 바뀌면 `12_parallel_bundle_guardrails.md`를 수정한다.
 - `구현명세서_v2.md`는 참고만 하고 수정하지 않는다.
 - 중요한 변경은 `08_decision_log.md`에 반드시 남긴다.

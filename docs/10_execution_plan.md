@@ -38,19 +38,32 @@
 
 ## 2. 현재 웨이브 정의
 
-현재 웨이브는 본 병렬 구현 전 검증 웨이브다.
+현재 웨이브는 Wave 1 본 구현 단계다.
 
-- 목표:
-  - `04_data_pipeline.md`가 실제 구현 계약으로 충분한지 검증
-  - `05_api_spec.md`, `06_implementation_spec.md`가 API-UI 연결 계약으로 충분한지 검증
-  - `09_work_split.md`의 파일 책임 경계가 실제 git 머지에서도 유효한지 검증
+- 검증 웨이브 결과:
+  - 파일럿 1~3 통과
+  - Pilot 4-1~4-5 통과
+  - 검증 웨이브 완료
 
-현재 상태:
-- 파일럿 1 통과
-- 파일럿 2 통과
-- 파일럿 3 통과
-- 검증 웨이브 완료
-- 다음 단계는 Pilot 4-1 계약시트 외부 수집 검증이며, Pilot 4-1 통과 이후 본 병렬 구현 `Wave 1` 범위 확정으로 진행한다.
+- Wave 1 목표:
+  - Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 핵심 기능)를 완성한다.
+  - 태스크 정의는 `11_wave1_tasks.md`를 따른다.
+
+- Wave 1 범위:
+  - Must-have: 상세 패널 UI, 만족도 작성 UI, page.tsx 연결, GET /api/status, POST /api/refresh, 누락 스키마 보강
+  - Should-have: 실습코치 3-Layer 판정, Fee 우선순위 체인, fee_histories 적재, Fallback 배너 UI
+  - 제외: 운영 인텔리전스 LLM 생성, validation 17개 규칙 전체, 만족도 외부 수집(Google Forms)
+
+- Wave 1 현재 상태:
+  - T1(스키마 보강): 에이전트 구현 완료, 검증 필요
+  - T2(상세 패널): 에이전트 구현 완료, 검증 필요
+  - T3(만족도 작성 UI): 에이전트 구현 완료, 검증 필요
+  - T4(GET /api/status): 에이전트 구현 완료, 검증 필요
+  - T5(POST /api/refresh): 에이전트 구현 완료, 검증 필요
+  - T6(실습코치 판정): 구현 필요
+  - T7(Fee 우선순위 체인): 구현 필요
+  - T8(fee_histories 적재): 구현 필요
+  - T9(Fallback 배너): 구현 필요
 
 ## 3. 파일럿 검증 순서
 
@@ -121,6 +134,16 @@
 - 같은 파일을 두 개 이상의 트랙이 동시에 수정하지 않는다.
 - 문서에 없는 새로운 공유 규칙이 필요하면 먼저 `08_decision_log.md`에 기록한다.
 
+### 7-1. grouped `validated-plan` 실행 보정
+
+- Wave 1 태스크를 `T1~T9` 그대로 병렬 실행하지 않는다.
+- grouped `validated-plan`으로 실행할 때는 `12_parallel_bundle_guardrails.md`를 함께 적용한다.
+- 이때:
+  - 태스크 의미와 완료 기준은 `11_wave1_tasks.md`
+  - 공통 고정 항목 / 파일 담당 그룹 / 마지막 통합 범위는 `12_parallel_bundle_guardrails.md`
+  를 따른다.
+- `11_wave1_tasks.md`의 파일 경계와 `12_parallel_bundle_guardrails.md`의 파일 담당 그룹 정의가 충돌하면, **병렬 실행 시에는 `12_parallel_bundle_guardrails.md`가 우선**한다.
+
 ## 8. 브랜치 및 머지 원칙
 
 - 병렬 구현은 트랙별 브랜치를 기본으로 한다.
@@ -155,12 +178,42 @@
 - 병렬 구현 책임 경계가 실제 git 머지에서도 유효함이 확인된다.
 - 문서에 없는 임의 정책 없이 다음 병렬 구현 웨이브를 시작할 수 있다.
 
-## 12. 검증 웨이브 종료 후 다음 단계
+## 12. 검증 웨이브 종료 후 상태
 
-- 현재 검증 웨이브(파일럿 1, 2, 3)는 완료 상태로 유지한다.
-- 파일럿 3에서 `main`에 머지된 검색/필터/정렬 기능은 baseline feature로 간주한다.
-- 다음 작업은 Pilot 4-1 계약시트 외부 수집 검증이며, 본 병렬 구현 Wave 1 진입 전에 수행한다.
-- Pilot 4-1 통과 이후 `Wave 1` 범위 확정과 트랙별 실행 프롬프트 작성을 진행한다.
+- 검증 웨이브(파일럿 1~3)와 추가 파일럿(Pilot 4-1~4-5)은 모두 완료 상태다.
+- 파일럿에서 `main`에 머지된 기능(검색/필터/정렬, Notion 적재, 계약시트 적재, 세일즈맵 보강, Slack/Gmail 수집, 만족도 작성+score 재계산)은 baseline feature로 간주한다.
+- Wave 1 범위가 확정되었으며, 태스크 정의는 `11_wave1_tasks.md`에서 관리한다.
+
+## 14. Wave 1 실행 규칙
+
+### 14-1. 실행 순서
+- Phase 1(검증): 에이전트 구현 완료 태스크(T1~T5)를 문서 계약 기준으로 검증한다.
+- Phase 2(구현): 미구현 태스크(T6~T9)를 병렬 가능 구간에서 실행한다.
+- Phase 3(통합): 전체 빌드 통과 + E2E 확인.
+
+### 14-2. 검증 규칙
+- 에이전트가 작성한 코드는 해당 태스크의 참조 문서 및 완료 기준과 대조해 검증한다.
+- 검증 실패 시 문서 기준으로 수정한다.
+- 검증 통과한 태스크만 baseline으로 채택한다.
+
+### 14-3. 파일 경계
+- Wave 1의 태스크별 파일 경계는 `11_wave1_tasks.md` 6절을 따른다.
+- 같은 파일을 두 개 이상의 태스크가 동시에 수정하지 않는다.
+- grouped `validated-plan` 방식으로 실행할 때는 `12_parallel_bundle_guardrails.md`의 파일 담당 그룹 문서를 함께 적용한다.
+
+### 14-4. grouped `validated-plan` 권장 구조
+
+- Group 1: `T1, T2, T3`
+- Group 2: `T4, T9`
+- Group 3: `T6, T7, T8`
+- 마지막 통합: `T5`
+
+- Group 1~3은 병렬 실행 가능하다.
+- `T5`는 refresh orchestration과 최종 build/E2E를 담당하는 마지막 통합 단계로 분리한다.
+- 단, 실제 수정 가능 범위와 공통 고정 항목은 `12_parallel_bundle_guardrails.md`를 따른다.
+
+### 14-5. Blocker 규칙
+- 기존 9절 blocker 규칙을 그대로 적용한다.
 
 ## 13. Pilot 4-1 — 계약시트 외부 수집 검증
 

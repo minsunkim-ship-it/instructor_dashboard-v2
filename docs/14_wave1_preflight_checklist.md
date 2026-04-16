@@ -94,11 +94,14 @@ Group 3은 아래 데이터와 구조가 baseline에 반영되어 있어야 한�
 - Group 1 최종 보고에 blocker가 없다.
 - Group 2 최종 보고에 blocker가 없다.
 - Group 3 최종 보고에 blocker가 없다.
+- Group 2 최종 보고에는 `FallbackBanner`의 props / 표시 조건 / 사용 예시가 포함되어 있다.
+- Group 3 최종 보고에는 `refresh` 미연결 범위와 `T5` 연결 entry point가 포함되어 있다.
 
 ### 3-4. 빌드 체크
 - Group 1은 `npm run build`를 통과했다.
 - Group 2는 `npm run build`를 통과했다.
 - Group 3은 `npm run build`를 통과했다.
+- Group 1~3은 작업 종료 시 `node wave1-preflight.mjs`를 다시 실행했다.
 
 ## 4. 시작 판정
 

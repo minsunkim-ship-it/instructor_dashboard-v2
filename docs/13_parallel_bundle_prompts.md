@@ -65,15 +65,18 @@ docs 폴더 문서를 00_docs_index.md의 Read Order와 Source of Truth Priority
 4. null/empty/loading/error/fallback 노출을 문서 기준으로 점검
 
 검증:
+- node wave1-preflight.mjs
 - npm run build
 - 상세 패널 열림/닫힘 확인
 - 만족도 저장 성공 후 상세 재조회 확인
 
 최종 보고:
 - 변경 파일
+- 실행한 검증 명령
 - T2/T3 완료 기준 충족 여부
 - blocker
 - build 결과
+- page.tsx 연결 범위 요약
 ```
 
 ## 3. Group 2 프롬프트 (`T4, T9`)
@@ -118,17 +121,21 @@ docs 폴더 문서를 00_docs_index.md의 Read Order와 Source of Truth Priority
 1. T4 검증 및 문서 기준 보완
 2. T9 구현
 3. page.tsx에 직접 삽입하지 않고도 재사용 가능한 배너 인터페이스 제공
+4. Group 1 또는 T5가 별도 해석 없이 바로 연결할 수 있는 props/표시 조건 정리
 
 검증:
+- node wave1-preflight.mjs
 - npm run build
 - GET /api/status 응답 구조가 docs/05_api_spec.md와 일치하는지 확인
 - FallbackBanner가 단독 컴포넌트로 동작 가능한지 확인
 
 최종 보고:
 - 변경 파일
+- 실행한 검증 명령
 - T4/T9 완료 기준 충족 여부
 - blocker
 - build 결과
+- FallbackBanner props/표시 조건/사용 예시
 ```
 
 ## 4. Group 3 프롬프트 (`T6, T7, T8`)
@@ -178,14 +185,18 @@ docs 폴더 문서를 00_docs_index.md의 Read Order와 Source of Truth Priority
 4. refresh orchestration에 연결하지 않고도 모듈 단위 검증 가능 상태로 마무리
 
 검증:
+- node wave1-preflight.mjs
 - npm run build
 - 상세 API fee_history 반환 확인
 - 전임강사 / 실습코치 / 특수금액 분리 규칙이 문서와 일치하는지 확인
 
 최종 보고:
 - 변경 파일
+- 실행한 검증 명령
 - T6/T7/T8 완료 기준 충족 여부
 - refresh 미연결 범위 명시
+- T5가 연결해야 하는 entry point
+- 구현 실패와 외부 source/runtime 실패를 구분하는 기준
 - blocker
 - build 결과
 ```
@@ -203,6 +214,7 @@ docs 폴더 문서를 00_docs_index.md의 Read Order와 Source of Truth Priority
 - 이 단계는 새 기능 확장 단계가 아니다.
 - Group 1, Group 2, Group 3의 결과를 refresh orchestration과 화면 wiring에 연결하고 검증하는 단계다.
 - upstream 로직 결함이 보이면 여기서 우회 구현하지 말고 blocker로 되돌려라.
+- 외부 source/runtime 실패와 구현 실패를 구분해서 보고하라.
 
 반드시 먼저 읽을 문서:
 - docs/11_wave1_tasks.md
@@ -231,6 +243,7 @@ docs 폴더 문서를 00_docs_index.md의 Read Order와 Source of Truth Priority
 3. refresh -> status -> page 동선과 build/E2E 확인
 
 검증:
+- node wave1-preflight.mjs
 - npm run build
 - POST /api/refresh
 - GET /api/status
@@ -238,7 +251,9 @@ docs 폴더 문서를 00_docs_index.md의 Read Order와 Source of Truth Priority
 
 최종 보고:
 - 변경 파일
+- 실행한 검증 명령
 - T5 완료 기준 충족 여부
 - upstream blocker 여부
 - build/API 검증 결과
+- 구현 실패 vs 외부 source/runtime 실패 구분
 ```

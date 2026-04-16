@@ -63,15 +63,18 @@
 
 ## 2. Group 3 시작 전 데이터 선행조건
 
-Group 3은 아래 데이터가 baseline에 이미 반영되어 있어야 한다.
+Group 3은 아래 데이터와 구조가 baseline에 반영되어 있어야 한다.
 
 - `teaching_histories.contract_type`
 - `teaching_histories.detail_type`
 - `instructors.is_fulltime`
-- `fee_fix_configs`
+- `fee_fix_configs` 테이블/모델
 
 규칙:
-- 위 선행조건이 비어 있거나 미반영 상태면 Group 3 구현을 진행하지 않는다.
+- `teaching_histories.contract_type`, `teaching_histories.detail_type`, `instructors.is_fulltime`는 실제 값이 채워져 있어야 한다.
+- `fee_fix_configs`는 수동 보정용 Source of Truth이므로 **테이블/모델이 존재하고 조회 가능하면 된다.**
+- `fee_fix_configs` row 수가 `0`인 것은 blocker가 아니다.
+- 위 required baseline 값이 비어 있거나 구조가 미반영 상태면 Group 3 구현을 진행하지 않는다.
 - 코드에서 임시 기본값으로 덮지 않고 blocker로 보고한다.
 
 ## 3. Group 1~3 완료 후 `T5` 진입 전 체크
@@ -112,7 +115,8 @@ Group 3은 아래 데이터가 baseline에 이미 반영되어 있어야 한다.
 ### 4-3. 시작 보류
 아래 중 하나라도 해당하면 시작하지 않는다.
 - 필수 환경변수/권한 누락
-- Group 3 선행 데이터 누락
+- Group 3 required baseline 값 누락
+- `fee_fix_configs` 구조 미반영 또는 조회 불가
 - 공통 고정 항목 수정 발생
 - 파일 담당 그룹 위반
 - blocker 존재

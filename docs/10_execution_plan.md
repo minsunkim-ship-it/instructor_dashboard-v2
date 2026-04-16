@@ -180,7 +180,9 @@
 - Group 3 시작 전에는 아래 데이터 선행조건이 이미 baseline에 반영되어 있는지 확인한다.
   - `teaching_histories.contract_type`, `detail_type`
   - `instructors.is_fulltime`
-  - `fee_fix_configs`
+  - `fee_fix_configs` 구조
+- `fee_fix_configs`는 수동 보정용 Source of Truth이므로, 테이블/모델이 존재하고 조회 가능하면 된다.
+- `fee_fix_configs` row 수가 `0`인 것은 Group 3 blocker로 보지 않는다.
 - 위 조건이 빠져 있으면 구현으로 덮지 말고 blocker로 보고한다.
 - Group 1~3 시작 전과 `T5` 시작 전의 최종 판정은 `14_wave1_preflight_checklist.md`를 따른다.
 

@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { recalculateAllScores } from "@/lib/score-recalculator";
+import { applySatisfactionImports } from "@/lib/pipeline/satisfaction-applier";
 
 interface SatisfactionBody {
   score: number;
@@ -22,6 +22,7 @@ export async function POST(
 ) {
   const { id } = await params;
   const requestId = `req_${crypto.randomUUID()}`;
+  let runId: string | null = null;
 
   try {
     // 강사 존재 확인
@@ -54,47 +55,62 @@ export async function POST(
       );
     }
 
-    // 7-6: satisfaction_records 저장 + instructors 집계 갱신 + 전체 score 재계산
-    // 같은 요청 흐름 안에서 처리
-
-    // Step 1: satisfaction_records 저장
-    const record = await prisma.satisfactionRecord.create({
+    const pipelineRun = await prisma.pipelineRun.create({
       data: {
-        instructorDbId: id,
-        score: body.score,
-        comment: body.comment ?? null,
-        companyName: body.company_name ?? null,
-        courseName: body.course_name ?? null,
-        responseDate: body.response_date ? new Date(body.response_date) : null,
-        sourceType: "manual",
-        createdBy: null, // 이번 버전: 로그인 사용자 모두 동일 권한, 작성자 미기록
+        runType: "manual_satisfaction",
+        status: "running",
+        triggeredBy: "api:/api/instructors/{id}/satisfaction",
+        summary: { request_id: requestId, instructor_id: id },
       },
     });
+    runId = pipelineRun.id;
 
-    // Step 2: instructors 만족도 집계 갱신
-    const allRecords = await prisma.satisfactionRecord.findMany({
-      where: { instructorDbId: id },
-      select: { score: true },
+    const applyResult = await applySatisfactionImports({
+      runId,
+      recalculateScores: true,
+      items: [
+        {
+          sourceType: "manual",
+          sourceRef: {
+            request_id: requestId,
+            instructor_id: id,
+          },
+          rawPayload: {
+            score: body.score,
+            comment: body.comment ?? null,
+            company_name: body.company_name ?? null,
+            course_name: body.course_name ?? null,
+            response_date: body.response_date ?? null,
+          },
+          normalizedPayload: {
+            suggested_instructor_id: id,
+            resolution_basis: "manual_route",
+          },
+          candidateName: instructor.name,
+          candidateCompanyName: body.company_name ?? null,
+          candidateCourseName: body.course_name ?? null,
+          scoreRaw: String(body.score),
+          scoreNormalized: body.score,
+          responseDate: body.response_date ?? null,
+        },
+      ],
     });
 
-    const count = allRecords.length;
-    const avg =
-      count > 0
-        ? allRecords.reduce((sum, r) => sum + Number(r.score), 0) / count
-        : null;
-
-    await prisma.instructor.update({
-      where: { id },
+    await prisma.pipelineRun.update({
+      where: { id: runId },
       data: {
-        satisfactionAvg: avg !== null ? Math.round(avg * 100) / 100 : null,
-        satisfactionCount: count,
-        satisfactionIsImputed: false,
+        status: "success",
+        finishedAt: new Date(),
+        summary: {
+          request_id: requestId,
+          instructor_id: id,
+          import_items_stored: applyResult.importItemsStored,
+          registries: applyResult.registries,
+          affected_instructors: applyResult.affectedInstructors,
+          canonical_records_upserted: applyResult.canonicalRecordsUpserted,
+        },
       },
     });
-
-    // Step 3: 전체 강사 score/rank 재계산
-    // 05_api_spec 7-6: 외부 소스 재조회 없이 DB canonical 값 기준
-    await recalculateAllScores();
 
     // 갱신된 집계값 조회
     const updated = await prisma.instructor.findUnique({
@@ -104,6 +120,13 @@ export async function POST(
         satisfactionCount: true,
         satisfactionIsImputed: true,
       },
+    });
+    const record = await prisma.satisfactionRecord.findFirst({
+      where: {
+        instructorDbId: id,
+        sourceType: "manual",
+      },
+      orderBy: { createdAt: "desc" },
     });
 
     // 7-5: 성공 응답
@@ -116,11 +139,11 @@ export async function POST(
         last_updated_at: new Date().toISOString(),
       },
       data: {
-        id: record.id,
+        id: record?.id ?? null,
         instructor_id: id,
-        score: Number(record.score),
-        comment: record.comment,
-        created_at: record.createdAt.toISOString(),
+        score: record ? Number(record.score) : body.score,
+        comment: record?.comment ?? body.comment ?? null,
+        created_at: record?.createdAt.toISOString() ?? new Date().toISOString(),
         updated_satisfaction: {
           avg: updated?.satisfactionAvg !== null ? Number(updated?.satisfactionAvg) : null,
           count: updated?.satisfactionCount ?? 0,
@@ -129,6 +152,19 @@ export async function POST(
       },
     });
   } catch {
+    if (runId) {
+      await prisma.pipelineRun.update({
+        where: { id: runId },
+        data: {
+          status: "failed",
+          finishedAt: new Date(),
+          summary: {
+            request_id: requestId,
+            error: "SATISFACTION_WRITE_FAILED",
+          },
+        },
+      }).catch(() => undefined);
+    }
     // 7-7: 500 SATISFACTION_WRITE_FAILED
     return NextResponse.json(
       {

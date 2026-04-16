@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Google Service Account JSON — 04_data_pipeline.md 4-1절
+edu-base-*.json
+*-service-account*.json
+client_secret_*.json

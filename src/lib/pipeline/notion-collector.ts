@@ -7,6 +7,7 @@
 
 const NOTION_API_VERSION = "2022-06-28";
 const NOTION_BASE_URL = "https://api.notion.com/v1";
+const NOTION_REQUEST_TIMEOUT_MS = 20_000;
 
 // --- Notion property value extractors ---
 
@@ -127,6 +128,7 @@ export async function collectFromNotion(): Promise<RawNotionInstructor[]> {
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(NOTION_REQUEST_TIMEOUT_MS),
       }
     );
 

@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { InstructorListItem, InstructorListResponse } from "@/types/api";
+import FallbackBanner from "@/components/FallbackBanner";
 
 // 정렬 옵션 — 06_implementation_spec.md Feature D
 const SORT_OPTIONS = [
@@ -59,7 +60,12 @@ function formatScore(score: number | null): string {
   return score.toFixed(1);
 }
 
-function InstructorListInner() {
+interface InstructorListInnerProps {
+  onSelectInstructor?: (id: string) => void;
+  selectedInstructorId?: string | null;
+}
+
+function InstructorListInner({ onSelectInstructor, selectedInstructorId }: InstructorListInnerProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -72,8 +78,9 @@ function InstructorListInner() {
   const [searchInput, setSearchInput] = useState(queryParam);
   const debouncedQuery = useDebounce(searchInput, 300);
 
-  // 선택된 강사 ID — URL 파라미터에 넣지 않음
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 선택된 강사 ID — 외부에서 제어 가능, 없으면 로컬 상태 사용
+  const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
+  const selectedId = selectedInstructorId !== undefined ? selectedInstructorId : localSelectedId;
 
   // 카테고리 목록 캐시 — 필터링된 결과에서 카테고리가 사라지지 않도록 보존
   const categoryCacheRef = useRef<string[]>([]);
@@ -187,8 +194,11 @@ function InstructorListInner() {
     );
   }
 
+  const isFallback = data?.meta.is_fallback ?? false;
+
   return (
     <div className="flex flex-col h-full">
+      <FallbackBanner isFallback={isFallback} />
       {/* Feature A: 목록 영역 상단 — 제목, 전체 강사 수, 마지막 업데이트 시각 */}
       <div className="px-4 py-3 border-b border-gray-200">
         <h1 className="text-lg font-semibold text-gray-900">강사 목록</h1>
@@ -256,7 +266,10 @@ function InstructorListInner() {
               key={inst.id}
               instructor={inst}
               isSelected={selectedId === inst.id}
-              onClick={() => setSelectedId(inst.id)}
+              onClick={() => {
+                setLocalSelectedId(inst.id);
+                onSelectInstructor?.(inst.id);
+              }}
             />
           ))
         )}
@@ -266,7 +279,12 @@ function InstructorListInner() {
 }
 
 // Suspense 래핑된 default export
-export default function InstructorList() {
+export interface InstructorListProps {
+  onSelectInstructor?: (id: string) => void;
+  selectedInstructorId?: string | null;
+}
+
+export default function InstructorList({ onSelectInstructor, selectedInstructorId }: InstructorListProps) {
   return (
     <Suspense
       fallback={
@@ -275,7 +293,10 @@ export default function InstructorList() {
         </div>
       }
     >
-      <InstructorListInner />
+      <InstructorListInner
+        onSelectInstructor={onSelectInstructor}
+        selectedInstructorId={selectedInstructorId}
+      />
     </Suspense>
   );
 }

@@ -34,6 +34,10 @@ model Instructor {
   satisfactionIsImputed Boolean  @default(false) @map("satisfaction_is_imputed")
   totalCourses         Int       @default(0) @map("total_courses")
   recentCourses6mo     Int       @default(0) @map("recent_courses_6mo")
+  slackActivityCount            Int       @default(0) @map("slack_activity_count")
+  emailActivityCount            Int       @default(0) @map("email_activity_count")
+  opsReportActivityCount        Int       @default(0) @map("ops_report_activity_count")
+  dispatchRequestActivityCount  Int       @default(0) @map("dispatch_request_activity_count")
   lastActivityAt       DateTime? @map("last_activity_at") @db.Timestamptz
   memoRaw              String?   @map("memo_raw")
   createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
@@ -41,6 +45,13 @@ model Instructor {
 
   teachingHistories    TeachingHistory[]
   satisfactionRecords  SatisfactionRecord[]
+  satisfactionReviewRegistries SatisfactionReviewRegistry[] @relation("SatisfactionResolvedInstructor")
+  activityImportItems  ActivityImportItem[]
+  activityReviewRegistries ActivityReviewRegistry[] @relation("ActivityResolvedInstructor")
+  instructorIntelligence   InstructorIntelligence?
+  sourceLinks              SourceLink[]
+  validationIssues         ValidationIssue[]
+  feeHistories             FeeHistory[]
 
   @@map("instructors")
 }
@@ -91,6 +102,57 @@ model SatisfactionRecord {
   @@map("satisfaction_records")
 }
 
+/// 외부 만족도 raw import 저장소 — 03_data_model.md 4-4-1절
+model SatisfactionImportItem {
+  id                   String    @id @default(uuid()) @db.Uuid
+  runId                String    @map("run_id") @db.Uuid
+  sourceType           String    @map("source_type")
+  sourceRefKey         String?   @map("source_ref_key")
+  sourceRef            Json      @default("{}") @map("source_ref")
+  rawPayload           Json      @default("{}") @map("raw_payload")
+  normalizedPayload    Json      @default("{}") @map("normalized_payload")
+  candidateName        String?   @map("candidate_name")
+  candidateCompanyName String?   @map("candidate_company_name")
+  candidateCourseName  String?   @map("candidate_course_name")
+  scoreRaw             String?   @map("score_raw")
+  scoreNormalized      Decimal?  @map("score_normalized") @db.Decimal(3, 2)
+  responseDate         DateTime? @map("response_date") @db.Date
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  pipelineRun          PipelineRun @relation(fields: [runId], references: [id])
+
+  @@index([runId])
+  @@index([sourceType])
+  @@unique([sourceType, sourceRefKey])
+  @@map("satisfaction_import_items")
+}
+
+/// 만족도 review registry — 03_data_model.md 4-4-2절
+model SatisfactionReviewRegistry {
+  id                   String    @id @default(uuid()) @db.Uuid
+  runId                String    @map("run_id") @db.Uuid
+  registryKey          String    @unique @map("registry_key")
+  sourceType           String    @map("source_type")
+  sourceRefs           Json      @default("[]") @map("source_refs")
+  candidateName        String?   @map("candidate_name")
+  companyName          String?   @map("company_name")
+  courseName           String?   @map("course_name")
+  avgScore             Decimal?  @map("avg_score") @db.Decimal(3, 2)
+  responseCount        Int       @default(0) @map("response_count")
+  matchStatus          String    @default("pending") @map("match_status")
+  suggestedInstructorId String?  @map("suggested_instructor_id") @db.Uuid
+  resolvedInstructorId String?   @map("resolved_instructor_id") @db.Uuid
+  resolutionBasis      String?   @map("resolution_basis")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  resolvedInstructor   Instructor? @relation("SatisfactionResolvedInstructor", fields: [resolvedInstructorId], references: [id])
+
+  @@index([matchStatus])
+  @@index([resolvedInstructorId])
+  @@map("satisfaction_review_registries")
+}
+
 /// 점수 정책 버전 — 03_data_model.md 5-4절
 model ScorePolicyVersion {
   id                        String   @id @default(uuid()) @db.Uuid
@@ -102,4 +164,242 @@ model ScorePolicyVersion {
   updatedAt                 DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   @@map("score_policy_versions")
+}
+
+/// 파이프라인 실행 단위 — 03_data_model.md 4-8절
+model PipelineRun {
+  id          String    @id @default(uuid()) @db.Uuid
+  runType     String    @map("run_type")
+  status      String
+  triggeredBy String?   @map("triggered_by")
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt  DateTime? @map("finished_at") @db.Timestamptz
+  summary     Json      @default("{}")
+
+  sourceSyncLogs       SourceSyncLog[]
+  satisfactionImportItems SatisfactionImportItem[]
+  activityImportItems  ActivityImportItem[]
+
+  @@map("pipeline_runs")
+}
+
+/// Slack/Gmail direct API 수집 중간 저장 + 검토용 — 03_data_model.md 4-10절
+/// Pilot 4-5 v1: 08_decision_log.md 2026-04-15 결정 항목
+model ActivityImportItem {
+  id                   String    @id @default(uuid()) @db.Uuid
+  runId                String    @map("run_id") @db.Uuid
+  sourceType           String    @map("source_type")
+  sourceRef            Json      @default("{}") @map("source_ref")
+  rawPayload           Json      @default("{}") @map("raw_payload")
+  candidateName        String?   @map("candidate_name")
+  candidateEmail       String?   @map("candidate_email")
+  activityAt           DateTime? @map("activity_at") @db.Timestamptz
+  isOpsReport          Boolean   @default(false) @map("is_ops_report")
+  isDispatchRequest    Boolean   @default(false) @map("is_dispatch_request")
+  matchStatus          String    @default("unmatched") @map("match_status")
+  matchedInstructorId  String?   @map("matched_instructor_id") @db.Uuid
+  matchBasis           String?   @map("match_basis")
+  errorReason          String?   @map("error_reason")
+  sourceRefKey         String?   @map("source_ref_key")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  pipelineRun          PipelineRun @relation(fields: [runId], references: [id])
+  matchedInstructor    Instructor? @relation(fields: [matchedInstructorId], references: [id])
+
+  @@unique([sourceType, sourceRefKey])
+  @@index([matchStatus])
+  @@index([matchedInstructorId])
+  @@map("activity_import_items")
+}
+
+/// Slack/Gmail 활동 review registry — 03_data_model.md 4-10-1절
+model ActivityReviewRegistry {
+  id                           String    @id @default(uuid()) @db.Uuid
+  runId                        String    @map("run_id") @db.Uuid
+  registryKey                  String    @unique @map("registry_key")
+  sourceType                   String    @map("source_type")
+  sourceRefs                   Json      @default("[]") @map("source_refs")
+  candidateName                String?   @map("candidate_name")
+  candidateEmail               String?   @map("candidate_email")
+  slackActivityCount           Int       @default(0) @map("slack_activity_count")
+  emailActivityCount           Int       @default(0) @map("email_activity_count")
+  opsReportActivityCount       Int       @default(0) @map("ops_report_activity_count")
+  dispatchRequestActivityCount Int       @default(0) @map("dispatch_request_activity_count")
+  lastActivityAt               DateTime? @map("last_activity_at") @db.Timestamptz
+  evidenceSamples              Json      @default("[]") @map("evidence_samples")
+  matchStatus                  String    @default("pending") @map("match_status")
+  suggestedInstructorId        String?   @map("suggested_instructor_id") @db.Uuid
+  resolvedInstructorId         String?   @map("resolved_instructor_id") @db.Uuid
+  resolutionBasis              String?   @map("resolution_basis")
+  createdAt                    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  resolvedInstructor           Instructor? @relation("ActivityResolvedInstructor", fields: [resolvedInstructorId], references: [id])
+
+  @@index([matchStatus])
+  @@index([resolvedInstructorId])
+  @@map("activity_review_registries")
+}
+
+/// 검토 결정 로그 — 03_data_model.md 4-10-2절
+model ReviewDecision {
+  id                 String    @id @default(uuid()) @db.Uuid
+  registryType       String    @map("registry_type")
+  registryKey        String    @map("registry_key")
+  decisionType       String    @map("decision_type")
+  targetInstructorId String?   @map("target_instructor_id") @db.Uuid
+  note               String?
+  createdBy          String?   @map("created_by")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([registryType, registryKey, createdAt])
+  @@map("review_decisions")
+}
+
+/// 소스별 증분 수집 checkpoint — Pilot 4-5 v2
+model SourceCheckpoint {
+  id              String   @id @default(uuid()) @db.Uuid
+  sourceType      String   @map("source_type")
+  scopeKey        String   @map("scope_key")
+  checkpointJson  Json     @default("{}") @map("checkpoint_json")
+  lastSyncedAt    DateTime @default(now()) @map("last_synced_at") @db.Timestamptz
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([sourceType, scopeKey])
+  @@map("source_checkpoints")
+}
+
+/// 소스별 수집 상태 — 03_data_model.md 4-9절
+model SourceSyncLog {
+  id            String    @id @default(uuid()) @db.Uuid
+  runId         String    @map("run_id") @db.Uuid
+  sourceType    String    @map("source_type")
+  status        String
+  fetchedCount  Int       @default(0) @map("fetched_count")
+  updatedCount  Int       @default(0) @map("updated_count")
+  errorMessage  String?   @map("error_message")
+  startedAt     DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz
+
+  pipelineRun   PipelineRun @relation(fields: [runId], references: [id])
+
+  @@map("source_sync_logs")
+}
+
+/// 강사 인텔리전스 — 03_data_model.md 4-5절
+model InstructorIntelligence {
+  id               String    @id @default(uuid()) @db.Uuid
+  instructorDbId   String    @unique @map("instructor_db_id") @db.Uuid
+  recommendedFor   String[]  @default([]) @map("recommended_for")
+  avoidFor         String[]  @default([]) @map("avoid_for")
+  riskNotes        String[]  @default([]) @map("risk_notes")
+  opsCheckNote     String?   @map("ops_check_note")
+  dataRichness     String?   @map("data_richness")
+  confidence       String?
+  sourceSummary    Json      @default("{}") @map("source_summary")
+  generatedBy      String?   @map("generated_by")
+  generationModel  String?   @map("generation_model")
+  promptVersion    String?   @map("prompt_version")
+  evidenceHash     String?   @map("evidence_hash")
+  generatedAt      DateTime? @map("generated_at") @db.Timestamptz
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  instructor       Instructor @relation(fields: [instructorDbId], references: [id])
+
+  @@map("instructor_intelligence")
+}
+
+/// 소스 링크 — 03_data_model.md 4-6절
+model SourceLink {
+  id               String   @id @default(uuid()) @db.Uuid
+  instructorDbId   String   @map("instructor_db_id") @db.Uuid
+  sourceType       String   @map("source_type")
+  externalKey      String?  @map("external_key")
+  externalName     String?  @map("external_name")
+  matchStatus      String   @default("matched") @map("match_status")
+  matchBasis       Json     @default("{}") @map("match_basis")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  instructor       Instructor @relation(fields: [instructorDbId], references: [id])
+
+  @@map("source_links")
+}
+
+/// 검증 이슈 — 03_data_model.md 4-7절
+model ValidationIssue {
+  id               String    @id @default(uuid()) @db.Uuid
+  instructorDbId   String?   @map("instructor_db_id") @db.Uuid
+  entityType       String    @map("entity_type")
+  entityId         String?   @map("entity_id") @db.Uuid
+  ruleCode         String    @map("rule_code")
+  severity         String
+  message          String
+  beforeValue      Json      @default("{}") @map("before_value")
+  afterValue       Json      @default("{}") @map("after_value")
+  autoFixed        Boolean   @default(false) @map("auto_fixed")
+  runId            String?   @map("run_id") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  instructor       Instructor? @relation(fields: [instructorDbId], references: [id])
+
+  @@map("validation_issues")
+}
+
+/// 강사 수수료 이력 — 03_data_model.md 4-3절
+model FeeHistory {
+  id               String    @id @default(uuid()) @db.Uuid
+  instructorDbId   String    @map("instructor_db_id") @db.Uuid
+  effectiveDate    DateTime? @map("effective_date") @db.Date
+  effectiveLabel   String?   @map("effective_label")
+  amount           Int?
+  feeKind          String    @default("hourly") @map("fee_kind")
+  context          String?
+  sourceType       String    @map("source_type")
+  isCurrent        Boolean   @default(false) @map("is_current")
+  isSpecialAmount  Boolean   @default(false) @map("is_special_amount")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  instructor       Instructor @relation(fields: [instructorDbId], references: [id])
+
+  @@map("fee_histories")
+}
+
+/// 전임 강사 설정 — 03_data_model.md 5-1절
+model FulltimeInstructorConfig {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  active      Boolean  @default(true)
+  sourceFile  String   @map("source_file")
+  note        String?
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("fulltime_instructor_configs")
+}
+
+/// 수수료 고정 설정 — 03_data_model.md 5-3절
+model FeeFixConfig {
+  id               String   @id @default(uuid()) @db.Uuid
+  instructorDbId   String?  @map("instructor_db_id") @db.Uuid
+  name             String
+  fixedAmount      Int      @map("fixed_amount")
+  reason           String?
+  sourceBasis      Json     @default("{}") @map("source_basis")
+  active           Boolean  @default(true)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("fee_fix_configs")
+}
+
+/// 실습 코치 규칙 — 03_data_model.md 5-2절
+model PracticeCoachRule {
+  id          String   @id @default(uuid()) @db.Uuid
+  ruleName    String   @map("rule_name")
+  ruleType    String   @map("rule_type")
+  ruleValue   Json     @map("rule_value")
+  active      Boolean  @default(true)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("practice_coach_rules")
 }

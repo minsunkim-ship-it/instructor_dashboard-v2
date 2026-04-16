@@ -22,6 +22,13 @@ export async function GET(
           take: 30,
         },
         satisfactionRecords: true,
+        // T8: fee_histories — effectiveDate desc, createdAt desc
+        feeHistories: {
+          orderBy: [
+            { effectiveDate: "desc" },
+            { createdAt: "desc" },
+          ],
+        },
       },
     });
 
@@ -106,8 +113,21 @@ export async function GET(
         avoid_for: [],
         risk_notes: [],
         ops_check_note: null,
-        // 6-4: 전임강사는 fee_history 빈 배열. 파일럿 범위 밖이므로 항상 빈 배열.
-        fee_history: [],
+        // 6-4: 전임강사는 fee_history 빈 배열. T8: 비전임 강사는 fee_histories 테이블에서 조회.
+        fee_history: isFulltime
+          ? []
+          : inst.feeHistories.map((f) => ({
+              effective_date: f.effectiveDate
+                ? f.effectiveDate.toISOString().split("T")[0]
+                : null,
+              effective_label: f.effectiveLabel,
+              amount: f.amount,
+              fee_kind: f.feeKind,
+              context: f.context,
+              source_type: f.sourceType,
+              is_current: f.isCurrent,
+              is_special_amount: f.isSpecialAmount,
+            })),
         // teaching_history: 최신순 30건
         teaching_history: inst.teachingHistories.map((h) => ({
           id: h.id,

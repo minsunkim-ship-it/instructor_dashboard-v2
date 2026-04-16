@@ -55,12 +55,17 @@
 - `instructors`
 - `teaching_histories`
 - `fee_histories`
+- `satisfaction_import_items`
 - `satisfaction_records`
+- `satisfaction_review_registries`
 - `instructor_intelligence`
 - `source_links`
 - `validation_issues`
 - `pipeline_runs`
 - `source_sync_logs`
+- `activity_import_items`
+- `activity_review_registries`
+- `review_decisions`
 - `fulltime_instructor_configs`
 - `fee_fix_configs`
 - `practice_coach_rules`
@@ -70,12 +75,21 @@
 
 - 강사 1 : N 강의 이력
 - 강사 1 : N 단가 이력
+- 강사 1 : N 만족도 원본 수집 아이템
 - 강사 1 : N 만족도 기록
+- 강사 1 : N 만족도 검토 레지스트리
 - 강사 1 : 1 운영 인텔리전스
 - 강사 1 : N 소스 연결 정보
 - 강사 1 : N 검증 이슈
 - 강사 1 : N fee fix 설정
+- 강사 1 : N 활동 수집 아이템(매칭된 경우)
+- 강사 1 : N 활동 검토 레지스트리
+- 강사 1 : N 검토 결정
 - 파이프라인 실행 1 : N 소스 수집 로그
+- 파이프라인 실행 1 : N 만족도 원본 수집 아이템
+- 파이프라인 실행 1 : N 활동 수집 아이템
+- 파이프라인 실행 1 : N 만족도 검토 레지스트리
+- 파이프라인 실행 1 : N 활동 검토 레지스트리
 - 점수 정책 1 : N 강사 점수 메타데이터
 
 ## 4. 엔티티별 필드 정의
@@ -111,6 +125,10 @@
 | `satisfaction_is_imputed` | BOOLEAN | Y | `FALSE` | 만족도 중앙값 대체 여부 |
 | `total_courses` | INTEGER | Y | `0` | 총 출강 횟수 |
 | `recent_courses_6mo` | INTEGER | Y | `0` | 최근 6개월 출강 횟수 |
+| `slack_activity_count` | INTEGER | Y | `0` | Slack 활동량 집계값 |
+| `email_activity_count` | INTEGER | Y | `0` | Gmail 활동량 집계값 |
+| `ops_report_activity_count` | INTEGER | Y | `0` | 운영보고 채널 활동량 집계값 |
+| `dispatch_request_activity_count` | INTEGER | Y | `0` | 출강요청 채널 활동량 집계값 |
 | `last_activity_at` | TIMESTAMPTZ | N | `NULL` | 최근 활동 시각 |
 | `memo_raw` | TEXT | N | `NULL` | 운영 메모 원문 |
 | `created_at` | TIMESTAMPTZ | Y | `NOW()` | 생성 시각 |
@@ -208,6 +226,58 @@
 | `created_by` | TEXT | N | `NULL` | 작성자 또는 시스템 |
 | `created_at` | TIMESTAMPTZ | Y | `NOW()` | 생성 시각 |
 
+### 4-4-1. `satisfaction_import_items`
+
+Google Forms, Gmail 만족도 공유 등 외부 만족도 source의 원본 저장용 테이블이다.
+
+| 필드명 | 타입 | 필수 | 기본값 | 설명 |
+|---|---|---:|---|---|
+| `id` | UUID | Y | - | PK |
+| `run_id` | UUID | Y | - | `pipeline_runs.id` FK |
+| `source_type` | TEXT | Y | - | `google_forms`, `gmail_satisfaction`, `sheet_summary` 등 |
+| `source_ref` | JSONB | Y | `{}` | `spreadsheet_id`, `worksheet_gid`, `row_number`, `thread_id` 같은 원본 식별자 |
+| `raw_payload` | JSONB | Y | `{}` | 응답 row 또는 메일 본문에서 추출한 원문 메타데이터 |
+| `normalized_payload` | JSONB | N | `{}` | 점수, 응답일, 회사명, 과정명, 강사명 후보 등 정규화 중간값 |
+| `candidate_name` | TEXT | N | `NULL` | 원본에서 직접 확인한 강사명 후보 |
+| `candidate_company_name` | TEXT | N | `NULL` | 회사명 후보 |
+| `candidate_course_name` | TEXT | N | `NULL` | 과정명 후보 |
+| `score_raw` | TEXT | N | `NULL` | 원문 점수 표현 |
+| `score_normalized` | NUMERIC(3,2) | N | `NULL` | 정규화 가능한 경우의 수치형 점수 |
+| `response_date` | DATE | N | `NULL` | 원문 또는 정규화 응답일 |
+| `created_at` | TIMESTAMPTZ | Y | `NOW()` | 기록 시각 |
+
+설명:
+- `satisfaction_import_items`는 근거 보존용 테이블이다. 사람이 직접 수정하는 본체가 아니라, 매 실행마다 raw source를 재현 가능하게 남기는 용도다.
+- 이 테이블의 레코드가 곧바로 `satisfaction_records`로 반영되지는 않는다. 먼저 `satisfaction_review_registries`로 자동 취합한 뒤 상태에 따라 반영한다.
+
+### 4-4-2. `satisfaction_review_registries`
+
+외부 만족도 source를 강사별/시트별로 자동 취합한 검토용 레지스트리다.
+
+| 필드명 | 타입 | 필수 | 기본값 | 설명 |
+|---|---|---:|---|---|
+| `id` | UUID | Y | - | PK |
+| `run_id` | UUID | Y | - | `pipeline_runs.id` FK |
+| `registry_key` | TEXT | Y | - | 같은 검토 단위를 묶는 stable key |
+| `source_type` | TEXT | Y | - | `google_forms`, `gmail_satisfaction`, `sheet_summary` 등 |
+| `source_refs` | JSONB | Y | `[]` | 이 레지스트리를 구성한 원본 참조 목록 |
+| `candidate_name` | TEXT | N | `NULL` | 강사명 후보 |
+| `company_name` | TEXT | N | `NULL` | 회사명 |
+| `course_name` | TEXT | N | `NULL` | 과정명 |
+| `avg_score` | NUMERIC(3,2) | N | `NULL` | 자동 취합 평균 |
+| `response_count` | INTEGER | Y | `0` | 취합 응답 수 |
+| `match_status` | TEXT | Y | `pending` | `auto_accepted`, `pending`, `approved`, `rejected`, `invalid` |
+| `suggested_instructor_id` | UUID | N | `NULL` | 자동 매칭이 제안한 강사 |
+| `resolved_instructor_id` | UUID | N | `NULL` | 최종 반영 강사 |
+| `resolution_basis` | TEXT | N | `NULL` | `name`, `company_course_crosscheck`, `manual_decision` 등 |
+| `created_at` | TIMESTAMPTZ | Y | `NOW()` | 생성 시각 |
+| `updated_at` | TIMESTAMPTZ | Y | `NOW()` | 수정 시각 |
+
+설명:
+- `satisfaction_review_registries`는 사람이 직접 편집하는 데이터 본체가 아니다. `satisfaction_import_items`를 바탕으로 매 실행마다 자동 생성/갱신되는 취합 결과다.
+- `auto_accepted`와 `approved` 상태만 `satisfaction_records` 및 `instructors.satisfaction_*`로 반영한다.
+- `pending`, `rejected`, `invalid` 상태는 canonical 반영 대상에서 제외하고 검토 큐로만 남긴다.
+
 ### 4-5. `instructor_intelligence`
 
 구조화된 운영 인텔리전스 저장소다.
@@ -293,6 +363,86 @@
 | `error_message` | TEXT | N | `NULL` | 실패 메시지 |
 | `started_at` | TIMESTAMPTZ | Y | `NOW()` | 시작 시각 |
 | `finished_at` | TIMESTAMPTZ | N | `NULL` | 종료 시각 |
+
+### 4-10. `activity_import_items`
+
+Slack/Gmail direct API 수집 결과의 원본 저장용 + 검토용 공통 테이블이다.
+
+| 필드명 | 타입 | 필수 | 기본값 | 설명 |
+|---|---|---:|---|---|
+| `id` | UUID | Y | - | PK |
+| `run_id` | UUID | Y | - | `pipeline_runs.id` FK |
+| `source_type` | TEXT | Y | - | `slack`, `gmail` |
+| `source_ref` | JSONB | Y | `{}` | source-specific dedupe 식별자 |
+| `raw_payload` | JSONB | Y | `{}` | 검토에 필요한 최소 메타데이터 |
+| `candidate_name` | TEXT | N | `NULL` | 원본에서 식별한 강사명 후보 |
+| `candidate_email` | TEXT | N | `NULL` | 원본에서 식별한 이메일 후보 |
+| `activity_at` | TIMESTAMPTZ | N | `NULL` | 활동 시각 |
+| `is_ops_report` | BOOLEAN | Y | `FALSE` | 운영보고 채널 활동 여부 |
+| `is_dispatch_request` | BOOLEAN | Y | `FALSE` | 출강요청 채널 활동 여부 |
+| `match_status` | TEXT | Y | `unmatched` | `matched`, `unmatched`, `ambiguous`, `ignored`, `invalid` |
+| `matched_instructor_id` | UUID | N | `NULL` | `instructors.id` FK |
+| `match_basis` | TEXT | N | `NULL` | `name`, `email`, `channel_map` |
+| `error_reason` | TEXT | N | `NULL` | 미반영 또는 실패 사유 |
+| `created_at` | TIMESTAMPTZ | Y | `NOW()` | 기록 시각 |
+
+설명:
+- `activity_import_items`는 raw source 보존용 테이블이다. Slack/Gmail 원문에서 직접 canonical을 갱신하지 않고, 먼저 이 테이블에 저장한 뒤 `activity_review_registries`로 자동 취합한다.
+- 중복 판정 키는 `source_type + source_ref` 조합을 사용한다.
+- Slack `source_ref`는 `workspace_id`, `channel_id`, `thread_ts` 또는 `message_ts`를 사용한다.
+- Gmail `source_ref`는 `account_email`, `thread_id`, `message_id`를 사용한다.
+- `raw_payload`는 full body dump가 아니라 검토 가능한 최소 메타데이터만 저장한다.
+
+### 4-10-1. `activity_review_registries`
+
+Slack/Gmail activity source를 강사별로 자동 취합한 검토용 레지스트리다.
+
+| 필드명 | 타입 | 필수 | 기본값 | 설명 |
+|---|---|---:|---|---|
+| `id` | UUID | Y | - | PK |
+| `run_id` | UUID | Y | - | `pipeline_runs.id` FK |
+| `registry_key` | TEXT | Y | - | 같은 검토 단위를 묶는 stable key |
+| `source_type` | TEXT | Y | - | `slack`, `gmail` |
+| `source_refs` | JSONB | Y | `[]` | 이 레지스트리를 구성한 원본 참조 목록 |
+| `candidate_name` | TEXT | N | `NULL` | 강사명 후보 |
+| `candidate_email` | TEXT | N | `NULL` | 이메일 후보 |
+| `slack_activity_count` | INTEGER | Y | `0` | Slack activity 취합값 |
+| `email_activity_count` | INTEGER | Y | `0` | Gmail activity 취합값 |
+| `ops_report_activity_count` | INTEGER | Y | `0` | 운영보고 활동 취합값 |
+| `dispatch_request_activity_count` | INTEGER | Y | `0` | 출강요청 활동 취합값 |
+| `last_activity_at` | TIMESTAMPTZ | N | `NULL` | 취합 기준 최근 활동 시각 |
+| `evidence_samples` | JSONB | Y | `[]` | 검토용 근거 샘플 |
+| `match_status` | TEXT | Y | `pending` | `auto_accepted`, `pending`, `approved`, `rejected`, `invalid` |
+| `suggested_instructor_id` | UUID | N | `NULL` | 자동 매칭이 제안한 강사 |
+| `resolved_instructor_id` | UUID | N | `NULL` | 최종 반영 강사 |
+| `resolution_basis` | TEXT | N | `NULL` | `name`, `email`, `channel_map`, `manual_decision` 등 |
+| `created_at` | TIMESTAMPTZ | Y | `NOW()` | 생성 시각 |
+| `updated_at` | TIMESTAMPTZ | Y | `NOW()` | 수정 시각 |
+
+설명:
+- `activity_review_registries`는 사람이 직접 patch하는 테이블이 아니다. `activity_import_items`를 바탕으로 매 실행마다 자동 취합된 reviewable summary다.
+- `auto_accepted`와 `approved` 상태만 `instructors.slack_activity_count`, `email_activity_count`, `ops_report_activity_count`, `dispatch_request_activity_count`, `last_activity_at`에 반영한다.
+- `pending`, `rejected`, `invalid`는 canonical 반영 대상에서 제외한다.
+
+### 4-10-2. `review_decisions`
+
+검토용 레지스트리의 수동 결정만 누적 저장하는 테이블이다.
+
+| 필드명 | 타입 | 필수 | 기본값 | 설명 |
+|---|---|---:|---|---|
+| `id` | UUID | Y | - | PK |
+| `registry_type` | TEXT | Y | - | `satisfaction`, `activity` |
+| `registry_key` | TEXT | Y | - | 대상 레지스트리 key |
+| `decision_type` | TEXT | Y | - | `approve`, `reject`, `override_instructor` |
+| `target_instructor_id` | UUID | N | `NULL` | override 또는 approve 대상 강사 |
+| `note` | TEXT | N | `NULL` | 결정 메모 |
+| `created_by` | TEXT | N | `NULL` | 결정자 |
+| `created_at` | TIMESTAMPTZ | Y | `NOW()` | 기록 시각 |
+
+설명:
+- 사람 판단은 레지스트리 row를 직접 수정하는 대신 `review_decisions`에만 저장한다.
+- 레지스트리는 raw source로부터 재생성 가능해야 하므로, 수동 개입은 decision log 성격의 별도 테이블로만 남긴다.
+- 최신 유효 decision을 적용한 결과가 `approved`, `rejected`, `resolved_instructor_id`로 해석된다.
 
 ## 5. 설정 데이터 구조
 
@@ -383,6 +533,7 @@
 - 운영 메모와 구조화된 인텔리전스는 분리 저장한다.
 - 화면 집계값(`score`, `satisfaction_avg`, `total_courses`)은 계산 결과를 저장하되, 원본 기록도 유지한다.
 - 점수 구성 요소는 별도 테이블 대신 `instructors.score_breakdown` JSONB에 저장하며, 내부 키는 `courses`, `satisfaction`, `slack`, `recency`, `salesmap`, `email`, `ops_channel`로 고정한다.
+- Slack/Gmail direct API 기반 활동성 입력값은 `instructors.slack_activity_count`, `email_activity_count`, `ops_report_activity_count`, `dispatch_request_activity_count`, `last_activity_at`에 저장한다.
 - 만족도 대체 여부는 `instructors.satisfaction_is_imputed`로 명시한다.
 - 순위는 API 응답 시 계산하지 않고 `instructors.rank`에 저장한다.
 - 수동 fee 보정의 기준값은 `fee_fix_configs`를 Source of Truth로 사용한다.

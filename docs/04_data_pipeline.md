@@ -43,16 +43,19 @@
 1. 수집 실행 생성
 2. 소스별 데이터 수집
 3. 소스별 정규화
-4. 강사 동일인 판정 및 병합
-5. 전임강사 및 실습코치 판정 반영
-6. fee 및 단가 이력 정리
-7. 만족도 집계 및 대체값 처리
-8. 운영 인텔리전스 통합
-9. 점수 계산
-10. 검증 및 자동 수정
-11. Railway DB 저장
-12. 마지막 정상 데이터 갱신
-13. 실패 시 fallback 처리
+4. raw/import 테이블 저장
+5. review registry 자동 취합
+6. 자동 반영 가능 항목과 pending 항목 분기
+7. 강사 동일인 판정 및 병합
+8. 전임강사 및 실습코치 판정 반영
+9. fee 및 단가 이력 정리
+10. 만족도 집계 및 대체값 처리
+11. 운영 인텔리전스 통합
+12. 점수 계산
+13. 검증 및 자동 수정
+14. Railway DB 저장
+15. 마지막 정상 데이터 갱신
+16. 실패 시 fallback 처리
 
 ## 3. 데이터 소스 목록
 
@@ -71,7 +74,12 @@
 ## 4. 소스별 접근 방식
 
 ### 4-1. 계약시트
-- 접근 방식: 시트 또는 시트 export 데이터 읽기
+- 접근 방식: Google Sheets API (Service Account)
+- 필수 환경변수: `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_CONTRACTS_SPREADSHEET_ID`
+- Canonical spreadsheet ID: `1QFlQItxBOrnTfF_wvjb5T7fhImbibeK2De4ZFyb0EWA`
+- 대상 worksheet: `gid=158052384`, `gid=1875350219`
+- 두 worksheet는 동일 헤더 매핑을 사용하며, 필드 매핑 계약은 5-1-1절을 따른다.
+- Service Account 메일은 대상 스프레드시트에 Viewer 이상으로 공유되어 있어야 한다.
 - 목적: 출강 이력, 계약 유형, 상세 유형, 강사료 기준 정보, 실습코치 판정 근거, 운영 메모 후보 수집
 
 ### 4-2. 노션
@@ -80,7 +88,10 @@
 - 목적: 강사 기본 프로필, 카테고리, 연락처, 메모, fee_note, 기본 강사료와 프로필 요약/운영 인텔리전스 후보를 채울 수 있는 원문 근거 수집
 
 ### 4-3. 세일즈맵
-- 접근 방식: GitHub release로 배포된 세일즈맵 스냅샷 데이터 읽기
+- 접근 방식: local SQLite snapshot file 읽기
+- 필수 환경변수: `SALESMAP_SNAPSHOT_PATH`
+- 현재 단계의 canonical source는 env로 주입되는 local snapshot file이며, 고정 파일명 자체는 계약으로 삼지 않는다.
+- `SALESMAP_RELEASE_URL`은 후속 자동 다운로드 단계가 생길 때의 배포 경로로만 사용한다.
 - 목적: 딜 정보, 기업명/과정명 보강, 활동 최근성 보강, 일부 단가 참고 정보, 운영 메모 후보 수집
 
 ### 4-4. 슬랙
@@ -142,6 +153,7 @@
 | 특이사항 | `special_notes` | `기타-계약관련 특이사항 기재` | 확정 | 계약 관련 특이사항 원문을 저장한다. |
 | course_id | `course_id` | `강의 코스 ID (숫자만)` | 확정 | 문자열 또는 숫자형 ID로 정규화한다. |
 
+- 실제 계약시트 헤더에는 `강의 일정  \n(ex. ...)`, `기타-계약관련 특이사항 기재\n(*특히 ...)`처럼 개행과 예시 문구가 함께 들어갈 수 있다. collector는 canonical 컬럼 매칭 전에 `첫 개행 이전 문자열만 사용 + 연속 공백 축약 + trim` 규칙으로 헤더를 정규화한다.
 - `계약서 유형 선택`, 두 번째 `세부 유형`, `변경유형`, `계약 담당`, `타임스탬프`, `소속`, `담당자`, `팀장`, `강사 이메일`, `이메일 주소`, `신규강사 여부`, `분할지급 여부`, `법인계약시 취합링크`, `비고`는 현재 v1의 1차 적재 대상 필드에는 직접 매핑하지 않는다.
 - 위 보조 컬럼은 필요 시 `source_ref` 원문 보존 또는 후속 매칭/검증 규칙 입력값으로 사용할 수 있다.
 - 계약시트 `시간당 강사료`는 `teaching_histories.deal_fee_hourly`와 `instructors.base_fee_hourly` fallback 후보가 동시에 참조하는 공통 원천이다.
@@ -200,7 +212,7 @@
 
 #### 5-3-1. 실제 세일즈맵 스냅샷 필드 매핑
 
-사용자 제공 스냅샷 DB `/Users/ga/Downloads/salesmap_latest (1).db`를 기준으로, v1에서 사용하는 세일즈맵 원천은 `deal` 테이블이며 기업명은 `organization` 테이블 join으로 보강한다.
+v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주입되는 local SQLite snapshot file이며, 핵심 원천은 `deal` 테이블이고 기업명은 `organization` 테이블 join으로 보강한다.
 
 | 논리 필드 | 내부 필드 | 실제 소스 | 상태 | 수집 규칙 |
 |---|---|---|---|---|
@@ -217,6 +229,10 @@
 | 조직 식별자 | `source_ref.organization_id` | `deal.organizationId` | 확정 | 기업 조인 추적용 식별자로 저장한다. |
 
 - 현재 확인한 스냅샷에서 강사명이 있는 `deal` row는 534건이다.
+- 세일즈맵 snapshot 파일명은 `salesmap_latest.db`, `salesmap_latest (1).db`처럼 환경마다 달라질 수 있으므로, 파일명 자체를 계약으로 고정하지 않고 `SALESMAP_SNAPSHOT_PATH`를 단일 진실 소스로 사용한다.
+- 세일즈맵 `강사료`는 hourly candidate 분류 기준으로만 해석한다.
+- `10000 < fee <= 3000000` 이면 `hourly-interpretable` 후보로 본다.
+- 위 범위를 벗어나면 총액 또는 특수 금액으로 간주하고 기본 단가 후보로 직접 반영하지 않는다.
 - 강사명이 있는 row 기준 `organization.이름`과 `deal.이름`, `deal.최근 파이프라인 수정 날짜`는 모두 안정적으로 채워져 있다.
 - `deal.교육 주제`는 강사명이 있는 row 기준 실사용 값이 없어 v1 매핑 대상에서 제외한다.
 - 세일즈맵의 `강사료1~5`는 250000 같은 시간당 단가 후보와 7000000, 11920000 같은 총액/특수 금액 후보가 혼재하므로, 기본 단가로 바로 확정하지 않고 보조 fee 정보로만 수집한다.
@@ -227,6 +243,26 @@
 - 활동 건수
 - 최근 활동일
 - 운영 채널 활동량
+
+#### 5-4-1. 슬랙 direct API v1 계약
+
+- 접근 방식은 direct Slack API다. 수집기는 `SLACK_BOT_TOKEN`, `SLACK_WORKSPACE_ID`를 사용한다.
+- v1의 canonical scope는 아래 3개 채널만 사용한다.
+  - 운영보고: `C015YD84VGS`
+  - 출강요청(정백): `C099UH7ACGG`
+  - 출강요청(신동원): `C0AS2VDUXQ8`
+- 운영보고 채널 활동은 `ops_report_activity_count` 후보로 집계한다.
+- 출강요청 채널 활동은 채널 → 강사 매핑을 우선 적용해 `dispatch_request_activity_count` 후보로 집계한다.
+- Slack activity count 단위는 아래와 같다.
+  - 스레드가 있으면 `thread 1개 = activity 1건`
+  - 스레드가 없으면 `message 1개 = activity 1건`
+  - reply 수는 count를 직접 늘리지 않는다.
+  - 단, 스레드 마지막 reply 시각은 `last_activity_at` 계산 후보로 반영할 수 있다.
+- direct API 응답은 즉시 서비스용 필드에 반영하지 않고, 먼저 `activity_import_items`에 저장한다.
+- `activity_import_items`는 `activity_review_registries`로 자동 취합한다.
+- `activity_review_registries`의 `auto_accepted`, `approved` 상태만 서비스용 필드 집계에 반영한다.
+- `activity_import_items.source_ref`는 `workspace_id`, `channel_id`, `thread_ts` 또는 `message_ts`를 사용한다.
+- `activity_import_items.raw_payload`는 `text`, `reply_count`, `latest_reply_at`, 채널 메타 등 검토 가능한 최소 메타데이터만 저장한다. full body dump는 v1 범위에 포함하지 않는다.
 
 ### 5-5. 지메일
 - 강사명 또는 연결 가능한 식별값
@@ -250,6 +286,22 @@
 - `course_id`와 소속은 Slack/Gmail 활동 매칭의 1차 키로 사용하지 않는다.
 - Slack/Gmail는 강사 기본 프로필을 덮어쓰는 소스가 아니라 활동량과 최근 활동일을 보강하는 보조 소스다.
 
+#### 5-5-2. 지메일 direct API v1 계약
+
+- 접근 방식은 direct Gmail API다.
+- 인증 방식은 Google Workspace domain-wide delegation이 아니라 OAuth refresh token 방식을 사용한다.
+- canonical 환경변수는 `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_ACCOUNT_EMAIL`, `GMAIL_TARGET_ADDRESSES`다.
+- `GMAIL_ACCOUNT_EMAIL`은 실제 로그인 가능한 Gmail/Workspace 계정 주소를 사용한다.
+- `GMAIL_TARGET_ADDRESSES`는 해당 계정 mailbox 안에서 검색할 그룹/수신 대상 주소의 comma-separated 목록을 사용한다.
+- Gmail activity count 단위는 `thread 1개 = activity 1건`으로 본다.
+- direct API 응답은 즉시 서비스용 필드에 반영하지 않고, 먼저 `activity_import_items`에 저장한다.
+- `activity_import_items`는 `activity_review_registries`로 자동 취합한다.
+- `activity_review_registries`의 `auto_accepted`, `approved` 상태만 서비스용 필드 집계에 반영한다.
+- 수집기는 authenticated account mailbox에서 `to:`, `cc:`, `deliveredto:` 조건으로 `GMAIL_TARGET_ADDRESSES`를 검색한다.
+- `activity_import_items.source_ref`는 `account_email`, `thread_id`, `message_id`를 사용한다.
+- `activity_import_items.raw_payload`는 `subject`, `snippet`, `from`, `to` 등 검토 가능한 최소 메타데이터만 저장한다. full body dump는 v1 범위에 포함하지 않는다.
+- Gmail v1은 활동량과 최근 활동일만 다룬다. 운영 사실 문장 추출과 `memo_raw` 병합은 별도 canonical 규칙이 정의되기 전까지 구현하지 않는다.
+
 ### 5-6. Google Forms
 - 강사명
 - 만족도 점수
@@ -257,6 +309,15 @@
 - 기업명
 - 과정명
 - 코멘트
+
+#### 5-6-1. 만족도 최소 구현 원칙
+
+- 만족도 source는 demo discovery 우선순위를 그대로 따르되, 실제 구현 구조는 `raw 저장 -> review registry -> canonical 반영` 3단계로 고정한다.
+- raw source는 `satisfaction_import_items`에 저장한다.
+- `satisfaction_import_items`는 `satisfaction_review_registries`로 자동 취합한다.
+- `satisfaction_review_registries`의 `auto_accepted`, `approved` 상태만 `satisfaction_records`와 `instructors.satisfaction_*` 집계에 반영한다.
+- `pending`, `rejected`, `invalid`는 service 반영 대상이 아니라 검토 대상으로만 남긴다.
+- 사람이 판단이 필요한 경우 registry 자체를 편집하지 않고 `review_decisions`에만 결정을 저장한다.
 
 ### 5-7. 전임강사 JSON
 - 강사명
@@ -307,7 +368,7 @@
 |---|---|---|---|---|
 | 운영 메모 | `memo_raw` 후보 | `data/ops-notes-hardcoded.json` | 확정 | 수동 확정 메모를 강사명 기준으로 읽어 후보에 포함한다. |
 | 운영 메모 | `memo_raw` 후보 | 계약시트 `special_notes` (`기타-계약관련 특이사항 기재`) | 확정 | 3자 초과 항목만 수집하고 중복 제거 후 후보에 포함한다. |
-| 운영 메모 | `memo_raw` 후보 | `incremental_merge.py`의 Gmail 운영 사실 삽입 로직 | 확정 | Gmail에서 확인된 운영 사실 문장을 후보에 포함한다. |
+| 운영 메모 | `memo_raw` 후보 | `incremental_merge.py`의 Gmail 운영 사실 삽입 로직 | 보류 | legacy reference로만 유지한다. direct API v1에서는 운영 사실 문장 추출 규칙이 정리되기 전까지 재구현하지 않는다. |
 | 운영 메모 | `memo_raw` 후보 | `incremental_merge.py`의 세일즈맵 딜 변동 삽입 로직 | 확정 | 세일즈맵 딜 변동 관련 문장을 후보에 포함한다. |
 
 - 운영 메모 후보는 중복 제거 후 하나의 원문 텍스트 블록으로 합쳐 `memo_raw`에 저장한다.
@@ -315,6 +376,54 @@
 - 10자 미만 노트
 - `사업자번호`, `사업자등록`, `상호명`, `법인계약`, `통장사본`, `모두싸인`, `URL`이 포함된 노트
 - `주요 고객사:`, `슬랙 하이라이트:`, `평균 만족도`로 시작하는 노트
+
+#### 5-8-2. `data/ops-notes-hardcoded.json` 실제 스키마
+
+운영 메모 hardcoded JSON의 canonical 소스 파일은 `data/ops-notes-hardcoded.json`이다.
+
+| 논리 필드 | 내부 필드 | 실제 JSON 경로 | 상태 | 수집 규칙 |
+|---|---|---|---|---|
+| 버전 | 메타 | `version` | 확정 | JSON 스키마 버전을 나타낸다. |
+| 갱신일 | 메타 | `updated_at` | 확정 | 수동 갱신 기준 날짜 문자열을 저장한다. |
+| 운영 메모 목록 | `memo_raw` 후보 원천 | `notes` | 확정 | 배열 단위로 읽는다. |
+| 강사명 | 매칭 키 | `notes[].name` | 확정 | 강사명 exact match 기준으로 기존 `instructors.name`과 연결한다. |
+| 운영 메모 원문 | `memo_raw` 후보 | `notes[].memo` | 확정 | 수동 확정 메모 원문 문자열을 저장한다. |
+| 소스 참조값 | `source_ref` | `notes[].source_ref` | 선택 | JSON 오브젝트로 저장한다. `03_data_model.md` 4-2절, 4-4절, 4-6절의 `source_ref` (JSONB) 구조와 동일한 형태를 따른다. 내부 필드 구성은 자유이되 원문 추적이 가능해야 한다. 없으면 필드 자체를 생략한다. |
+
+- 파일 예시 (빈 초기 상태):
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-04-15",
+  "notes": []
+}
+```
+
+- `source_ref` 오브젝트 사용 예시 (선택):
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-04-15",
+  "notes": [
+    {
+      "name": "홍길동",
+      "memo": "임원 워크숍 경험 풍부, 사전 장비 체크 필요",
+      "source_ref": {
+        "origin": "ops_meeting_notes",
+        "ref_id": "2026-Q2-ops-review",
+        "captured_at": "2026-04-10"
+      }
+    }
+  ]
+}
+```
+
+- 로딩 시 `notes` 배열을 읽어 강사명 exact match 기준으로 기존 `instructors` 레코드와 연결한다.
+- 매칭되지 않는 `name`은 현재 파일럿 범위에서 운영 검토 대상으로 남기고 새 강사를 생성하지 않는다.
+- `memo` 원문은 5-8-1절 및 6절의 운영 메모 정규화/필터 규칙을 그대로 적용한 뒤 후보에 포함한다.
+- 초기 상태 또는 데이터 부재 시 `notes: []` 빈 배열 파일로 시작한다.
 
 ## 6. 정규화 단계
 
@@ -325,6 +434,7 @@
 - alias 자동 치환은 하지 않음
 - 날짜는 가능한 경우 `DATE` 또는 `TIMESTAMPTZ`로 변환
 - 금액 문자열은 숫자 금액으로 정규화
+- 계약시트 헤더는 canonical 컬럼 매칭 전에 `첫 개행 이전 문자열만 사용 + 연속 공백 축약 + trim` 규칙으로 정규화한다.
 - multi_select 형태의 소속정보는 순서를 유지한 채 `, `로 join해 `affiliation`에 저장한다.
 - multi_select 형태의 카테고리는 순서를 유지한 배열 그대로 `categories`에 저장한다.
 - 대표 연락처는 `이메일 주소`, `연락처`만 구조화 필드로 저장하고, `이메일 주소 (2)`, `연락처2`는 Notion 원문 `메모` 블록에 라벨을 붙여 보존한다.
@@ -335,6 +445,22 @@
 - 운영 메모 후보 중 10자 미만 노트는 제거한다.
 - 운영 메모 후보 중 `사업자번호`, `사업자등록`, `상호명`, `법인계약`, `통장사본`, `모두싸인`, `URL`이 포함된 노트는 제거한다.
 - 운영 메모 후보 중 `주요 고객사:`, `슬랙 하이라이트:`, `평균 만족도`로 시작하는 노트는 제거한다.
+- 계약시트 `강의 일정` 날짜 추출의 최소 지원 포맷은 아래와 같다.
+- `YYYY-MM-DD`, `YYYY.MM.DD`, `YYYY/MM/DD`
+- `YYYY년 M월 D일`
+- 위 패턴으로 파싱 가능한 날짜가 여러 개면 원문 등장 순서 기준 첫 날짜를 `start_date`, 마지막 날짜를 `end_date`로 사용한다.
+- 위 패턴으로 파싱 가능한 날짜가 없으면 `start_date`, `end_date`는 `NULL`로 두고 `date_label` 원문만 보존한다.
+
+### 6-1. 원본 저장용 / 검토용 / 서비스 반영용 구분
+
+- `4-4` 만족도와 `4-5` Slack/Gmail activity는 공통으로 아래 3단계를 따른다.
+  1. 원본 저장용: raw source를 `*_import_items`에 저장한다.
+  2. 검토용: raw source를 강사별/시트별 review registry로 자동 취합한다.
+  3. 서비스 반영용: `auto_accepted` 또는 `approved` 상태만 canonical 테이블과 집계 필드에 반영한다.
+- review registry는 사람이 직접 patch하는 본체가 아니라, raw source에서 재생성 가능한 자동 취합 결과다.
+- 사람이 개입해야 하는 경우에도 registry 자체를 수정하지 않고 `review_decisions`에만 결정(`approve`, `reject`, `override_instructor`)을 저장한다.
+- `pending`, `rejected`, `invalid` 상태는 서비스용 canonical 반영 대상에서 제외한다.
+- 이 구조의 목적은 demo의 검토 가능성을 유지하되, raw source를 다시 hardcoded JSON patch 본체로 되돌리지 않는 데 있다.
 
 ## 7. 마스터 레코드 매핑
 
@@ -347,22 +473,32 @@
 - `specialties`는 현재 Notion DB에서 수집하지 않는다.
 - `memo_raw`는 `data/ops-notes-hardcoded.json`, 계약시트 `special_notes`, `incremental_merge.py`의 Gmail 운영 사실, 세일즈맵 딜 변동 문장을 합성해 채운다.
 - 계약시트, 세일즈맵, 지메일, 슬랙은 보조 소스로만 사용한다.
+- Slack/Gmail direct API는 `activity_import_items`에 raw source를 저장한 뒤 `activity_review_registries`로 자동 취합한다.
+- `activity_review_registries`의 `auto_accepted` 또는 `approved` 상태만 `instructors.slack_activity_count`, `email_activity_count`, `ops_report_activity_count`, `dispatch_request_activity_count`, `last_activity_at`에 반영한다.
+- `pending`, `rejected`, `invalid` activity registry는 서비스용 필드에 반영하지 않고 검토 대상으로만 남긴다.
+- Slack/Gmail direct API v1은 `memo_raw`를 직접 갱신하지 않는다.
 
 ### 7-2. 출강 이력 매핑
 - `teaching_histories`는 계약시트 기준으로 생성한다.
 - `teaching_histories.deal_fee_hourly`는 해당 출강 건에서 확인된 시간당 단가를 저장한다.
 - 계약시트에서는 `시간당 강사료` 문자열에서 쉼표, 공백, `원`을 제거해 정수로 파싱하고, `10000` 이하면 `NULL`로 둔다.
+- 계약시트 단가 파싱값이 `10000000`을 초과하면 비정상 concat 값으로 간주해 `NULL`로 둔다. 예: `165,000/150,000`처럼 복수 단가가 구분자 제거 후 `165000150000`으로 합쳐진 경우.
 - Gmail 수동 확인값과 초기 seed 하드코딩 값도 같은 의미의 시간당 단가로 `teaching_histories.deal_fee_hourly`에 넣을 수 있다.
 - 세일즈맵은 기업명, 과정명, course_id 보강에만 사용한다.
+- 세일즈맵은 `instructors`에 별도 `company_name`, `course_id` 필드를 만들지 않는다.
+- 세일즈맵 보강은 기존 `teaching_histories` 행 중 `(instructor_db_id, course_id)`가 매칭되는 행에만 `company_name`, `course_name`을 채우는 방식으로 처리한다.
 
 ### 7-3. 단가 매핑
 - 일반 강사의 기본 단가 `base_fee_hourly`는 `fee_fix_configs > 노션 기본 강사료 또는 fee_note > 세일즈맵 딜에서 확인된 금액 > 계약시트 시간당 강사료 (col T)` 우선순위로 결정한다.
 - 전임강사의 기본 단가 `base_fee_hourly`는 위 우선순위를 따르지 않고, 노션 기본 강사료 또는 fee_note만 기준으로 사용한다.
 - 특수 금액은 기본 단가에 반영하지 않는다.
 - 단가 변동 이력은 노션 fee_note, 세일즈맵 확인 금액, 계약 데이터, 운영 보정값을 조합해 `fee_histories`로 저장한다.
+- 단, `fee_histories` 모델이 실제 스키마에 반영되기 전까지는 세일즈맵 fee 후보를 DB에 적재하지 않고 pipeline summary 집계로만 남긴다.
 
 ### 7-4. 만족도 매핑
-- 개별 만족도는 `satisfaction_records`에 저장한다.
+- 외부 만족도 source row는 먼저 `satisfaction_import_items`에 저장한다.
+- `satisfaction_import_items`는 `satisfaction_review_registries`로 자동 취합한다.
+- `satisfaction_review_registries`의 `auto_accepted` 또는 `approved` 상태만 `satisfaction_records`에 반영한다.
 - 강사별 평균 및 건수는 `instructors.satisfaction_avg`, `instructors.satisfaction_count`에 반영한다.
 - 결측 시 중앙값 대체 여부는 `instructors.satisfaction_is_imputed`에 저장한다.
 
@@ -467,12 +603,16 @@
 ## 13. 만족도 처리 절차
 
 ### 13-1. 수집 및 적재
-- Google Forms 등 외부 소스에서 수집한 만족도는 `satisfaction_records`에 저장한다.
+- Google Forms, Gmail 만족도 공유, 시트 요약 source에서 수집한 만족도는 먼저 `satisfaction_import_items`에 저장한다.
+- `satisfaction_import_items`는 source별 raw 근거 보존용이며, 사람이 직접 수정하지 않는다.
+- raw source는 `satisfaction_review_registries`로 자동 취합한다.
+- `satisfaction_review_registries`의 `auto_accepted`, `approved` 상태만 `satisfaction_records`에 저장한다.
 - 앱에서 작성된 만족도도 동일한 구조로 저장한다.
 
 ### 13-2. 집계
 - 강사별 평균값은 `instructors.satisfaction_avg`에 반영한다.
 - 건수는 `instructors.satisfaction_count`에 반영한다.
+- `pending`, `rejected`, `invalid` 만족도 registry는 집계에서 제외한다.
 - 앱에서 만족도 작성이 성공하면 해당 강사의 만족도 집계값은 같은 요청 흐름 안에서 즉시 재계산한다.
 
 ### 13-3. 결측치 처리
@@ -495,11 +635,11 @@
 ### 15-1. 계산 입력값
 - 총 출강 횟수
 - 만족도 평균 또는 중앙값 대체값
-- 슬랙 활동량
+- 슬랙 활동량 (`instructors.slack_activity_count`)
 - 최근 활동일
 - 세일즈맵 딜 활동량
-- 이메일 활동량
-- 운영 채널 활동량
+- 이메일 활동량 (`instructors.email_activity_count`)
+- 운영 채널 활동량 (`instructors.ops_report_activity_count + dispatch_request_activity_count`)
 
 ### 15-2. 계산 순서
 1. 강사별 활동 집계 생성
@@ -538,6 +678,7 @@
 ### 16-3. 처리 방식
 - 자동 수정 가능한 항목은 정제 후 반영한다.
 - `teaching_histories.deal_fee_hourly`는 숫자 정규화 후 `10000` 이하 값을 `NULL` 처리한다.
+- 계약시트 `시간당 강사료` 파싱값이 `10000000`을 초과하면 비정상 concat 또는 총액성 노이즈로 보고 `NULL` 처리한다.
 - 검증 이슈 기록 시 `severity`, `message`, `before_value`, `after_value`, `auto_fixed`를 함께 남긴다.
 - 경고 수준 이슈는 `validation_issues`에 남긴다.
 - 자동 수정이 불가능한 항목은 운영 검토 대상으로 남긴다.
@@ -549,12 +690,17 @@
   - `instructors`
   - `teaching_histories`
   - `fee_histories`
+  - `satisfaction_import_items`
   - `satisfaction_records`
+  - `satisfaction_review_registries`
   - `instructor_intelligence`
   - `source_links`
   - `validation_issues`
   - `pipeline_runs`
   - `source_sync_logs`
+  - `activity_import_items`
+  - `activity_review_registries`
+  - `review_decisions`
   - `fulltime_instructor_configs`
   - `fee_fix_configs`
   - `practice_coach_rules`
@@ -576,6 +722,7 @@
 - 변경된 강사 집합을 별도로 추적하고, 점수 재계산과 후처리는 영향받은 강사 중심으로 수행한다.
 - Gmail, 세일즈맵, 슬랙처럼 소스별 증분 payload는 분리된 입력 단위로 관리한다.
 - 중복 판정 없이 무조건 append하지 않고, 증분 이력 추가 전 기존 데이터와 비교한다.
+- raw source와 review registry는 분리한다. 증분 실행 시 raw/import 테이블은 source-specific key 기준 upsert 또는 append하고, review registry는 raw source + `review_decisions`를 바탕으로 다시 계산 가능해야 한다.
 
 - 반드시 보완할 점:
 - 증분 병합은 canonical 스키마 경로만 사용한다. 운영 메모는 ad-hoc `operational_notes`가 아니라 문서에 정의된 `memo_raw` 생성 규칙 또는 `tacit_knowledge.operational_notes` 같은 canonical 경로로만 반영한다.
@@ -585,6 +732,7 @@
 - 운영 메모 후보는 저장 전에 중복 제거와 민감정보 필터를 반드시 적용한다. 필터 규칙은 5-8-1과 6절의 운영 메모 정규화 규칙을 따른다.
 - 최근성 계산은 임의의 최근 5건 slice 같은 비결정적 규칙에 의존하지 않고, 검증 가능한 전체 활동 이력 또는 canonical `last_activity_at` 집계값을 사용한다.
 - 증분 병합 로직은 날짜, 파일 경로, 출력 필드명을 하드코딩한 스크립트 복제로 늘리지 않는다. 하나의 canonical 구현에서 입력 payload만 교체 가능해야 한다.
+- review registry는 사람이 직접 수정하는 patch 저장소가 아니다. 사람이 판단한 내용은 `review_decisions`에만 저장하고, registry는 raw source와 decision 적용 결과로 재생성 가능해야 한다.
 - refresh 결과는 파일 overwrite만으로 끝내지 않고 `pipeline_runs`, `source_sync_logs`, 필요 시 `validation_issues`에 함께 기록한다.
 
 ## 19. 실패 처리

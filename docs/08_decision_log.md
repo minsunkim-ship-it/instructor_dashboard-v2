@@ -389,3 +389,262 @@
   - `src/lib/pipeline/normalizer.ts`
   - `src/lib/pipeline/store.ts`
   - `src/app/api/pipeline/notion/route.ts`
+
+#### 머지 충돌 검증 파일럿: Track C / Track D 병렬 구현
+- 결정:
+  - 파일럿 3 범위를 아래 3개로 확정하고 구현했다.
+    1. Track C: `GET /api/instructors`의 검색/필터/정렬 구현
+    2. Track D: 검색 UI, 카테고리 필터 UI, 정렬 드롭다운 UI 구현
+    3. 두 브랜치의 순차 머지와 git 충돌 여부 검증
+  - Track C 구현 결과는 `main` baseline에 유지한다.
+  - Track D 구현 결과도 `main` baseline에 유지한다.
+  - 파일럿 3 결과물은 검증 전용 임시 코드로 폐기하지 않고, 문서 계약을 충족하는 baseline feature로 채택한다.
+- 검증 결과:
+  - Track C 브랜치는 `src/app/api/instructors/route.ts`만 수정했다.
+  - Track D 브랜치는 `src/components/InstructorList.tsx`, `src/app/page.tsx`만 수정했다.
+  - 두 브랜치가 수정한 파일 집합의 교집합은 0건이었다.
+  - `src/types/api.ts`, `prisma/schema.prisma` 같은 공유 파일 수정은 발생하지 않았다.
+  - Track C → `main`, Track D → `main` 순차 머지 시 git 충돌 0건이었다.
+  - 머지 후 `query`, `category`, `sort`, `limit`, `empty`, `INVALID_SORT`, `INVALID_LIMIT` 동작을 모두 검증했다.
+  - `09_work_split.md` 10절과 13절의 파일 책임 경계가 git 수준에서도 유효함을 확인했다.
+- 결론:
+  - Track C / Track D는 현재 문서 계약과 파일 경계만 지키면 병렬 구현 및 자동 머지가 가능하다.
+  - 본 병렬 구현 전 검증 웨이브는 파일럿 1, 2, 3 통과로 완료됐다.
+  - 다음 단계는 본 병렬 구현 `Wave 1` 범위 설계다.
+- 반영 대상:
+  - `src/app/api/instructors/route.ts`
+  - `src/components/InstructorList.tsx`
+  - `src/app/page.tsx`
+  - `10_execution_plan.md`
+
+#### Pilot 4-2: 전임강사 JSON + 운영 메모 hardcoded JSON canonical 계약 확정
+- 결정:
+  - 운영 메모 hardcoded 소스 파일의 canonical 경로는 `data/ops-notes-hardcoded.json`으로 확정한다.
+  - JSON 스키마는 `04_data_pipeline.md` 5-8-2절을 단일 진실 소스로 사용한다.
+    - top-level: `version`, `updated_at`, `notes`
+    - `notes[]`: `name`(필수, exact match 키), `memo`(필수, 원문), `source_ref`(선택)
+  - 초기 또는 데이터 부재 시 `{ "version": 1, "updated_at": "<date>", "notes": [] }`로 시작한다.
+  - 전임강사 JSON은 `prisma/fulltime_instructors.json`을 그대로 직접 읽어 `is_fulltime`을 갱신하며, 본 파일럿 범위에서는 `fulltime_instructor_configs` 테이블을 사용하지 않고 JSON 직접 로딩 방식만 사용한다. (`04_data_pipeline.md` 5-7-1절 `또는 동등한 내부 설정 구조` 허용 범위에 해당)
+  - `memo_raw`는 Notion 파일럿에서 주입된 보조 이메일/연락처 appendix를 보존하기 위해 **기존 값 + hardcoded 운영 메모 비파괴 병합** 방식으로만 갱신한다. 덮어쓰기를 금지한다.
+  - 병합 규칙:
+    - 기존 `memo_raw`에 이미 동일한 메모 라인이 포함돼 있으면 중복 추가하지 않는다.
+    - 5-8-1절 및 6절의 운영 메모 필터 규칙(10자 미만, 민감 키워드, 시작 패턴 제외)을 hardcoded note에도 동일하게 적용한다.
+  - `is_fulltime` 판정은 `01_core_policy.md` 4절 기준 `name` exact match만 사용한다.
+  - 본 파일럿은 pipeline 실행 단위로 `pipeline_runs` 1건을 기록하고, 각 소스(전임강사 JSON, 운영 메모 JSON)별로 `source_sync_logs` 1건씩을 기록한다.
+  - 소스별 엔드포인트는 `04_data_pipeline.md` 21-2절에 따라 `POST /api/pipeline/fulltime`, `POST /api/pipeline/ops-notes`로 분리한다.
+- 반영 문서:
+  - `04_data_pipeline.md` (5-8-2절 신설)
+  - `08_decision_log.md`
+- 반영 대상:
+  - `data/ops-notes-hardcoded.json`
+  - `src/lib/pipeline/fulltime-loader.ts`
+  - `src/lib/pipeline/ops-notes-loader.ts`
+  - `src/lib/pipeline/config-applier.ts`
+  - `src/app/api/pipeline/fulltime/route.ts`
+  - `src/app/api/pipeline/ops-notes/route.ts`
+
+#### Pilot 4-1 선행 Track A mini-prep: `pipeline_runs`, `source_sync_logs` 스키마 추가
+- 결정:
+  - Pilot 4-1(계약시트 단일 소스 수집 검증) 본 실행 전에 파이프라인 실행/소스 수집 로그 저장에 필요한 최소 엔티티만 먼저 스키마에 반영한다.
+  - 반영 범위는 `03_data_model.md` 4-8절(`pipeline_runs`), 4-9절(`source_sync_logs`) 필드 정의 그대로이며, 문서에 없는 필드는 추가하지 않는다.
+  - `run_type`, `status`, `source_type`은 문서가 TEXT로 정의하므로 Prisma enum 대신 `String`으로 매핑한다.
+  - `SourceSyncLog.runId`는 `PipelineRun.id`를 참조하는 FK로 구성하며, Prisma 요건상 `PipelineRun.sourceSyncLogs` back-relation만 최소 범위로 추가한다.
+  - `practice_coach_rules`, `fulltime_instructor_configs`, `fee_histories` 확장, status/refresh API, 계약시트 수집 로직, 세일즈맵/슬랙/지메일/Google Forms 관련 모델은 이번 선행 작업 범위에서 제외한다.
+  - 스키마 반영은 migrations 디렉토리가 없는 현 운영 방식에 맞춰 `prisma db push`로 Railway DB에 직접 적용한다.
+- 검증 결과:
+  - `npx prisma generate` 성공 (Prisma Client v6.19.3 재생성)
+  - `npx prisma db push` 성공 (Railway DB `public` 스키마 sync, 11.71s)
+  - Smoke insert 성공:
+    - `pipeline_runs` 단건 insert OK
+    - `source_sync_logs` FK 연결 insert OK
+    - `include: { sourceSyncLogs: true }` 관계 쿼리 OK
+    - 테스트 레코드는 즉시 삭제해 실데이터 오염 없음
+  - `npm run lint` 성공 (ESLint v9 무출력 = 통과)
+  - `npm run build` 성공 (`Compiled successfully`, 기존 6개 라우트 모두 정상 빌드)
+  - 기존 모델(`Instructor`, `TeachingHistory`, `SatisfactionRecord`, `ScorePolicyVersion`) 및 기존 API 라우트와 충돌 없음
+- 반영 대상:
+  - `prisma/schema.prisma` (`PipelineRun`, `SourceSyncLog` 모델 추가)
+  - Railway PostgreSQL `public` 스키마 (`pipeline_runs`, `source_sync_logs` 테이블 생성)
+- 참고:
+  - 본 작업은 Pilot 4-1 본 실행의 Blocker B2(로그 테이블 부재) 해소용 최소 선행 작업이며, Pilot 4-1 본 실행에 필요한 나머지 blocker(B1: 계약시트 canonical 원천 미정의, B3: `10_execution_plan.md`에 Pilot 4-1 미등재)는 여전히 해소되지 않았다.
+
+#### Pilot 4-1: 계약시트 Google Sheets API 외부 수집 검증 완료
+- 결정:
+  - 계약시트 canonical source는 Google Sheets API(Service Account)이며, spreadsheet `1QFlQItxBOrnTfF_wvjb5T7fhImbibeK2De4ZFyb0EWA`의 `gid=158052384`, `gid=1875350219` 두 worksheet를 함께 수집한다.
+  - `company_name`은 계약시트 직접 컬럼이 없으므로 `NULL`로 유지한다.
+  - `instructors.name` exact match 실패 행은 최소 instructor 레코드(`name`, `display_name = name`)를 생성하는 B안으로 처리한다.
+  - `teaching_histories` dedupe는 `source_ref.spreadsheet_id + worksheet_gid + row_number` 조합으로 처리한다.
+- 검증 결과:
+  - 두 worksheet 총 4,604행을 수집했고, 2,468건을 `teaching_histories`에 적재했다.
+  - `instructors.total_courses`, `recent_courses_6mo` 집계는 405명에 대해 갱신됐다.
+  - `pipeline_runs` 1건, `source_sync_logs` 2건이 worksheet별로 기록됐다.
+  - `GET /api/instructors`, `GET /api/instructors/{id}`에서 `total_courses`, `recent_courses_6mo`, `teaching_history` 반영을 확인했다.
+- 추가로 문서에 반영한 튜닝 포인트:
+  - 실제 계약시트 헤더는 개행과 예시 문구를 포함할 수 있으므로, canonical 매칭 전에 `첫 개행 이전 + 공백 축약 + trim` 정규화를 적용한다.
+  - 계약시트 `시간당 강사료`는 `10000` 이하뿐 아니라 `10000000` 초과 비정상 concat 값도 `NULL` 처리한다.
+  - `강의 일정` 날짜 추출의 최소 지원 포맷은 `YYYY-MM-DD`, `YYYY.MM.DD`, `YYYY/MM/DD`, `YYYY년 M월 D일`로 명시한다.
+- 후속 개선 메모:
+  - 실데이터의 `강의 일정` 표현 다양성으로 날짜 파싱 커버리지는 아직 제한적이며, 추가 포맷 카탈로그 보강 여지가 있다.
+  - 현재 구현은 행 단위 DB roundtrip이 많아 실행 시간이 길다. 성능 최적화는 후속 과제로 남긴다.
+
+#### Pilot 4-3: 세일즈맵 스냅샷 외부 수집 검증 완료
+- 결정:
+  - 현재 단계의 세일즈맵 canonical source는 env `SALESMAP_SNAPSHOT_PATH`로 주입되는 local SQLite snapshot file로 확정한다.
+  - `SALESMAP_RELEASE_URL`은 후속 자동 다운로드 단계가 생길 때의 배포 경로로만 남겨두고, Pilot 4-3 직접 실행에서는 사용하지 않는다.
+  - 세일즈맵은 새 강사를 생성하지 않고 `instructors.name` exact match 되는 기존 강사만 보강한다.
+  - 세일즈맵의 기업명/과정명 보강은 `instructors`에 새 필드를 만들지 않고 기존 `teaching_histories` 행 중 `(instructor_db_id, course_id)`가 매칭되는 행에만 반영한다.
+  - 세일즈맵 `강사료`는 기본 단가로 직접 확정하지 않고 `10000 < fee <= 3000000` 구간일 때만 hourly candidate로 분류한다.
+  - `fee_histories` 모델이 실제 스키마에 반영되기 전까지 세일즈맵 fee 후보는 DB에 적재하지 않고 pipeline summary 집계로만 남긴다.
+- 검증 결과:
+  - 강사명 있는 `deal` 531건, slot unpivot 793건을 수집했다.
+  - exact match 강사 187명에 대해 `last_activity_at`를 갱신했다.
+  - 기존 `teaching_histories` 1,100건의 `company_name`, 1,040건의 `course_name`을 보강했다.
+  - `pipeline_runs` 1건, `source_sync_logs` 1건을 성공 상태로 기록했다.
+  - `GET /api/instructors`, `GET /api/instructors/{id}`에서 보강 결과를 확인했다.
+- 후속 개선 메모:
+  - `SALESMAP_SNAPSHOT_PATH`를 `02_system_architecture.md` canonical env 목록에 반영했다.
+  - 세일즈맵 fee 후보를 실제 이력 테이블에 적재하려면 `fee_histories` 모델의 스키마 반영이 먼저 필요하다.
+
+#### Pilot 4-5 v1: Slack/Gmail activity-only direct API 계약 확정
+- 결정:
+  - Slack/Gmail v1은 direct API로 수집하되, live 응답을 바로 서비스용 필드에 반영하지 않고 먼저 DB 중간 저장본 `activity_import_items`에 저장한다.
+  - `activity_import_items`는 하나의 공통 테이블로 사용하며, `source_type`, `source_ref`, `raw_payload`, `candidate_name`, `candidate_email`, `activity_at`, `match_status`, `matched_instructor_id`, `match_basis`, `error_reason`를 공통 구조로 갖는다.
+  - 중복 판정 키는 `source_type + source_ref` 조합을 사용한다.
+  - 자동 반영 가능한 `matched` activity만 서비스용 필드에 반영하고, `unmatched`, `ambiguous`, `invalid`는 검토 대상으로 남긴다. 사람 승인 후 반영 구조는 v1 범위에 포함하지 않는다.
+  - 서비스 반영용 canonical 필드는 아래 5개로 확정한다.
+    - `slack_activity_count`
+    - `email_activity_count`
+    - `ops_report_activity_count`
+    - `dispatch_request_activity_count`
+    - `last_activity_at`
+  - Slack count 규칙은 `스레드가 있으면 thread 1개 = activity 1건`, 스레드가 없으면 `message 1개 = activity 1건`으로 확정한다. reply 수는 count를 직접 늘리지 않지만, 스레드 마지막 reply 시각은 `last_activity_at` 계산 후보로 사용한다.
+  - Gmail count 규칙은 `thread 1개 = activity 1건`으로 확정한다.
+  - Slack v1 canonical scope는 아래 3개 채널로 제한한다.
+    - 운영보고: `C015YD84VGS`
+    - 출강요청(정백): `C099UH7ACGG`
+    - 출강요청(신동원): `C0AS2VDUXQ8`
+  - 출강요청 활동은 일반 채널 목록 집계가 아니라 `channel_id -> instructor name` 전용 매핑을 우선 적용한다.
+  - Slack 인증은 `SLACK_BOT_TOKEN`, `SLACK_WORKSPACE_ID`를 사용한다.
+  - Gmail 인증은 Google Workspace domain-wide delegation이 아니라 OAuth refresh token 방식으로 확정하며, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_ACCOUNT_EMAIL`, `GMAIL_TARGET_ADDRESSES`를 사용한다.
+  - Gmail v1은 그룹 주소 자체로 로그인하지 않고, 실제 로그인 가능한 계정 mailbox에서 `GMAIL_TARGET_ADDRESSES`로 수신된 thread를 검색한다.
+  - Slack/Gmail v1은 활동량과 최근 활동일만 다루며, 원문 body 기반 `memo_raw` 갱신과 LLM 구조화는 별도 canonical 규칙이 정의될 때까지 범위에서 제외한다.
+
+### 2026-04-16
+
+#### Pilot 4-5 v2: Slack/Gmail 증분 수집(checkpoint + upsert) 전환
+- 결정:
+  - `activity_import_items`에 `source_ref_key` TEXT 필드를 추가하고, `(source_type, source_ref_key)` unique index를 둔다.
+  - `source_checkpoints` 테이블을 신설한다: `source_type`, `scope_key`, `checkpoint_json` (JSONB), `last_synced_at`, `created_at`, `updated_at`, `(source_type, scope_key)` unique.
+  - Slack checkpoint scope_key: `slack:channel:{channelId}`. checkpoint_json: `{ last_seen_ts }`.
+  - Gmail checkpoint scope_key: `gmail:target:{targetAddress}`. checkpoint_json: `{ last_internal_date_ms }`.
+  - Slack incremental: `conversations.history` `oldest` = `last_seen_ts - overlap_seconds`. overlap_seconds 기본값 600초 (보수적).
+  - Gmail incremental: `after:<epoch_seconds>` 쿼리 사용. epoch는 `last_internal_date_ms / 1000`.
+  - `activity_import_items`는 insert-only가 아니라 `(source_type, source_ref_key)` 기준 upsert: 없으면 insert, 있으면 update.
+  - aggregate 재계산은 이번 실행에서 insert/update된 matched 아이템이 영향준 강사만 대상. idempotent하게 해당 강사의 전체 matched items 기준 recount.
+  - `?mode=reconcile` query param으로 checkpoint 무시 full backfill을 지원한다.
+  - Slack incremental 한계: `conversations.history` oldest는 top-level 메시지 ts 기준이므로, overlap 범위 밖의 오래된 thread에 새 reply가 달린 경우 놓칠 수 있다. 주기적 reconcile(`?mode=reconcile`)로 보완해야 한다.
+  - score 재계산, memo_raw, full body dump, LLM 구조화는 여전히 v2 범위 밖이다.
+- 반영 문서:
+  - `08_decision_log.md`
+- 반영 대상:
+  - `prisma/schema.prisma` (ActivityImportItem.sourceRefKey, SourceCheckpoint 모델)
+  - `src/lib/pipeline/slack-activity-collector.ts` (incremental 수집)
+  - `src/lib/pipeline/gmail-activity-collector.ts` (incremental 수집)
+  - `src/lib/pipeline/activity-applier.ts` (upsert + 부분 aggregate)
+  - `src/app/api/pipeline/slack/route.ts` (checkpoint 읽기/쓰기)
+  - `src/app/api/pipeline/gmail/route.ts` (checkpoint 읽기/쓰기)
+
+#### Wave 1 범위 확정 및 실행 방식
+- 결정:
+  - Wave 1 범위를 B(Must-have + Should-have)로 확정했다.
+  - Must-have: 상세 패널 UI, 만족도 작성 UI, page.tsx 레이아웃 연결, GET /api/status, POST /api/refresh, 누락 스키마 보강 7개 모델
+  - Should-have: 실습코치 3-Layer 판정, Fee 우선순위 체인 + 특수금액 분리, fee_histories 적재, Fallback 배너 UI
+  - 제외(후속): 운영 인텔리전스 LLM 생성, validation_issues 17개 규칙 전체, 만족도 외부 수집(Google Forms)
+  - 실행 방식은 문서 주도 개발을 따른다. 구현 전 `11_wave1_tasks.md`에 태스크를 정의하고, 문서 기준으로 검증한다.
+- 반영 문서:
+  - `00_docs_index.md` (Read Order, Current Phase, File Roles, How To Use, Update Rule 업데이트)
+  - `10_execution_plan.md` (Wave 1 웨이브 정의, 실행 규칙 추가)
+  - `11_wave1_tasks.md` (신규)
+
+#### Wave 1 스키마 보강: 7개 누락 모델 추가
+- 결정:
+  - `03_data_model.md`에 정의되어 있으나 Prisma 스키마에 반영되지 않은 7개 모델을 추가하고 Railway DB에 반영했다.
+  - 추가 모델: `InstructorIntelligence`, `SourceLink`, `ValidationIssue`, `FeeHistory`, `FulltimeInstructorConfig`, `FeeFixConfig`, `PracticeCoachRule`
+  - `Instructor` 모델에 back-relation 추가: `instructorIntelligence`(1:1), `sourceLinks`(1:N), `validationIssues`(1:N), `feeHistories`(1:N)
+  - `npx prisma generate` 성공, `npx prisma db push` 성공 (Railway DB 반영)
+  - 기존 모델 및 기존 API 엔드포인트와 충돌 없음
+- 검증 상태: 에이전트 구현 완료, 문서 정합성 검증 필요
+- 반영 대상:
+  - `prisma/schema.prisma`
+
+#### Wave 1 프론트엔드: 상세 패널 + 만족도 작성 UI + 레이아웃 연결
+- 결정:
+  - `InstructorDetail.tsx` 컴포넌트를 신규 생성했다. Feature E~K, O에 대응하는 8개 섹션을 포함한다.
+  - `InstructorList.tsx`에 `onSelectInstructor`, `selectedInstructorId` prop을 추가해 부모 컴포넌트에서 선택 상태를 제어할 수 있게 했다.
+  - `page.tsx`를 client component로 전환하고, 목록 선택 → 상세 표시 연결을 구현했다.
+  - 만족도 작성 폼은 `InstructorDetail.tsx` 안에 접기/펼치기 섹션으로 구현했다.
+- 검증 상태: 에이전트 구현 완료, 문서 계약(06_implementation_spec.md) 정합성 검증 필요
+- 반영 대상:
+  - `src/components/InstructorDetail.tsx` (신규)
+  - `src/components/InstructorList.tsx` (수정)
+  - `src/app/page.tsx` (수정)
+
+#### Wave 1 API: GET /api/status, POST /api/refresh
+- 결정:
+  - `GET /api/status`를 `05_api_spec.md` 8절 기준으로 구현했다. 최근 PipelineRun과 소스별 SourceSyncLog를 조회해 반환한다.
+  - `POST /api/refresh`를 `05_api_spec.md` 9절 기준으로 구현했다. 기존 파이프라인 모듈을 순차 호출하는 오케스트레이션 엔드포인트다.
+  - refresh는 running 중인 PipelineRun이 있으면 409 반환, 하나 실패해도 나머지 계속 실행, 마지막에 score 재계산을 수행한다.
+- 검증 상태: 에이전트 구현 완료, 문서 계약(05_api_spec.md) 정합성 검증 필요
+- 반영 대상:
+  - `src/app/api/status/route.ts` (신규)
+  - `src/app/api/refresh/route.ts` (신규)
+
+#### Pilot 4-4 / 4-5 최소 구현안: raw 저장 + 자동 취합 registry + pending 분리
+- 결정:
+  - `4-4` 만족도와 `4-5` Slack/Gmail activity는 모두 `raw 저장 -> review registry 자동 취합 -> canonical 반영` 구조를 따른다.
+  - raw/import 테이블은 근거 보존용이며 사람이 직접 patch하는 본체가 아니다.
+  - review registry는 raw source에서 재생성 가능한 자동 취합 결과이며, demo의 검토 가능성을 유지하는 canonical review layer 역할을 맡는다.
+  - 확실한 항목은 `auto_accepted` 상태로 두고 자동 반영한다.
+  - 애매한 항목은 `pending`으로 남기고 서비스 반영에서 제외한다.
+  - 사람 판단이 필요한 경우 registry row를 직접 편집하지 않고 `review_decisions`에만 `approve`, `reject`, `override_instructor`를 저장한다.
+  - canonical 반영 대상은 `auto_accepted`, `approved` 상태만 허용한다. `pending`, `rejected`, `invalid`는 반영하지 않는다.
+  - 이 구조는 demo의 사람 판단 중심 흐름은 유지하되, ad-hoc JSON patch와 hardcoded merge 지옥으로 되돌아가지 않기 위한 최소 보완안이다.
+- 반영 문서:
+  - `03_data_model.md`
+  - `04_data_pipeline.md`
+
+#### Pilot 종료 기준: 모든 회사 해소가 아니라 구조 검증 완료
+- 결정:
+  - 파일럿의 종료 조건은 `모든 회사/과정 pending 0건`이 아니다.
+  - 종료 조건은 아래 4가지를 만족하는 것이다.
+    - `4-4` 만족도 source가 `만족도 파일 + 강의관리/운영 메타 + review registry + canonical 반영` 구조로 실제 동작한다.
+    - `4-5` Slack/Gmail activity가 `raw + registry + canonical` 구조로 실제 동작한다.
+    - 자동 확정 가능한 케이스는 `auto_accepted`로 반영되고, 애매한 케이스는 안전하게 `pending`으로 남는다.
+    - `review_decisions` 없이도 터미널/DB 기준으로 pending을 확인할 수 있고, 잘못된 canonical 반영이 일어나지 않는다.
+  - 따라서 회사별 adapter는 운영 단계에서 계속 늘려가는 것이며, 파일럿 단계에서는 대표 회사/패턴 몇 개가 실제로 검증되면 충분하다.
+  - 현재 파일럿 기준 남아 있는 pending은 `KT` 시트 강사명 `KT_...` 4건뿐이며, 이는 alias 금지 정책에 따라 그대로 `pending` 유지한다.
+  - `gmail_summary` 만족도 registry는 파일럿 기준 `pending 0건`, `auto_accepted 9건` 상태를 종료선으로 본다.
+  - score 계산은 정책 테이블(`score_policy_versions`)을 읽는 구조로 맞췄고, `salesmap` raw canonical 부재 때문에 기존 breakdown 재사용을 유지한다.
+  - 전체 점수 재계산은 이미 satisfaction pipeline 실행 과정에서 현재 canonical 값을 기준으로 갱신되었으며, 남은 caveat는 `salesmap raw canonical 없음`, `email_activity_count 실데이터 부족`, `last_activity_at max-only` 3가지다.
+- 후속 작업:
+  - 회사별 adapter 확장 (`KT`, `현대모비스`, `우리은행`, 이후 타 회사)
+  - `review_decisions` 활용 빈도가 높아질 경우 운영자 페이지 추가
+  - `salesmap` raw canonical source 확정 시 score 재계산기 보강
+
+#### Pilot 이후 운영 단계 후속 작업
+- 운영 단계에서 계속해야 할 일:
+  - 회사별 `4-4` 만족도 adapter를 추가한다. 기준은 `만족도 파일 + 강의관리/운영 메타` 조합이며, 새 회사는 discovery 후 adapter를 하나씩 붙인다.
+  - `4-5` Gmail/Slack activity 및 Gmail 만족도에서 새로 발생하는 `pending`은 터미널/DB로 먼저 확인하고, 반복 패턴이 확인될 때만 회사별 rule 또는 adapter를 추가한다.
+  - `review_decisions` 사용량이 늘어나면 운영자 페이지를 만든다. 그 전까지는 API/터미널 기반으로 충분하다.
+  - `salesmap` raw canonical field를 추가할 수 있을 때 score 재계산기를 다시 보강한다. 그 전까지는 `salesmap`은 기존 breakdown 재사용을 유지한다.
+  - `last_activity_at`가 max-only 필드라는 caveat를 해결하려면, 장기적으로는 source 기반 재집계 또는 더 엄격한 reconcile 전략을 도입한다.
+  - Gmail 만족도 / Gmail activity / Slack activity는 `초기 백필 + 이후 증분` 원칙을 유지하고, 필요 시에만 `reconcile/backfill`을 수행한다.
+- 내일 실제 구현 전에 반드시 확인할 것:
+  - 새로 붙일 회사/과정의 source 위치
+    - 회사 폴더 링크
+    - 만족도 폴더 링크
+    - 강의관리/운영 시트 링크
+  - 새 source가 service account가 아니라 사용자 OAuth(`yeonhee.ha@day1company.co.kr`) 기준으로 실제 접근 가능한지
+  - 새 회사를 붙이는 작업인지, 아니면 운영 UI/후속 기능을 만드는 작업인지 범위를 먼저 고정할 것
+  - 그 외 필수 blocker는 현재 없음. 즉 내일은 바로 다음 회사 adapter 구현으로 시작 가능하다.
+

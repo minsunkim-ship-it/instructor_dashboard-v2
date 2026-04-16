@@ -160,7 +160,7 @@ flowchart LR
 ## 8. 외부 의존성
 
 ### 8-1. 데이터 소스 의존성
-- 계약시트
+- 계약시트 (Google Sheets API)
 - 노션 API
 - 세일즈맵 GitHub release 스냅샷
 - 슬랙 MCP 연결
@@ -220,8 +220,8 @@ flowchart LR
 - DB 접속 정보
 - 노션 접근 키
 - 세일즈맵 스냅샷 접근 정보
-- 슬랙 MCP 접근 정보
-- 지메일 MCP 접근 정보
+- 슬랙 API 접근 정보
+- 지메일 API 접근 정보
 - Google Sheets 접근 정보
 - 애플리케이션 내부 서명 키 또는 세션 키
 
@@ -233,12 +233,27 @@ flowchart LR
 - `NOTION_API_KEY`
 - `NOTION_DATABASE_ID`
 - `SALESMAP_RELEASE_URL`
-- `SLACK_*`
-- `GMAIL_*`
-- `GOOGLE_SHEETS_*`
+- `SALESMAP_SNAPSHOT_PATH`
+- `SLACK_BOT_TOKEN`
+- `SLACK_WORKSPACE_ID`
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+- `GMAIL_ACCOUNT_EMAIL`
+- `GMAIL_TARGET_ADDRESSES`
+- `GOOGLE_SERVICE_ACCOUNT_JSON`
+- `GOOGLE_CONTRACTS_SPREADSHEET_ID`
 
 현재 버전의 canonical 환경변수 이름은 위 목록을 사용한다.
 - Notion 수집기는 `NOTION_API_KEY`, `NOTION_DATABASE_ID`를 필수로 사용한다.
+- 계약시트 수집기는 `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_CONTRACTS_SPREADSHEET_ID`를 필수로 사용한다.
+- 계약시트 접근은 Google Sheets API를 Service Account 방식으로 호출하며, Service Account 메일은 대상 스프레드시트에 Viewer 이상으로 공유되어 있어야 한다.
+- 세일즈맵 수집기는 현재 단계에서 local SQLite snapshot file을 사용하며 `SALESMAP_SNAPSHOT_PATH`를 필수로 사용한다.
+- `SALESMAP_RELEASE_URL`은 후속 자동 다운로드 단계가 생길 때 사용하는 배포/획득 경로로 남겨두며, 현재 Pilot 4-3의 직접 실행에는 사용하지 않는다.
+- Slack 활동 수집기는 direct Slack API를 사용하며 `SLACK_BOT_TOKEN`, `SLACK_WORKSPACE_ID`를 필수로 사용한다.
+- Gmail 활동 수집기는 direct Gmail API를 사용하며 OAuth refresh token 방식의 `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_ACCOUNT_EMAIL`, `GMAIL_TARGET_ADDRESSES`를 필수로 사용한다.
+- `GMAIL_ACCOUNT_EMAIL`은 실제 로그인 가능한 Gmail/Workspace 계정 주소를 사용한다.
+- `GMAIL_TARGET_ADDRESSES`는 해당 계정 mailbox 안에서 검색할 그룹/수신 대상 주소의 comma-separated 목록을 사용한다.
 
 ## 12. 로그 및 관측성
 

@@ -17,6 +17,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 10. `10_execution_plan.md`
 11. `11_wave1_tasks.md`
 12. `12_parallel_bundle_guardrails.md`
+13. `14_wave1_preflight_checklist.md`
 
 ## Source of Truth Priority
 - 정책 충돌 시: `01_core_policy.md`
@@ -30,6 +31,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 현재 구현 웨이브 운영 규칙 확인: `10_execution_plan.md`
 - Wave 1 태스크별 파일 경계와 완료 기준 확인: `11_wave1_tasks.md`
 - grouped `validated-plan` 병렬 실행 시 공통 고정 항목 / 파일 담당 그룹 확인: `12_parallel_bundle_guardrails.md`
+- Group 시작 전 / T5 진입 전 실행 체크리스트 확인: `14_wave1_preflight_checklist.md`
 
 ## Current Execution Plan
 
@@ -148,6 +150,10 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - Wave 1 태스크를 grouped `validated-plan` 작업 묶음으로 실행할 때의 공통 고정 항목, 수정 가능 범위, 파일 담당 그룹을 정의한다.
 - `11_wave1_tasks.md`의 태스크 의미는 유지하되, 실제 병렬 실행 시 수정 권한과 통합 순서를 고정한다.
 
+### `14_wave1_preflight_checklist.md`
+- Wave 1 grouped 병렬 구현을 시작하기 전과 `T5` 통합 단계에 들어가기 전에 확인해야 하는 실행 체크리스트를 정의한다.
+- 환경변수, 데이터 선행조건, 파일 담당 그룹 위반 여부, blocker, build 통과 여부를 점검하는 문서다.
+
 ## Legacy Reference
 
 - `구현명세서_v2.md`는 참고용 legacy 문서로만 사용한다.
@@ -168,6 +174,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 현재 웨이브의 파일럿 순서, 머지 규칙, blocker 처리 기준은 `10_execution_plan.md`를 확인한다.
 - Wave 1의 개별 태스크 범위, 파일 경계, 완료 기준은 `11_wave1_tasks.md`를 확인한다.
 - grouped `validated-plan` 병렬 실행 전에는 반드시 `12_parallel_bundle_guardrails.md`를 확인한다.
+- Group 1~3 시작 전과 `T5` 시작 전에는 `14_wave1_preflight_checklist.md`를 확인한다.
 
 ## Update Rule
 - 정책이 바뀌면 먼저 `01_core_policy.md`를 수정한다.
@@ -179,5 +186,6 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 현재 구현 웨이브의 실행 순서나 머지 규칙이 바뀌면 `10_execution_plan.md`를 수정한다.
 - Wave 1 태스크의 범위, 파일 경계, 완료 기준이 바뀌면 `11_wave1_tasks.md`를 수정한다.
 - grouped `validated-plan` 병렬 실행 규칙, 공통 고정 항목, 파일 담당 그룹이 바뀌면 `12_parallel_bundle_guardrails.md`를 수정한다.
+- Wave 1 실행 체크리스트 항목이 바뀌면 `14_wave1_preflight_checklist.md`를 수정한다.
 - `구현명세서_v2.md`는 참고만 하고 수정하지 않는다.
 - 중요한 변경은 `08_decision_log.md`에 반드시 남긴다.

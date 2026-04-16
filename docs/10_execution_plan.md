@@ -121,6 +121,7 @@
 - Group 1, Group 2, Group 3은 공통 고정 항목과 파일 담당 그룹 확인 후 병렬 실행 가능하다.
 - 마지막 `T5`는 Group 1~3이 모두 끝난 뒤 단일 세션에서만 수행한다.
 - 각 그룹은 자기 수정 가능 범위 안에서만 파일을 수정한다.
+- 실제 시작 체크는 `14_wave1_preflight_checklist.md`를 따른다.
 
 ## 7. 공유 파일 가드레일
 
@@ -181,6 +182,7 @@
   - `instructors.is_fulltime`
   - `fee_fix_configs`
 - 위 조건이 빠져 있으면 구현으로 덮지 말고 blocker로 보고한다.
+- Group 1~3 시작 전과 `T5` 시작 전의 최종 판정은 `14_wave1_preflight_checklist.md`를 따른다.
 
 ## 11. 완료 판정
 

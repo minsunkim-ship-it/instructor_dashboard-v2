@@ -66,6 +66,10 @@ Wave 1은 Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 제
 
 - 상태: 에이전트 구현 완료, 검증 필요
 - 설명: `03_data_model.md`에 정의된 7개 누락 모델을 Prisma 스키마에 추가하고 Railway DB에 반영한다.
+- 주의:
+  - 현재 `prisma/schema.prisma`는 baseline 반영이 끝난 상태다.
+  - Wave 1 병렬 실행에서는 schema를 다시 수정하지 않고, 검증만 수행한다.
+  - 검증 중 schema gap이 발견되면 Group 1이 임의 수정하지 말고 blocker로 되돌린다.
 - 추가된 모델:
   - `InstructorIntelligence` (`instructor_intelligence`) — 4-5절
   - `SourceLink` (`source_links`) — 4-6절
@@ -237,6 +241,10 @@ Wave 1은 Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 제
 
 - 상태: 구현 필요
 - 설명: API 응답의 `meta.is_fallback`이 `true`일 때 화면 상단에 fallback 배너를 표시한다.
+- 주의:
+  - `src/components/FallbackBanner.tsx` 정의는 T9 범위다.
+  - `src/app/page.tsx` 실제 연결은 grouped 병렬 실행 시 Group 1 또는 마지막 T5 통합 단계에서 수행한다.
+  - 따라서 병렬 실행에서는 `12_parallel_bundle_guardrails.md`의 파일 담당 그룹을 우선한다.
 - 참조 문서:
   - `06_implementation_spec.md` Feature M
   - `05_api_spec.md` 10절
@@ -274,6 +282,9 @@ Wave 1은 Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 제
 - 브라우저에서 목록 → 상세 → 만족도 작성 → score 반영 E2E 확인
 
 ## 6. 파일 경계 요약
+
+- 개별 태스크 파일 경계는 아래 표를 기준으로 이해한다.
+- 단, grouped 병렬 실행에서는 실제 수정 권한과 충돌 파일 담당 그룹을 `12_parallel_bundle_guardrails.md`가 우선 정의한다.
 
 | 파일 | 담당 태스크 | 수정/신규 |
 |------|-----------|----------|

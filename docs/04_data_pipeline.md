@@ -95,11 +95,13 @@
 - 목적: 딜 정보, 기업명/과정명 보강, 활동 최근성 보강, 일부 단가 참고 정보, 운영 메모 후보 수집
 
 ### 4-4. 슬랙
-- 접근 방식: MCP 연결 사용
+- 접근 방식: direct Slack API
+- 필수 환경변수: `SLACK_BOT_TOKEN`, `SLACK_WORKSPACE_ID`
 - 목적: 활동량, 최근 활동일, 운영 채널 활동 근거 수집
 
 ### 4-5. 지메일
-- 접근 방식: MCP 연결 사용
+- 접근 방식: direct Gmail API
+- 필수 환경변수: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_ACCOUNT_EMAIL`, `GMAIL_TARGET_ADDRESSES`
 - 목적: 활동량, 최근 활동일, 강사 관련 커뮤니케이션 근거, 운영 메모 후보 수집
 
 ### 4-6. Google Forms

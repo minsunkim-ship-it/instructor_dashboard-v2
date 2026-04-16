@@ -2,13 +2,13 @@
 
 ## Role
 이 문서는 현재 구현 웨이브를 어떻게 실행할지 정의하는 운영 문서다.
-병렬 구현 순서, 파일럿 검증 순서, 트랙 시작 조건, 공유 파일 가드레일, 머지 및 blocker 처리 규칙을 포함한다.
+병렬 구현 순서, 파일럿 검증 순서, 그룹 시작 조건, 공유 파일 가드레일, 머지 및 blocker 처리 규칙을 포함한다.
 
 ## Source of Truth
 - 현재 구현 웨이브 목표
 - 파일럿 검증 순서
 - 본 병렬 구현 시작 조건
-- 트랙 활성화 순서
+- 그룹 활성화 순서
 - 공유 파일 수정 가드레일
 - 머지 순서와 blocker 보고 규칙
 
@@ -65,9 +65,9 @@
   - T8(fee_histories 적재): 구현 필요
   - T9(Fallback 배너): 구현 필요
 
-## 3. 파일럿 검증 순서
+## 3. 파일럿 검증 이력
 
-본 병렬 구현 전 아래 파일럿을 순서대로 수행한다.
+본 병렬 구현 전에 아래 파일럿을 완료했다.
 
 1. 파일럿 1
    - Notion 단일 소스 수집
@@ -91,9 +91,9 @@
    - `teaching_histories` 적재 검증
    - `pipeline_runs` / `source_sync_logs` 기록 검증
 
-## 4. 본 병렬 구현 시작 조건
+## 4. 본 병렬 구현 시작 조건 (충족 완료)
 
-아래 조건이 충족되면 본 병렬 구현을 시작한다.
+아래 조건을 충족해 Wave 1 본 구현을 시작했다.
 
 - 파일럿 1 통과
 - 파일럿 2 통과
@@ -116,22 +116,21 @@
 - 실행 웨이브 운영 규칙: `10_execution_plan.md`
 - 변경 이력: `08_decision_log.md`
 
-## 6. 트랙 활성화 규칙
+## 6. 그룹 활성화 규칙
 
-- Track A는 선행 완료가 필요하다.
-- Track A 완료 후 Track B, Track C, Track D는 병렬 진행 가능하다.
-- Track E는 Track C와 Track D의 기본 플로우가 구현된 뒤 시작한다.
-- 각 트랙은 자기 책임 범위 안에서만 파일을 수정한다.
+- Group 1, Group 2, Group 3은 공통 고정 항목과 파일 담당 그룹 확인 후 병렬 실행 가능하다.
+- 마지막 `T5`는 Group 1~3이 모두 끝난 뒤 단일 세션에서만 수행한다.
+- 각 그룹은 자기 수정 가능 범위 안에서만 파일을 수정한다.
 
 ## 7. 공유 파일 가드레일
 
-- `prisma/schema.prisma`는 Track A 완료 후 고정한다.
+- `prisma/schema.prisma`는 baseline 반영 완료 상태로 간주하고 병렬 실행 중에는 고정한다.
 - `src/types/api.ts`는 공유 타입 계약 파일이다.
   - 필요한 엔드포인트 타입만 추가한다.
   - 기존 공통 타입을 임의로 다시 정의하지 않는다.
 - `src/app/page.tsx`는 레이아웃 통합 지점이다.
-  - 가능하면 Track D가 마지막 통합 단계에서만 최소 변경한다.
-- 같은 파일을 두 개 이상의 트랙이 동시에 수정하지 않는다.
+  - Group 1이 주 담당 그룹이며, `T5`에서만 최소 범위 추가 연결을 허용한다.
+- 같은 파일을 두 개 이상의 그룹이 동시에 수정하지 않는다.
 - 문서에 없는 새로운 공유 규칙이 필요하면 먼저 `08_decision_log.md`에 기록한다.
 
 ### 7-1. grouped `validated-plan` 실행 보정
@@ -146,11 +145,10 @@
 
 ## 8. 브랜치 및 머지 원칙
 
-- 병렬 구현은 트랙별 브랜치를 기본으로 한다.
-- 각 브랜치는 자기 트랙의 수정 가능 파일만 변경한다.
+- 병렬 구현은 그룹별 브랜치를 기본으로 한다.
+- 각 브랜치는 자기 그룹의 수정 가능 파일만 변경한다.
 - 머지 전 반드시 변경 파일 목록을 비교한다.
-- 기본 머지 순서는 `09_work_split.md` 권장 순서를 따른다.
-- Track C와 Track D를 병렬 수행한 경우 기본 머지 순서는 Track C 먼저, Track D 다음으로 한다.
+- 기본 머지 순서는 `Group 1/2/3 완료 -> 검사 -> T5 통합`을 따른다.
 - 같은 파일을 동시에 수정한 경우 해당 웨이브는 충돌 없는 병렬 구현으로 판정하지 않는다.
 
 ## 9. Blocker 규칙
@@ -165,10 +163,24 @@
 
 ## 10. 본 병렬 구현 시작 후 운영 방식
 
-- 각 트랙은 시작 프롬프트와 완료 기준을 별도로 가진다.
+- 각 그룹은 시작 프롬프트와 완료 기준을 별도로 가진다.
 - 구현자는 문서 계약을 재해석하지 않고, 확정된 계약만 따라 구현한다.
 - 기능 구현 성공보다 문서 계약 준수와 충돌 없는 머지를 우선 검증한다.
 - 웨이브 중간에 정책 변경이 생기면 `08_decision_log.md`를 먼저 수정한 뒤 관련 문서를 갱신한다.
+
+## 10-1. 실행 전 사전 점검
+
+- 아래 항목은 Group 1~3 시작 전에 먼저 확인한다.
+  - `NOTION_API_KEY`, `NOTION_DATABASE_ID`
+  - `SALESMAP_SNAPSHOT_PATH`
+  - `SLACK_BOT_TOKEN`, `SLACK_WORKSPACE_ID`
+  - `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_ACCOUNT_EMAIL`, `GMAIL_TARGET_ADDRESSES`
+  - `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_CONTRACTS_SPREADSHEET_ID`
+- Group 3 시작 전에는 아래 데이터 선행조건이 이미 baseline에 반영되어 있는지 확인한다.
+  - `teaching_histories.contract_type`, `detail_type`
+  - `instructors.is_fulltime`
+  - `fee_fix_configs`
+- 위 조건이 빠져 있으면 구현으로 덮지 말고 blocker로 보고한다.
 
 ## 11. 완료 판정
 

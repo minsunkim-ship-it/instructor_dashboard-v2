@@ -14,6 +14,8 @@
 import { prisma } from "@/lib/prisma";
 import type { NormalizedSalesmapRow } from "./salesmap-normalizer";
 
+const DB_WRITE_CONCURRENCY = 16;
+
 export interface SalesmapApplyResult {
   dealsFetched: number;
   slotRowsNormalized: number;
@@ -39,6 +41,29 @@ export interface SalesmapApplyResult {
   nonHourlyFeeValues: number;
 
   unmatchedInstructorSamples: string[];
+}
+
+async function mapWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) return;
+  const safeConcurrency = Math.max(1, Math.min(concurrency, items.length));
+  let index = 0;
+
+  async function runWorker() {
+    while (true) {
+      const current = index;
+      index += 1;
+      if (current >= items.length) break;
+      await worker(items[current]);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: safeConcurrency }, () => runWorker())
+  );
 }
 
 /**
@@ -160,57 +185,125 @@ export async function applySalesmapRows(
   result.unmatchedInstructorSamples = Array.from(unmatchedNames).slice(0, 10);
 
   // 3) instructors.last_activity_at 갱신 — 기존값이 없거나 세일즈맵이 더 최근일 때만
-  for (const agg of perInstructor.values()) {
-    if (!agg.maxSalesmapActivity) continue;
-    const shouldUpdate =
+  const instructorUpdates = Array.from(perInstructor.values()).filter((agg) => {
+    if (!agg.maxSalesmapActivity) return false;
+    return (
       !agg.currentLastActivity ||
-      agg.maxSalesmapActivity > agg.currentLastActivity;
-    if (!shouldUpdate) continue;
+      agg.maxSalesmapActivity > agg.currentLastActivity
+    );
+  });
 
-    await prisma.instructor.update({
-      where: { id: agg.instructorId },
-      data: { lastActivityAt: agg.maxSalesmapActivity },
-    });
-    result.lastActivityUpdated += 1;
+  await mapWithConcurrency(
+    instructorUpdates,
+    DB_WRITE_CONCURRENCY,
+    async (agg) => {
+      await prisma.instructor.update({
+        where: { id: agg.instructorId },
+        data: { lastActivityAt: agg.maxSalesmapActivity },
+      });
+      result.lastActivityUpdated += 1;
+    }
+  );
+
+  // 4) teaching_histories 보강 — 필요한 후보를 먼저 전부 읽고, 업데이트만 제한 병렬로 수행
+  const instructorIdsWithCourseFills = Array.from(perInstructor.values())
+    .filter((agg) => agg.courseFills.size > 0)
+    .map((agg) => agg.instructorId);
+  const targetCourseIds = Array.from(
+    new Set(
+      Array.from(perInstructor.values()).flatMap((agg) =>
+        Array.from(agg.courseFills.keys())
+      )
+    )
+  );
+
+  const existingHistories =
+    instructorIdsWithCourseFills.length === 0 || targetCourseIds.length === 0
+      ? []
+      : await prisma.teachingHistory.findMany({
+          where: {
+            instructorDbId: { in: instructorIdsWithCourseFills },
+            courseId: { in: targetCourseIds },
+          },
+          select: {
+            id: true,
+            instructorDbId: true,
+            courseId: true,
+            companyName: true,
+            courseName: true,
+          },
+        });
+
+  const historiesByPair = new Map<
+    string,
+    Array<{
+      id: string;
+      companyName: string | null;
+      courseName: string | null;
+    }>
+  >();
+  for (const history of existingHistories) {
+    const key = `${history.instructorDbId}::${history.courseId}`;
+    const arr = historiesByPair.get(key);
+    const entry = {
+      id: history.id,
+      companyName: history.companyName,
+      courseName: history.courseName,
+    };
+    if (arr) {
+      arr.push(entry);
+    } else {
+      historiesByPair.set(key, [entry]);
+    }
   }
 
-  // 4) teaching_histories 보강 — (instructor_db_id, course_id) 매칭 행 중 NULL 인 필드만 채움
+  type HistoryUpdateTask = {
+    historyId: string;
+    data: { companyName?: string; courseName?: string };
+  };
+  const historyUpdateTasks: HistoryUpdateTask[] = [];
+
   for (const agg of perInstructor.values()) {
     if (agg.courseFills.size === 0) continue;
     for (const [courseId, fill] of agg.courseFills) {
-      // 기존 teaching_histories 조회
-      const targets = await prisma.teachingHistory.findMany({
-        where: {
-          instructorDbId: agg.instructorId,
-          courseId,
-        },
-        select: { id: true, companyName: true, courseName: true },
-      });
+      const key = `${agg.instructorId}::${courseId}`;
+      const targets = historiesByPair.get(key);
 
-      if (targets.length === 0) {
+      if (!targets || targets.length === 0) {
         thUnmatchedSlots += 1;
         continue;
       }
 
-      for (const t of targets) {
+      for (const target of targets) {
         const data: { companyName?: string; courseName?: string } = {};
-        if (fill.companyName && !t.companyName) {
+        if (fill.companyName && !target.companyName) {
           data.companyName = fill.companyName;
         }
-        if (fill.courseName && !t.courseName) {
+        if (fill.courseName && !target.courseName) {
           data.courseName = fill.courseName;
         }
         if (Object.keys(data).length === 0) continue;
 
-        await prisma.teachingHistory.update({
-          where: { id: t.id },
+        historyUpdateTasks.push({
+          historyId: target.id,
           data,
         });
-        if (data.companyName) result.teachingHistoriesCompanyFilled += 1;
-        if (data.courseName) result.teachingHistoriesCourseNameFilled += 1;
       }
     }
   }
+
+  await mapWithConcurrency(
+    historyUpdateTasks,
+    DB_WRITE_CONCURRENCY,
+    async (task) => {
+      await prisma.teachingHistory.update({
+        where: { id: task.historyId },
+        data: task.data,
+      });
+      if (task.data.companyName) result.teachingHistoriesCompanyFilled += 1;
+      if (task.data.courseName) result.teachingHistoriesCourseNameFilled += 1;
+    }
+  );
 
   result.teachingHistoriesUnmatched = thUnmatchedSlots;
 

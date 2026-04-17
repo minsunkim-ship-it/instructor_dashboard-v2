@@ -147,6 +147,40 @@ interface RegistryDecision {
   targetInstructorId: string | null;
 }
 
+const DB_WRITE_CONCURRENCY = 16;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const safeConcurrency = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array<R>(items.length);
+  let index = 0;
+
+  async function runWorker() {
+    while (true) {
+      const current = index;
+      index += 1;
+      if (current >= items.length) break;
+      results[current] = await worker(items[current]);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: safeConcurrency }, () => runWorker())
+  );
+  return results;
+}
+
+function itemCompositeKey(
+  sourceType: "slack" | "gmail",
+  sourceRefKey: string
+): string {
+  return `${sourceType}::${sourceRefKey}`;
+}
+
 function slackToPending(a: NormalizedSlackActivity): PendingItem {
   return {
     sourceType: "slack",
@@ -548,92 +582,135 @@ export async function applyActivities(
 
   const instructorIndex = await buildInstructorIndex();
   const affectedRegistryKeys = new Set<string>();
+  const existingItems = await prisma.activityImportItem.findMany({
+    where: {
+      sourceType: { in: Array.from(new Set(pending.map((item) => item.sourceType))) },
+      sourceRefKey: { in: Array.from(new Set(pending.map((item) => item.sourceRefKey))) },
+    },
+    select: {
+      id: true,
+      sourceType: true,
+      sourceRefKey: true,
+      candidateName: true,
+      candidateEmail: true,
+      matchStatus: true,
+      matchedInstructorId: true,
+      errorReason: true,
+    },
+  });
+  const existingMap = new Map(
+    existingItems.map((item) => [
+      itemCompositeKey(item.sourceType as "slack" | "gmail", item.sourceRefKey ?? ""),
+      item,
+    ])
+  );
 
-  for (const item of pending) {
-    const match = matchCandidate(item, instructorIndex);
-    const registryKey = buildRegistryKeyFromMatch(item, match);
+  const itemResults = await mapWithConcurrency(
+    pending,
+    DB_WRITE_CONCURRENCY,
+    async (item) => {
+      const match = matchCandidate(item, instructorIndex);
+      const registryKey = buildRegistryKeyFromMatch(item, match);
+      const existing = existingMap.get(
+        itemCompositeKey(item.sourceType, item.sourceRefKey)
+      );
 
-    const existing = await prisma.activityImportItem.findFirst({
-      where: {
+      const data = {
+        runId,
         sourceType: item.sourceType,
+        sourceRef: item.sourceRef,
         sourceRefKey: item.sourceRefKey,
-      },
-      select: {
-        id: true,
-        sourceType: true,
-        candidateName: true,
-        candidateEmail: true,
-        matchStatus: true,
-        matchedInstructorId: true,
-        errorReason: true,
-      },
-    });
+        rawPayload: item.rawPayload,
+        candidateName: item.candidateName,
+        candidateEmail: item.candidateEmail,
+        activityAt: item.activityAt,
+        isOpsReport: item.isOpsReport,
+        isDispatchRequest: item.isDispatchRequest,
+        matchStatus: match.status,
+        matchedInstructorId: match.instructorId,
+        matchBasis: match.basis,
+        errorReason: match.errorReason,
+      };
 
-    const data = {
-      runId,
-      sourceType: item.sourceType,
-      sourceRef: item.sourceRef,
-      sourceRefKey: item.sourceRefKey,
-      rawPayload: item.rawPayload,
-      candidateName: item.candidateName,
-      candidateEmail: item.candidateEmail,
-      activityAt: item.activityAt,
-      isOpsReport: item.isOpsReport,
-      isDispatchRequest: item.isDispatchRequest,
-      matchStatus: match.status,
-      matchedInstructorId: match.instructorId,
-      matchBasis: match.basis,
-      errorReason: match.errorReason,
-    };
+      let upsertedId: string;
+      let operation: "inserted" | "updated";
+      let previousRegistryKey: string | null = null;
 
-    let upsertedId: string;
-    if (existing) {
-      const updated = await prisma.activityImportItem.update({
-        where: { id: existing.id },
-        data,
-        select: { id: true },
-      });
-      upsertedId = updated.id;
-      result.items.updated += 1;
+      if (existing) {
+        const updated = await prisma.activityImportItem.update({
+          where: { id: existing.id },
+          data,
+          select: { id: true },
+        });
+        upsertedId = updated.id;
+        operation = "updated";
+        previousRegistryKey = buildRegistryKeyFromStored({
+          id: existing.id,
+          sourceType: existing.sourceType as "slack" | "gmail",
+          sourceRef: {},
+          sourceRefKey: item.sourceRefKey,
+          rawPayload: {},
+          candidateName: existing.candidateName,
+          candidateEmail: existing.candidateEmail,
+          activityAt: null,
+          isOpsReport: false,
+          isDispatchRequest: false,
+          matchStatus: existing.matchStatus,
+          matchedInstructorId: existing.matchedInstructorId,
+          matchBasis: null,
+          errorReason: existing.errorReason,
+        });
+      } else {
+        const created = await prisma.activityImportItem.create({
+          data,
+          select: { id: true },
+        });
+        upsertedId = created.id;
+        operation = "inserted";
+      }
 
-      const previousRegistryKey = buildRegistryKeyFromStored({
-        id: existing.id,
-        sourceType: existing.sourceType as "slack" | "gmail",
-        sourceRef: {},
-        sourceRefKey: item.sourceRefKey,
-        rawPayload: {},
-        candidateName: existing.candidateName,
-        candidateEmail: existing.candidateEmail,
-        activityAt: null,
-        isOpsReport: false,
-        isDispatchRequest: false,
-        matchStatus: existing.matchStatus,
-        matchedInstructorId: existing.matchedInstructorId,
-        matchBasis: null,
-        errorReason: existing.errorReason,
-      });
-      affectedRegistryKeys.add(previousRegistryKey);
-    } else {
-      const created = await prisma.activityImportItem.create({
-        data,
-        select: { id: true },
-      });
-      upsertedId = created.id;
+      return {
+        matchStatus: match.status,
+        candidateName: item.candidateName,
+        candidateEmail: item.candidateEmail,
+        registryKey,
+        previousRegistryKey,
+        upsertedId,
+        operation,
+      };
+    }
+  );
+
+  for (const itemResult of itemResults) {
+    if (itemResult.operation === "inserted") {
       result.items.inserted += 1;
+    } else {
+      result.items.updated += 1;
     }
 
-    result.upsertedItemIds.push(upsertedId);
-    affectedRegistryKeys.add(registryKey);
+    result.upsertedItemIds.push(itemResult.upsertedId);
+    affectedRegistryKeys.add(itemResult.registryKey);
+    if (itemResult.previousRegistryKey) {
+      affectedRegistryKeys.add(itemResult.previousRegistryKey);
+    }
 
-    if (match.status === "matched") {
+    if (itemResult.matchStatus === "matched") {
       result.items.matched += 1;
-    } else if (match.status === "unmatched") {
+    } else if (itemResult.matchStatus === "unmatched") {
       result.items.unmatched += 1;
-      pushSample(result.unmatchedSamples, item.candidateName, item.candidateEmail);
-    } else if (match.status === "ambiguous") {
+      pushSample(
+        result.unmatchedSamples,
+        itemResult.candidateName,
+        itemResult.candidateEmail
+      );
+    } else if (itemResult.matchStatus === "ambiguous") {
       result.items.ambiguous += 1;
-      pushSample(result.ambiguousSamples, item.candidateName, item.candidateEmail);
-    } else if (match.status === "invalid") {
+      pushSample(
+        result.ambiguousSamples,
+        itemResult.candidateName,
+        itemResult.candidateEmail
+      );
+    } else if (itemResult.matchStatus === "invalid") {
       result.items.invalid += 1;
     }
   }
@@ -680,150 +757,177 @@ export async function applyActivities(
     }
   }
 
-  for (const registryKey of affectedRegistryKeyList) {
-    const group = groups.get(registryKey);
+  const registryResults = await mapWithConcurrency(
+    affectedRegistryKeyList,
+    DB_WRITE_CONCURRENCY,
+    async (registryKey) => {
+      const group = groups.get(registryKey);
 
-    if (!group) {
-      await prisma.activityReviewRegistry.deleteMany({
+      if (!group) {
+        await prisma.activityReviewRegistry.deleteMany({
+          where: { registryKey },
+        });
+        return null;
+      }
+
+      const decision = latestDecisions.get(registryKey);
+      const resolved = resolveRegistryStatus(group, decision);
+
+      await prisma.activityReviewRegistry.upsert({
         where: { registryKey },
+        create: {
+          runId,
+          registryKey,
+          sourceType: group.sourceType,
+          sourceRefs: group.sourceRefs,
+          candidateName: group.candidateName,
+          candidateEmail: group.candidateEmail,
+          slackActivityCount: group.slackActivityCount,
+          emailActivityCount: group.emailActivityCount,
+          opsReportActivityCount: group.opsReportActivityCount,
+          dispatchRequestActivityCount: group.dispatchRequestActivityCount,
+          lastActivityAt: group.lastActivityAt,
+          evidenceSamples: group.evidenceSamples,
+          matchStatus: resolved.matchStatus,
+          suggestedInstructorId: resolved.suggestedInstructorId,
+          resolvedInstructorId: resolved.resolvedInstructorId,
+          resolutionBasis: resolved.resolutionBasis,
+        },
+        update: {
+          runId,
+          sourceType: group.sourceType,
+          sourceRefs: group.sourceRefs,
+          candidateName: group.candidateName,
+          candidateEmail: group.candidateEmail,
+          slackActivityCount: group.slackActivityCount,
+          emailActivityCount: group.emailActivityCount,
+          opsReportActivityCount: group.opsReportActivityCount,
+          dispatchRequestActivityCount: group.dispatchRequestActivityCount,
+          lastActivityAt: group.lastActivityAt,
+          evidenceSamples: group.evidenceSamples,
+          matchStatus: resolved.matchStatus,
+          suggestedInstructorId: resolved.suggestedInstructorId,
+          resolvedInstructorId: resolved.resolvedInstructorId,
+          resolutionBasis: resolved.resolutionBasis,
+        },
       });
-      continue;
-    }
 
-    const decision = latestDecisions.get(registryKey);
-    const resolved = resolveRegistryStatus(group, decision);
-    if (
-      resolved.resolvedInstructorId &&
-      ACTIVE_REGISTRY_STATUSES.includes(resolved.matchStatus)
-    ) {
-      affectedInstructorIds.add(resolved.resolvedInstructorId);
-    }
-
-    await prisma.activityReviewRegistry.upsert({
-      where: { registryKey },
-      create: {
-        runId,
+      return {
         registryKey,
         sourceType: group.sourceType,
-        sourceRefs: group.sourceRefs,
-        candidateName: group.candidateName,
-        candidateEmail: group.candidateEmail,
+        matchStatus: resolved.matchStatus,
+        suggestedInstructorId: resolved.suggestedInstructorId,
+        resolvedInstructorId: resolved.resolvedInstructorId,
+        resolutionBasis: resolved.resolutionBasis,
         slackActivityCount: group.slackActivityCount,
         emailActivityCount: group.emailActivityCount,
         opsReportActivityCount: group.opsReportActivityCount,
         dispatchRequestActivityCount: group.dispatchRequestActivityCount,
         lastActivityAt: group.lastActivityAt,
-        evidenceSamples: group.evidenceSamples,
-        matchStatus: resolved.matchStatus,
-        suggestedInstructorId: resolved.suggestedInstructorId,
-        resolvedInstructorId: resolved.resolvedInstructorId,
-        resolutionBasis: resolved.resolutionBasis,
-      },
-      update: {
-        runId,
-        sourceType: group.sourceType,
-        sourceRefs: group.sourceRefs,
-        candidateName: group.candidateName,
-        candidateEmail: group.candidateEmail,
-        slackActivityCount: group.slackActivityCount,
-        emailActivityCount: group.emailActivityCount,
-        opsReportActivityCount: group.opsReportActivityCount,
-        dispatchRequestActivityCount: group.dispatchRequestActivityCount,
-        lastActivityAt: group.lastActivityAt,
-        evidenceSamples: group.evidenceSamples,
-        matchStatus: resolved.matchStatus,
-        suggestedInstructorId: resolved.suggestedInstructorId,
-        resolvedInstructorId: resolved.resolvedInstructorId,
-        resolutionBasis: resolved.resolutionBasis,
-      },
-    });
+      } satisfies ActivityRegistryUpdate;
+    }
+  );
 
-    if (resolved.matchStatus === "auto_accepted") result.registries.autoAccepted += 1;
-    if (resolved.matchStatus === "pending") result.registries.pending += 1;
-    if (resolved.matchStatus === "approved") result.registries.approved += 1;
-    if (resolved.matchStatus === "rejected") result.registries.rejected += 1;
-    if (resolved.matchStatus === "invalid") result.registries.invalid += 1;
+  for (const registryUpdate of registryResults) {
+    if (!registryUpdate) continue;
+    if (
+      registryUpdate.resolvedInstructorId &&
+      ACTIVE_REGISTRY_STATUSES.includes(registryUpdate.matchStatus)
+    ) {
+      affectedInstructorIds.add(registryUpdate.resolvedInstructorId);
+    }
 
-    result.registryUpdates.push({
-      registryKey,
-      sourceType: group.sourceType,
-      matchStatus: resolved.matchStatus,
-      suggestedInstructorId: resolved.suggestedInstructorId,
-      resolvedInstructorId: resolved.resolvedInstructorId,
-      resolutionBasis: resolved.resolutionBasis,
-      slackActivityCount: group.slackActivityCount,
-      emailActivityCount: group.emailActivityCount,
-      opsReportActivityCount: group.opsReportActivityCount,
-      dispatchRequestActivityCount: group.dispatchRequestActivityCount,
-      lastActivityAt: group.lastActivityAt,
-    });
+    if (registryUpdate.matchStatus === "auto_accepted") {
+      result.registries.autoAccepted += 1;
+    }
+    if (registryUpdate.matchStatus === "pending") {
+      result.registries.pending += 1;
+    }
+    if (registryUpdate.matchStatus === "approved") {
+      result.registries.approved += 1;
+    }
+    if (registryUpdate.matchStatus === "rejected") {
+      result.registries.rejected += 1;
+    }
+    if (registryUpdate.matchStatus === "invalid") {
+      result.registries.invalid += 1;
+    }
+
+    result.registryUpdates.push(registryUpdate);
   }
 
   result.affectedInstructorIds = Array.from(affectedInstructorIds);
 
-  for (const instructorId of affectedInstructorIds) {
-    const registries = await prisma.activityReviewRegistry.findMany({
-      where: {
-        resolvedInstructorId: instructorId,
-        matchStatus: { in: ACTIVE_REGISTRY_STATUSES },
-      },
-      select: {
-        slackActivityCount: true,
-        emailActivityCount: true,
-        opsReportActivityCount: true,
-        dispatchRequestActivityCount: true,
-        lastActivityAt: true,
-      },
-    });
+  await mapWithConcurrency(
+    Array.from(affectedInstructorIds),
+    DB_WRITE_CONCURRENCY,
+    async (instructorId) => {
+      const registries = await prisma.activityReviewRegistry.findMany({
+        where: {
+          resolvedInstructorId: instructorId,
+          matchStatus: { in: ACTIVE_REGISTRY_STATUSES },
+        },
+        select: {
+          slackActivityCount: true,
+          emailActivityCount: true,
+          opsReportActivityCount: true,
+          dispatchRequestActivityCount: true,
+          lastActivityAt: true,
+        },
+      });
 
-    let slackActivityCount = 0;
-    let emailActivityCount = 0;
-    let opsReportActivityCount = 0;
-    let dispatchRequestActivityCount = 0;
-    let maxActivityAt: Date | null = null;
+      let slackActivityCount = 0;
+      let emailActivityCount = 0;
+      let opsReportActivityCount = 0;
+      let dispatchRequestActivityCount = 0;
+      let maxActivityAt: Date | null = null;
 
-    for (const registry of registries) {
-      slackActivityCount += registry.slackActivityCount;
-      emailActivityCount += registry.emailActivityCount;
-      opsReportActivityCount += registry.opsReportActivityCount;
-      dispatchRequestActivityCount += registry.dispatchRequestActivityCount;
-      if (
-        registry.lastActivityAt &&
-        (!maxActivityAt || registry.lastActivityAt > maxActivityAt)
-      ) {
-        maxActivityAt = registry.lastActivityAt;
+      for (const registry of registries) {
+        slackActivityCount += registry.slackActivityCount;
+        emailActivityCount += registry.emailActivityCount;
+        opsReportActivityCount += registry.opsReportActivityCount;
+        dispatchRequestActivityCount += registry.dispatchRequestActivityCount;
+        if (
+          registry.lastActivityAt &&
+          (!maxActivityAt || registry.lastActivityAt > maxActivityAt)
+        ) {
+          maxActivityAt = registry.lastActivityAt;
+        }
       }
-    }
 
-    const current = await prisma.instructor.findUnique({
-      where: { id: instructorId },
-      select: { lastActivityAt: true },
-    });
-    let finalLastActivityAt = current?.lastActivityAt ?? null;
-    if (maxActivityAt && (!finalLastActivityAt || maxActivityAt > finalLastActivityAt)) {
-      finalLastActivityAt = maxActivityAt;
-    }
+      const current = await prisma.instructor.findUnique({
+        where: { id: instructorId },
+        select: { lastActivityAt: true },
+      });
+      let finalLastActivityAt = current?.lastActivityAt ?? null;
+      if (
+        maxActivityAt &&
+        (!finalLastActivityAt || maxActivityAt > finalLastActivityAt)
+      ) {
+        finalLastActivityAt = maxActivityAt;
+      }
 
-    await prisma.instructor.update({
-      where: { id: instructorId },
-      data: {
+      await prisma.instructor.update({
+        where: { id: instructorId },
+        data: {
+          slackActivityCount,
+          emailActivityCount,
+          opsReportActivityCount,
+          dispatchRequestActivityCount,
+          lastActivityAt: finalLastActivityAt,
+        },
+      });
+
+      result.aggregateUpdates.push({
+        instructorId,
         slackActivityCount,
         emailActivityCount,
         opsReportActivityCount,
         dispatchRequestActivityCount,
         lastActivityAt: finalLastActivityAt,
-      },
-    });
-
-    result.aggregateUpdates.push({
-      instructorId,
-      slackActivityCount,
-      emailActivityCount,
-      opsReportActivityCount,
-      dispatchRequestActivityCount,
-      lastActivityAt: finalLastActivityAt,
-    });
-  }
+      });
+    }
+  );
 
   return result;
 }

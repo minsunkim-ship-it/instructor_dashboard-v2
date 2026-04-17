@@ -267,6 +267,9 @@ async function runSlack(
     perPageLimit: 200,
     incrementalMaxPages: 5,
     fullBackfillMaxPages: 10,
+    requestTimeoutMs: 10_000,
+    channelTimeoutMs: 30_000,
+    userLookupConcurrency: 8,
   });
 
   const totalMessages = collect.channels.reduce(
@@ -290,6 +293,9 @@ async function runGmail(
     checkpoints: [],
     maxPages: 5,
     pageSize: 100,
+    requestTimeoutMs: 10_000,
+    targetTimeoutMs: 60_000,
+    threadFetchConcurrency: 8,
   });
 
   const normalized = normalizeGmailCollect(collect);

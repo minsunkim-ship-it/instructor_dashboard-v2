@@ -146,6 +146,21 @@ export interface SlackCollectOptions {
    * 이를 보완하려면 주기적 full reconcile이 필요하다.
    */
   overlapSeconds?: number;
+  /**
+   * Slack API 개별 요청 타임아웃(ms).
+   * 응답이 없으면 Abort 후 source 실패로 처리한다.
+   */
+  requestTimeoutMs?: number;
+  /**
+   * 채널 1개 수집 전체 budget(ms).
+   * history + users.info profile 조회를 포함해 이 시간을 넘기면 해당 채널만 실패 처리한다.
+   */
+  channelTimeoutMs?: number;
+  /**
+   * users.info 병렬 조회 수.
+   * 순차 조회로 인한 장시간 대기를 줄이기 위해 제한된 병렬도로 처리한다.
+   */
+  userLookupConcurrency?: number;
 }
 
 function getEnv(): { token: string; workspaceId: string } {
@@ -188,28 +203,70 @@ interface SlackUsersInfoResponse extends SlackApiEnvelope {
 async function slackGet<T extends SlackApiEnvelope>(
   token: string,
   path: string,
-  params: Record<string, string>
+  params: Record<string, string>,
+  options?: { signal?: AbortSignal; timeoutMs?: number }
 ): Promise<T> {
+  const timeoutMs = options?.timeoutMs ?? 10_000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(`Slack API ${path} timeout after ${timeoutMs}ms`));
+  }, timeoutMs);
+  const parentSignal = options?.signal;
+  const abortFromParent = () => {
+    controller.abort(parentSignal?.reason);
+  };
+
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      abortFromParent();
+    } else {
+      parentSignal.addEventListener("abort", abortFromParent, { once: true });
+    }
+  }
+
   const qs = new URLSearchParams(params).toString();
-  const res = await fetch(`${SLACK_API_BASE}/${path}?${qs}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-    },
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Slack API ${path} HTTP ${res.status}: ${await res.text()}`
-    );
+  try {
+    const res = await fetch(`${SLACK_API_BASE}/${path}?${qs}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Slack API ${path} HTTP ${res.status}: ${await res.text()}`
+      );
+    }
+    const json = (await res.json()) as T;
+    if (!json.ok) {
+      throw new Error(
+        `Slack API ${path} 실패: ${json.error ?? "unknown"}`
+      );
+    }
+    return json;
+  } catch (error) {
+    const isAbort =
+      error instanceof DOMException
+        ? error.name === "AbortError"
+        : error instanceof Error
+          ? error.name === "AbortError"
+          : false;
+    if (isAbort) {
+      const reason = controller.signal.reason;
+      if (reason instanceof Error && reason.message) {
+        throw reason;
+      }
+      throw new Error(`Slack API ${path} 요청이 중단되었습니다.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    if (parentSignal) {
+      parentSignal.removeEventListener("abort", abortFromParent);
+    }
   }
-  const json = (await res.json()) as T;
-  if (!json.ok) {
-    throw new Error(
-      `Slack API ${path} 실패: ${json.error ?? "unknown"}`
-    );
-  }
-  return json;
 }
 
 /**
@@ -219,7 +276,13 @@ async function slackGet<T extends SlackApiEnvelope>(
 async function fetchChannelHistory(
   token: string,
   channelId: string,
-  options?: { oldest?: string; perPageLimit?: number; maxPages?: number }
+  options?: {
+    oldest?: string;
+    perPageLimit?: number;
+    maxPages?: number;
+    signal?: AbortSignal;
+    requestTimeoutMs?: number;
+  }
 ): Promise<SlackMessage[]> {
   const perPageLimit = options?.perPageLimit ?? 200;
   const maxPages = options?.maxPages ?? 5;
@@ -237,7 +300,11 @@ async function fetchChannelHistory(
     const data = await slackGet<SlackConversationsHistoryResponse>(
       token,
       "conversations.history",
-      params
+      params,
+      {
+        signal: options?.signal,
+        timeoutMs: options?.requestTimeoutMs,
+      }
     );
 
     if (Array.isArray(data.messages)) {
@@ -257,15 +324,24 @@ async function fetchChannelHistory(
 async function fetchUserProfile(
   token: string,
   userId: string,
-  cache: Map<string, SlackUserProfile>
+  cache: Map<string, SlackUserProfile>,
+  options?: { signal?: AbortSignal; requestTimeoutMs?: number }
 ): Promise<SlackUserProfile> {
   const cached = cache.get(userId);
   if (cached) return cached;
 
   try {
-    const data = await slackGet<SlackUsersInfoResponse>(token, "users.info", {
-      user: userId,
-    });
+    const data = await slackGet<SlackUsersInfoResponse>(
+      token,
+      "users.info",
+      {
+        user: userId,
+      },
+      {
+        signal: options?.signal,
+        timeoutMs: options?.requestTimeoutMs,
+      }
+    );
     const profile = data.user?.profile;
     const resolved: SlackUserProfile = {
       userId,
@@ -276,7 +352,10 @@ async function fetchUserProfile(
     };
     cache.set(userId, resolved);
     return resolved;
-  } catch {
+  } catch (error) {
+    if (options?.signal?.aborted) {
+      throw error;
+    }
     // user 조회 실패는 전체 실패로 확산시키지 않는다. 빈 profile을 반환.
     const resolved: SlackUserProfile = {
       userId,
@@ -304,6 +383,29 @@ function epochToSlackTs(epoch: number): string {
   return `${epoch.toFixed(6)}`;
 }
 
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const safeConcurrency = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array<R>(items.length);
+  let index = 0;
+
+  async function worker() {
+    while (true) {
+      const current = index;
+      index += 1;
+      if (current >= items.length) break;
+      results[current] = await mapper(items[current]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: safeConcurrency }, () => worker()));
+  return results;
+}
+
 /**
  * Pilot 4-5 v2: canonical scope 3개 채널에서 메시지를 수집한다.
  *
@@ -328,6 +430,9 @@ export async function collectFromSlack(
   const incrementalMaxPages = Math.max(opts?.incrementalMaxPages ?? 5, 1);
   const fullBackfillMaxPages = Math.max(opts?.fullBackfillMaxPages ?? 10, 1);
   const overlapSeconds = opts?.overlapSeconds ?? 600;
+  const requestTimeoutMs = Math.max(opts?.requestTimeoutMs ?? 10_000, 1_000);
+  const channelTimeoutMs = Math.max(opts?.channelTimeoutMs ?? 30_000, 5_000);
+  const userLookupConcurrency = Math.max(opts?.userLookupConcurrency ?? 8, 1);
 
   const cpMap = new Map<string, SlackChannelCheckpoint>();
   for (const cp of checkpoints) {
@@ -339,6 +444,14 @@ export async function collectFromSlack(
   const results: RawSlackChannelCollect[] = [];
 
   for (const cfg of channels) {
+    const channelController = new AbortController();
+    const channelTimeout = setTimeout(() => {
+      channelController.abort(
+        new Error(
+          `Slack channel ${cfg.channelId} timeout after ${channelTimeoutMs}ms`
+        )
+      );
+    }, channelTimeoutMs);
     try {
       // incremental: oldest = last_seen_ts - overlap_seconds
       let oldest: string | undefined;
@@ -354,6 +467,8 @@ export async function collectFromSlack(
         oldest,
         perPageLimit,
         maxPages: oldest ? incrementalMaxPages : fullBackfillMaxPages,
+        signal: channelController.signal,
+        requestTimeoutMs,
       });
 
       const userIds = new Set<string>();
@@ -362,9 +477,18 @@ export async function collectFromSlack(
       }
 
       const users: Record<string, SlackUserProfile> = {};
-      for (const uid of userIds) {
-        const profile = await fetchUserProfile(token, uid, userCache);
-        users[uid] = profile;
+      const profiles = await mapWithConcurrency(
+        [...userIds],
+        userLookupConcurrency,
+        async (uid) =>
+          fetchUserProfile(token, uid, userCache, {
+            signal: channelController.signal,
+            requestTimeoutMs,
+          })
+      );
+
+      for (const profile of profiles) {
+        users[profile.userId] = profile;
       }
 
       results.push({
@@ -384,6 +508,8 @@ export async function collectFromSlack(
         users: {},
         error: message,
       });
+    } finally {
+      clearTimeout(channelTimeout);
     }
   }
 

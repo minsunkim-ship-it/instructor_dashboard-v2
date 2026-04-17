@@ -106,12 +106,37 @@ interface GmailThreadGetResponse {
   messages?: GmailMessage[];
 }
 
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  await Promise.all(
+    Array.from({ length: limit }, async () => {
+      while (true) {
+        const current = nextIndex++;
+        if (current >= items.length) return;
+        results[current] = await worker(items[current], current);
+      }
+    })
+  );
+
+  return results;
+}
+
 async function gmailGet<T>(
   accessToken: string,
   path: string,
-  params: Record<string, string> = {}
+  params: Record<string, string> = {},
+  options?: { signal?: AbortSignal; timeoutMs?: number }
 ): Promise<T> {
-  return googleApiGet<T>(accessToken, GMAIL_API_BASE, path, params);
+  return googleApiGet<T>(accessToken, GMAIL_API_BASE, path, params, options);
 }
 
 function findHeader(headers: GmailHeader[] | undefined, name: string): string | null {
@@ -140,6 +165,9 @@ export async function collectFromGmail(options?: {
   pageSize?: number;
   /** target address 별 checkpoint. 없으면 full backfill. */
   checkpoints?: GmailTargetCheckpoint[];
+  requestTimeoutMs?: number;
+  targetTimeoutMs?: number;
+  threadFetchConcurrency?: number;
 }): Promise<GmailCollectResult> {
   const { accountEmail, targetAddresses } = getEnv();
   const accessToken = await exchangeGoogleUserAccessToken();
@@ -148,6 +176,12 @@ export async function collectFromGmail(options?: {
   const maxPages = options?.maxPages ?? 5;
   const pageSize = Math.min(options?.pageSize ?? 100, 500);
   const checkpoints = options?.checkpoints ?? [];
+  const requestTimeoutMs = Math.max(options?.requestTimeoutMs ?? 10_000, 1_000);
+  const targetTimeoutMs = Math.max(options?.targetTimeoutMs ?? 60_000, 5_000);
+  const threadFetchConcurrency = Math.max(
+    options?.threadFetchConcurrency ?? 8,
+    1
+  );
 
   const cpMap = new Map<string, GmailTargetCheckpoint>();
   for (const cp of checkpoints) {
@@ -160,6 +194,14 @@ export async function collectFromGmail(options?: {
   const targetAddressErrors: { targetAddress: string; error: string }[] = [];
 
   for (const targetAddress of targetAddresses) {
+    const targetController = new AbortController();
+    const targetTimeout = setTimeout(() => {
+      targetController.abort(
+        new Error(
+          `Gmail target ${targetAddress} timeout after ${targetTimeoutMs}ms`
+        )
+      );
+    }, targetTimeoutMs);
     try {
       // incremental: after:<epoch_seconds> 쿼리 추가
       let afterClause = "";
@@ -184,7 +226,11 @@ export async function collectFromGmail(options?: {
         const data = await gmailGet<GmailThreadsListResponse>(
           accessToken,
           "/users/me/threads",
-          params
+          params,
+          {
+            signal: targetController.signal,
+            timeoutMs: requestTimeoutMs,
+          }
         );
 
         if (Array.isArray(data.threads)) {
@@ -198,52 +244,63 @@ export async function collectFromGmail(options?: {
         if (!data.nextPageToken) break;
         pageToken = data.nextPageToken;
       }
-
     } catch (error) {
       targetAddressErrors.push({
         targetAddress,
         error: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      clearTimeout(targetTimeout);
     }
   }
 
   // Step 2: deduped thread 상세 로드
-  for (const [threadId, matchedTargets] of threadTargets.entries()) {
-    try {
-      const t = await gmailGet<GmailThreadGetResponse>(
-        accessToken,
-        `/users/me/threads/${encodeURIComponent(threadId)}`,
-        // `metadataHeaders`를 comma-joined 단일 파라미터로 보내면 Gmail API가
-        // 헤더명을 하나로 인식해 Subject/From/To가 비는 경우가 있다.
-        // v2에서는 format=metadata만 지정해 표준 헤더 전체를 받아온 뒤 필요한
-        // 헤더만 추린다.
-        { format: "metadata" }
-      );
+  const threadEntries = Array.from(threadTargets.entries());
+  const loadedThreads = await mapWithConcurrency(
+    threadEntries,
+    threadFetchConcurrency,
+    async ([threadId, matchedTargets]) => {
+      try {
+        const t = await gmailGet<GmailThreadGetResponse>(
+          accessToken,
+          `/users/me/threads/${encodeURIComponent(threadId)}`,
+          // `metadataHeaders`를 comma-joined 단일 파라미터로 보내면 Gmail API가
+          // 헤더명을 하나로 인식해 Subject/From/To가 비는 경우가 있다.
+          // v2에서는 format=metadata만 지정해 표준 헤더 전체를 받아온 뒤 필요한
+          // 헤더만 추린다.
+          { format: "metadata" },
+          { timeoutMs: requestTimeoutMs }
+        );
 
-      const messages = t.messages ?? [];
-      if (messages.length === 0) continue;
+        const messages = t.messages ?? [];
+        if (messages.length === 0) return null;
 
-      const first = messages[0];
-      const last = messages[messages.length - 1];
+        const first = messages[0];
+        const last = messages[messages.length - 1];
 
-      const subject = findHeader(first.payload?.headers, "Subject");
-      const from = findHeader(first.payload?.headers, "From");
-      const to = findHeader(first.payload?.headers, "To");
+        const subject = findHeader(first.payload?.headers, "Subject");
+        const from = findHeader(first.payload?.headers, "From");
+        const to = findHeader(first.payload?.headers, "To");
 
-      threads.push({
-        threadId,
-        accountEmail,
-        matchedTargetAddresses: Array.from(matchedTargets).sort(),
-        firstMessageId: first.id ?? null,
-        lastInternalDateMs: last.internalDate ?? null,
-        subject,
-        snippet: (first.snippet ?? null)?.slice(0, 300) ?? null,
-        from,
-        to,
-      });
-    } catch {
-      continue;
+        return {
+          threadId,
+          accountEmail,
+          matchedTargetAddresses: Array.from(matchedTargets).sort(),
+          firstMessageId: first.id ?? null,
+          lastInternalDateMs: last.internalDate ?? null,
+          subject,
+          snippet: (first.snippet ?? null)?.slice(0, 300) ?? null,
+          from,
+          to,
+        } satisfies RawGmailThread;
+      } catch {
+        return null;
+      }
     }
+  );
+
+  for (const thread of loadedThreads) {
+    if (thread) threads.push(thread);
   }
 
   if (threads.length === 0 && targetAddressErrors.length === targetAddresses.length) {

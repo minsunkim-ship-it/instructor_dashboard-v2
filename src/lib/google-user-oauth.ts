@@ -1,5 +1,50 @@
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
+export interface GoogleApiRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+function buildAbortSignal(
+  options: GoogleApiRequestOptions = {}
+): { signal?: AbortSignal; cleanup: () => void } {
+  const { signal, timeoutMs } = options;
+  if (!signal && !timeoutMs) {
+    return { signal: undefined, cleanup: () => {} };
+  }
+
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  const abortFromParent = () => {
+    controller.abort(signal?.reason ?? new Error("Upstream Google API request aborted"));
+  };
+
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+    } else {
+      signal.addEventListener("abort", abortFromParent, { once: true });
+    }
+  }
+
+  if (timeoutMs && timeoutMs > 0) {
+    timeout = setTimeout(() => {
+      controller.abort(
+        new Error(`Google API request timed out after ${timeoutMs}ms`)
+      );
+    }, timeoutMs);
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      if (timeout) clearTimeout(timeout);
+      if (signal) signal.removeEventListener("abort", abortFromParent);
+    },
+  };
+}
+
 export interface GoogleUserOAuthEnv {
   clientId: string;
   clientSecret: string;
@@ -70,18 +115,26 @@ export async function googleApiGet<T>(
   accessToken: string,
   baseUrl: string,
   path: string,
-  params: Record<string, string> = {}
+  params: Record<string, string> = {},
+  options: GoogleApiRequestOptions = {}
 ): Promise<T> {
   const qs = new URLSearchParams(params).toString();
   const url = qs ? `${baseUrl}${path}?${qs}` : `${baseUrl}${path}`;
-  const res = await fetch(url, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const { signal, cleanup } = buildAbortSignal(options);
 
-  if (!res.ok) {
-    throw new Error(`Google API ${path} HTTP ${res.status}: ${await res.text()}`);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
+    });
+
+    if (!res.ok) {
+      throw new Error(`Google API ${path} HTTP ${res.status}: ${await res.text()}`);
+    }
+
+    return (await res.json()) as T;
+  } finally {
+    cleanup();
   }
-
-  return (await res.json()) as T;
 }

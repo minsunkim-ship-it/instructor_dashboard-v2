@@ -96,42 +96,18 @@ function extractDateRangeFromLabel(
 ): { start: string | null; end: string | null } {
   if (!label) return { start: null, end: null };
 
-  const lines = label
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
   const dates: string[] = [];
-  let lastYear: string | null = null;
 
-  for (const line of lines) {
-    const fullMatch = line.match(/(\d{4})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})/);
-    if (fullMatch) {
-      const [, year, month, day] = fullMatch;
-      lastYear = year;
-      dates.push(
-        `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
-      );
-      continue;
-    }
+  for (const match of label.matchAll(
+    /(\d{4})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})/g
+  )) {
+    const [, year, month, day] = match;
+    dates.push(`${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`);
+  }
 
-    const koreanMatch = line.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/);
-    if (koreanMatch) {
-      const [, year, month, day] = koreanMatch;
-      lastYear = year;
-      dates.push(
-        `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
-      );
-      continue;
-    }
-
-    const monthDayMatch = line.match(/(?:^|\s)(\d{1,2})\s*[./-]\s*(\d{1,2})(?=\D|$)/);
-    if (monthDayMatch && lastYear) {
-      const [, month, day] = monthDayMatch;
-      dates.push(
-        `${lastYear}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
-      );
-    }
+  for (const match of label.matchAll(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/g)) {
+    const [, year, month, day] = match;
+    dates.push(`${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`);
   }
 
   if (dates.length === 0) return { start: null, end: null };
@@ -175,6 +151,26 @@ function isDisplayableTeachingHistory(item: TeachingHistoryItem): boolean {
   );
 }
 
+function dedupeTeachingHistory(
+  history: TeachingHistoryItem[]
+): TeachingHistoryItem[] {
+  const seen = new Set<string>();
+
+  return history.filter((item) => {
+    const signature = [
+      item.course_name ?? "",
+      item.company_name ?? "",
+      formatTeachingPeriod(item),
+    ].join("||");
+
+    if (seen.has(signature)) {
+      return false;
+    }
+    seen.add(signature);
+    return true;
+  });
+}
+
 type FeeChangeDirection = "initial" | "up" | "down";
 
 interface CollapsedFeeHistoryItem {
@@ -192,11 +188,15 @@ interface CollapsedFeeHistoryItem {
 
 function getFeeDateLabel(item: FeeHistoryItem): string {
   if (item.effective_date) return formatDate(item.effective_date);
+  const parsed = extractDateRangeFromLabel(item.effective_label);
+  if (parsed.start) return formatDate(parsed.start);
   return item.effective_label ?? "-";
 }
 
 function getFeeSortKey(item: FeeHistoryItem): string {
-  return item.effective_date ?? item.effective_label ?? "";
+  if (item.effective_date) return item.effective_date;
+  const parsed = extractDateRangeFromLabel(item.effective_label);
+  return parsed.start ?? item.effective_label ?? "";
 }
 
 function sortFeeHistoryChronologically(
@@ -224,33 +224,30 @@ function collapseFeeTimeline(
   for (const item of timeline) {
     const label = getFeeDateLabel(item);
     const sortKey = getFeeSortKey(item);
-    const current = collapsed[collapsed.length - 1];
+    const previous = collapsed[collapsed.length - 1];
+    const amount = item.amount!;
 
-    if (current && current.amount === item.amount) {
-      current.end_label = label;
-      current.end_key = sortKey;
-      current.is_current = current.is_current || item.is_current;
-      if (!current.context && item.context) {
-        current.context = item.context;
-      }
+    if (previous && previous.amount === amount) {
+      previous.end_label = label;
+      previous.end_key = sortKey;
+      previous.is_current = previous.is_current || item.is_current;
       continue;
     }
 
-    const previous = collapsed[collapsed.length - 1];
     const direction: FeeChangeDirection = !previous
       ? "initial"
-      : item.amount! > previous.amount
+      : amount > previous.amount
         ? "up"
         : "down";
 
     collapsed.push({
-      amount: item.amount!,
+      amount,
       source_type: item.source_type,
       context: item.context,
       start_label: label,
-      end_label: null,
+      end_label: label,
       start_key: sortKey,
-      end_key: null,
+      end_key: sortKey,
       is_current: item.is_current,
       direction,
       notes: [],
@@ -364,13 +361,9 @@ function noteMatchesTimeline(
 ): boolean {
   if (note.amount === null || note.amount !== item.amount) return false;
 
-  if (!note.start_date) return true;
+  if (!note.start_date || !item.start_key) return false;
 
-  if (!item.start_key) return true;
-
-  const endKey = item.end_key ?? item.start_key;
-  if (item.is_current && note.start_date >= item.start_key) return true;
-  return note.start_date >= item.start_key && note.start_date <= endKey;
+  return note.start_date === item.start_key;
 }
 
 function attachTeachingFeeNotes(
@@ -382,11 +375,153 @@ function attachTeachingFeeNotes(
   for (const note of notes) {
     const target = next.find((item) => noteMatchesTimeline(note, item));
     if (target) {
-      target.notes.push(note);
+      const duplicate = target.notes.some(
+        (existing) =>
+          existing.note === note.note &&
+          existing.period === note.period &&
+          existing.context === note.context
+      );
+      if (!duplicate) {
+        target.notes.push(note);
+      }
     }
   }
 
   return next;
+}
+
+function formatMoneyDelta(won: number): string {
+  const prefix = won > 0 ? "+" : "-";
+  return `${prefix}${formatMoney(Math.abs(won))}`;
+}
+
+function formatFeeSegmentPeriod(
+  item: CollapsedFeeHistoryItem,
+  isCurrentSegment: boolean
+): string {
+  if (isCurrentSegment) {
+    return `${item.start_label} ~ 현재`;
+  }
+  if (!item.end_label || item.end_label === item.start_label) {
+    return item.start_label;
+  }
+  return `${item.start_label} ~ ${item.end_label}`;
+}
+
+function FeeTrendChart({ timeline }: { timeline: CollapsedFeeHistoryItem[] }) {
+  if (timeline.length === 0) return null;
+
+  const width = 520;
+  const height = 120;
+  const paddingX = 20;
+  const paddingY = 18;
+  const amounts = timeline.map((item) => item.amount);
+  const maxAmount = Math.max(...amounts);
+  const minAmount = Math.min(...amounts);
+  const range = Math.max(1, maxAmount - minAmount);
+  const usableWidth = width - paddingX * 2;
+  const usableHeight = height - paddingY * 2;
+
+  const getX = (index: number) =>
+    paddingX +
+    (timeline.length === 1
+      ? usableWidth / 2
+      : (usableWidth * index) / (timeline.length - 1));
+  const getY = (amount: number) =>
+    paddingY + ((maxAmount - amount) / range) * usableHeight;
+
+  const path = timeline
+    .map((item, index) => {
+      const x = getX(index);
+      const y = getY(item.amount);
+
+      if (index === 0) {
+        return `M ${x} ${y}`;
+      }
+
+      return `H ${x} V ${y}`;
+    })
+    .join(" ");
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white px-4 py-4">
+      <div className="mb-3 flex items-end justify-between gap-4">
+        <div>
+          <div className="text-xs font-medium text-gray-500">단가 추이</div>
+          <div className="mt-1 text-sm text-gray-600">
+            초기 단가부터 변동 시점만 표시합니다.
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-gray-500">변동 횟수</div>
+          <div className="text-lg font-semibold text-gray-900">
+            {Math.max(0, timeline.length - 1)}회
+          </div>
+        </div>
+      </div>
+
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="h-32 w-full overflow-visible"
+        role="img"
+        aria-label="단가 추이 그래프"
+      >
+        <line
+          x1={paddingX}
+          x2={width - paddingX}
+          y1={height - paddingY}
+          y2={height - paddingY}
+          stroke="#E5E7EB"
+          strokeWidth="1"
+        />
+        <line
+          x1={paddingX}
+          x2={width - paddingX}
+          y1={paddingY}
+          y2={paddingY}
+          stroke="#F3F4F6"
+          strokeWidth="1"
+        />
+        <path
+          d={path}
+          fill="none"
+          stroke="#2563EB"
+          strokeWidth="3"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        {timeline.map((item, index) => {
+          const x = getX(index);
+          const y = getY(item.amount);
+
+          return (
+            <g key={`${item.start_key}-${item.amount}-${index}`}>
+              <circle cx={x} cy={y} r="5" fill="#2563EB" />
+              <text
+                x={x}
+                y={Math.max(12, y - 10)}
+                textAnchor="middle"
+                fontSize="11"
+                fill="#111827"
+                fontWeight="600"
+              >
+                {formatMoney(item.amount)}
+              </text>
+              <text
+                x={x}
+                y={height - 4}
+                textAnchor="middle"
+                fontSize="10"
+                fill="#6B7280"
+              >
+                {item.start_label.replace(/^(\d{4})\./, "").replace(/\./g, ".")}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
 }
 
 // --- Main component ---
@@ -885,8 +1020,10 @@ function OpsIntelligenceSection({ data }: { data: InstructorDetailData }) {
 
 function TeachingHistorySection({ data }: { data: InstructorDetailData }) {
   const history = data.teaching_history as TeachingHistoryItem[];
-  const visibleHistory = history.filter(isDisplayableTeachingHistory);
-  const hiddenCount = history.length - visibleHistory.length;
+  const displayableHistory = history.filter(isDisplayableTeachingHistory);
+  const visibleHistory = dedupeTeachingHistory(displayableHistory);
+  const hiddenEmptyCount = history.length - displayableHistory.length;
+  const hiddenDuplicateCount = displayableHistory.length - visibleHistory.length;
   const remaining = data.teaching_history_remaining_count;
 
   return (
@@ -934,9 +1071,15 @@ function TeachingHistorySection({ data }: { data: InstructorDetailData }) {
             );
           })}
 
-          {hiddenCount > 0 && (
+          {hiddenEmptyCount > 0 && (
             <div className="px-1 pt-1 text-xs text-gray-400">
-              과정명·기업명·기간 정보가 없는 계약 행 {hiddenCount}건은 숨김 처리했습니다.
+              과정명·기업명·기간 정보가 없는 계약 행 {hiddenEmptyCount}건은 숨김 처리했습니다.
+            </div>
+          )}
+
+          {hiddenDuplicateCount > 0 && (
+            <div className="px-1 pt-1 text-xs text-gray-400">
+              동일한 강의 이력 {hiddenDuplicateCount}건은 중복 제거했습니다.
             </div>
           )}
 
@@ -970,91 +1113,105 @@ function FeeHistorySection({ data }: { data: InstructorDetailData }) {
         <p className="text-sm text-gray-400">이력 없음</p>
       ) : (
         <div className="space-y-4">
-          {timeline.length > 0 && (
-            <div className="space-y-2">
-              <div className="text-xs text-gray-500">
-                동일 금액은 묶어서 오래된 순으로 표시합니다.
-              </div>
-              {timeline.map((item, index) => {
-                const sourceDisplay = formatFeeSource(item.source_type);
-                const periodDisplay =
-                  item.is_current && item.end_label
-                    ? `${item.start_label} ~ 현재`
-                    : item.end_label
-                      ? `${item.start_label} ~ ${item.end_label}`
-                      : item.start_label;
-                const directionLabel =
-                  item.direction === "initial"
-                    ? "초기"
-                    : item.direction === "up"
-                      ? "상승"
-                      : "하락";
+          {timeline.length > 0 && <FeeTrendChart timeline={timeline} />}
 
-                return (
-                  <div
-                    key={`${item.start_label}-${item.amount}-${index}`}
-                    className={`rounded-md border px-4 py-3 ${
-                      item.is_current
-                        ? "border-blue-200 bg-blue-50"
-                        : "border-gray-200 bg-white"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-medium text-gray-900">
-                            {periodDisplay}
-                          </span>
-                          <span
-                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
-                              item.direction === "up"
-                                ? "bg-green-100 text-green-700"
-                                : item.direction === "down"
-                                  ? "bg-red-100 text-red-700"
-                                  : "bg-gray-100 text-gray-600"
-                            }`}
-                          >
-                            {directionLabel}
-                          </span>
-                          {item.is_current && (
-                            <span className="inline-flex items-center rounded bg-blue-100 px-1.5 py-0.5 text-xs font-medium text-blue-700">
-                              현재
+          {timeline.length > 0 && (
+            <div className="rounded-lg border border-gray-200 bg-white">
+              <div className="border-b border-gray-100 px-4 py-3">
+                <div className="text-xs font-medium text-gray-500">
+                  변동 시점
+                </div>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {timeline.map((item, index) => {
+                  const previous = index > 0 ? timeline[index - 1] : null;
+                  const changeAmount = previous ? item.amount - previous.amount : 0;
+                  const isCurrentSegment = index === timeline.length - 1;
+                  const sourceDisplay =
+                    item.source_type === "contract_sheet"
+                      ? null
+                      : formatFeeSource(item.source_type);
+                  const contextLine = [sourceDisplay, item.context]
+                    .filter(Boolean)
+                    .join(" · ");
+                  const directionLabel =
+                    item.direction === "initial"
+                      ? "시작"
+                      : item.direction === "up"
+                        ? "상승"
+                        : "하락";
+                  const badgeClass =
+                    item.direction === "up"
+                      ? "bg-green-100 text-green-700"
+                      : item.direction === "down"
+                        ? "bg-red-100 text-red-700"
+                        : "bg-gray-100 text-gray-600";
+
+                  return (
+                    <div
+                      key={`${item.start_key}-${item.amount}-${index}`}
+                      className="px-4 py-3"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-semibold text-gray-900">
+                              {item.start_label}
                             </span>
+                            <span
+                              className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${badgeClass}`}
+                            >
+                              {directionLabel}
+                            </span>
+                            {isCurrentSegment && (
+                              <span className="inline-flex items-center rounded bg-blue-100 px-1.5 py-0.5 text-xs font-medium text-blue-700">
+                                현재 단가
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            유지 구간: {formatFeeSegmentPeriod(item, isCurrentSegment)}
+                          </div>
+                          {contextLine && (
+                            <div className="text-xs text-gray-500">
+                              {contextLine}
+                            </div>
+                          )}
+                          {item.notes.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {item.notes.map((note) => (
+                                <div
+                                  key={note.id}
+                                  className="rounded bg-gray-100 px-2 py-1.5 text-xs text-gray-600"
+                                >
+                                  {(note.period || note.context) && (
+                                    <div className="mb-0.5 text-[11px] text-gray-500">
+                                      {[note.period, note.context]
+                                        .filter(Boolean)
+                                        .join(" · ")}
+                                    </div>
+                                  )}
+                                  <div>{note.note}</div>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
-                      <div className="text-xs text-gray-500">
-                          {sourceDisplay}
-                          {item.context ? ` · ${item.context}` : ""}
-                        </div>
-                        {item.notes.length > 0 && (
-                          <div className="mt-2 space-y-1">
-                            {item.notes.map((note) => (
-                              <div
-                                key={note.id}
-                                className="rounded bg-gray-100 px-2 py-1.5 text-xs text-gray-600"
-                              >
-                                {(note.period || note.context) && (
-                                  <div className="mb-0.5 text-[11px] text-gray-500">
-                                    {[note.period, note.context]
-                                      .filter(Boolean)
-                                      .join(" · ")}
-                                  </div>
-                                )}
-                                <div>{note.note}</div>
-                              </div>
-                            ))}
+                        <div className="shrink-0 text-right">
+                          <div className="text-sm font-semibold text-gray-900">
+                            {formatMoney(item.amount)}
                           </div>
-                        )}
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <div className="text-sm font-semibold text-gray-900">
-                          {formatMoney(item.amount)}
+                          {previous && changeAmount !== 0 && (
+                            <div className="mt-1 text-xs text-gray-500">
+                              {formatMoneyDelta(changeAmount)}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -1065,6 +1222,15 @@ function FeeHistorySection({ data }: { data: InstructorDetailData }) {
               </div>
               <div className="space-y-2">
                 {referenceItems.map((item, index) => (
+                  (() => {
+                    const sourceDisplay =
+                      item.source_type === "contract_sheet"
+                        ? null
+                        : formatFeeSource(item.source_type);
+                    const contextLine = [sourceDisplay, item.context]
+                      .filter(Boolean)
+                      .join(" · ");
+                    return (
                   <div
                     key={`${item.source_type}-${index}`}
                     className="rounded-md border border-orange-200 bg-orange-50 px-4 py-3"
@@ -1079,10 +1245,11 @@ function FeeHistorySection({ data }: { data: InstructorDetailData }) {
                             특수 금액
                           </span>
                         </div>
-                        <div className="text-xs text-gray-500">
-                          {formatFeeSource(item.source_type)}
-                          {item.context ? ` · ${item.context}` : ""}
-                        </div>
+                        {contextLine && (
+                          <div className="text-xs text-gray-500">
+                            {contextLine}
+                          </div>
+                        )}
                       </div>
                       <div className="shrink-0 text-right">
                         <div className="text-sm font-semibold text-gray-900">
@@ -1091,6 +1258,8 @@ function FeeHistorySection({ data }: { data: InstructorDetailData }) {
                       </div>
                     </div>
                   </div>
+                    );
+                  })()
                 ))}
               </div>
             </div>

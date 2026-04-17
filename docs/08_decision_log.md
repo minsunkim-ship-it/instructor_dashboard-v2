@@ -676,3 +676,23 @@
   - `12_parallel_bundle_guardrails.md`
   - `13_parallel_bundle_prompts.md`
   - `14_wave1_preflight_checklist.md`
+
+### 2026-04-17
+
+#### 특수 금액 키워드 판정의 적용 범위 명확화
+- 결정:
+  - 키워드 기반 특수 금액 판정은 **금액 자체를 직접 기술하는 텍스트 필드**에만 적용한다.
+  - 적용: Notion `fee_note`.
+  - 미적용: `teaching_histories.fee_extra`, `special_notes` — 별도 special evidence로 취급하되 동일 row의 `deal_fee_hourly`를 자동 전환하지 않는다.
+  - 기본 hourly row의 `is_special_amount` = 해당 row 자체 표현 키워드 OR 3x outlier.
+- 배경:
+  - Wave 1 Group 3 구현 리뷰 중 `feeExtra = "출장비 400,000"`인 정상 `dealFeeHourly = 130,000` row가 기존 `hasKeyword OR isOutlier` 판정에서 특수 금액으로 잘못 분류되는 케이스 발견.
+  - 정책 원 전제: 키워드 규칙은 "키워드가 붙은 금액 표현 자체"가 대상. 별개 필드의 키워드는 원 전제와 무관.
+- 반영 문서:
+  - `docs/01_core_policy.md` §8
+  - `docs/04_data_pipeline.md` §12
+  - `docs/08_decision_log.md`
+- 구현 반영:
+  - Wave 1 Group 3 구현은 본 정책 명확화와 일치해야 한다. 경로별 판정 기준:
+    - Notion `fee_note` 경로: 키워드 판정 적용.
+    - `teaching_histories` 경로: `deal_fee_hourly`에 대해 outlier 기준만 적용.

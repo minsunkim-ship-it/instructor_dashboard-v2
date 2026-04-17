@@ -96,6 +96,14 @@
   - 특수 금액 키워드가 포함되어 있지 않다.
   - 동일 강사의 다른 일반 출강료와 비교했을 때 과도한 이상치가 아니다.
   - 노션 기본 강사료 또는 fee_note, 세일즈맵, 계약시트 중 하나에서 확인 가능하다.
+- 키워드 판정의 적용 범위:
+  - 키워드 기반 특수 금액 판정은 **금액 자체를 직접 기술하는 텍스트 필드**에서만 적용한다.
+  - 적용: Notion `fee_note` (기본 강사료를 직접 기술).
+  - 미적용: `teaching_histories.fee_extra` (강사료 외 별도 항목), `teaching_histories.special_notes` (계약 특이사항) — 이들은 기본 hourly row를 직접 기술하지 않는다.
+  - 미적용 필드의 키워드는 별도 special evidence/이력으로 취급하되, 동일 row의 `deal_fee_hourly`를 자동으로 특수 금액으로 전환하지 않는다.
+- 기본 hourly row의 `is_special_amount` 판정:
+  - 해당 row의 금액 자체 표현(예: Notion `fee_note`)에 키워드가 있거나, 동일 강사 일반 출강료 분포 대비 3배 이상 이상치면 `TRUE`.
+  - 그 외 필드의 키워드만으로는 자동 특수 전환하지 않는다.
 
 ## 9. Engagement Score 정책
 - 총점: 100점

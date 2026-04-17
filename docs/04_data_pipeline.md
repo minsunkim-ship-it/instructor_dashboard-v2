@@ -601,6 +601,10 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 ### 12-4. 특수 금액 처리
 - 콘텐츠 제작비, 건당 금액, 출장비 포함 금액, 개발비 등은 `is_special_amount = TRUE`로 구분한다.
 - 특수 금액은 화면에서 단가 이력으로 참고 표시는 가능하지만 기본 단가 계산에는 사용하지 않는다.
+- `teaching_histories` 기반 fee history 생성 시 `deal_fee_hourly`의 `is_special_amount` 판정은 다음 기준만 적용한다.
+  - 동일 강사 일반 출강료 분포 대비 3배 이상 이상치 (`docs/01` §8).
+- `teaching_histories.fee_extra`, `special_notes`의 키워드는 별도 special evidence로 기록하되, 동일 row의 `deal_fee_hourly`를 자동으로 `is_special_amount = TRUE`로 전환하지 않는다.
+- Notion `fee_note` 기반 fee history 생성 경로는 별도. `fee_note` 자체가 금액을 직접 기술하므로 키워드 판정을 적용한다.
 
 ## 13. 만족도 처리 절차
 

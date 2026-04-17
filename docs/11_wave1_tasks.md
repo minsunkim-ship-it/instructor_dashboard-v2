@@ -144,6 +144,14 @@ Wave 1은 Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 제
 - 참조 문서: `05_api_spec.md` 8절
 - 파일: `src/app/api/status/route.ts` (신규)
 - 선행 의존성: 없음
+- 구현 규칙:
+  - 데이터 접근은 `PipelineRun`, `SourceSyncLog` Prisma 모델을 기준으로 수행한다.
+  - `raw query + try/catch`로 baseline schema 부재를 우회하지 않는다.
+  - 응답 구조는 `05_api_spec.md` 8절의 envelope / 필드명 / 타입 / null 처리 규칙을 따른다.
+  - 환경 차이로 일부 필드가 `null` 또는 빈 배열이 되는 것은 허용한다.
+  - 기존 라우트 인증 체인을 그대로 적용한다.
+  - 주 활용 주체는 내부 운영 모니터링과 frontend 상태 표시 **둘 다**다.
+  - 현재 Wave 1 기준 호출 패턴은 페이지 진입 시 1회 조회를 기본으로 하며, polling을 전제하지 않는다.
 - 검증 기준:
   - 최근 성공 PipelineRun 기준 `last_updated_at` 반환
   - `refresh_available`: 현재 running 상태인 PipelineRun이 없으면 `true`
@@ -187,8 +195,8 @@ Wave 1은 Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 제
 - 구현 규칙:
   - L1 후보 판정: 계약시트에서 해당 강사의 계약 유형/상세 유형 중 `보조강사`, `코치`, `실습코치`, `멘토`, `문항개발` 비율이 정규강사 비율보다 높으면 후보
   - L2 정규강사 보호: `base_fee_hourly >= 100000` 이고 `categories`와 `specialties`가 모두 비어 있지 않으면 후보 제외
-  - L3 전임강사 보호: 전임강사 리스트에 포함된 강사는 무조건 후보 제외
-  - 최종 판정: 보호 규칙 통과한 후보만 `is_practice_coach = TRUE`
+  - L3 전임강사 보호: 실행 시점 입력은 DB의 `instructors.is_fulltime`을 사용하고, `is_fulltime = true`인 강사는 무조건 후보 제외
+- 최종 판정: 보호 규칙 통과한 후보만 `is_practice_coach = TRUE`
 - 완료 기준:
   - 3-Layer 판정이 `01_core_policy.md` 10절과 일치
   - 실습코치로 판정된 강사의 score가 0점 처리됨 (score-recalculator에 이미 구현됨)
@@ -209,6 +217,7 @@ Wave 1은 Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 제
   - 세일즈맵 파이프라인 (fee 후보)
   - 계약시트 파이프라인 (시간당 강사료)
 - 구현 규칙:
+  - 실행 단위는 전 강사 batch다.
   - 일반 강사 우선순위: `fee_fix_configs` > 노션 기본 강사료 > 세일즈맵 확인 금액 > 계약시트 시간당 강사료
   - 전임강사: 노션 기본 강사료 또는 fee_note만 기준
   - 특수금액 키워드: `콘텐츠`, `제작`, `개발비`, `출장비`, `별도`, `건당`, `프로젝트`, `패키지`, `특강`, `자료개발`, `원고`, `감수`
@@ -231,19 +240,29 @@ Wave 1은 Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 제
   - `src/lib/pipeline/fee-history-store.ts` (신규)
   - `src/app/api/instructors/[id]/route.ts` (수정 — fee_history 반환 추가)
 - 선행 의존성: T7 (fee resolver)
+- 구현 규칙:
+  - 적재 스타일은 매 refresh마다 `fee_histories` 전체 delete 후 재insert하는 full rebuild다.
+  - `effective_date`는 source 데이터에 명시된 날짜를 우선 사용한다.
+  - source별 날짜가 없으면 refresh 시각으로 강제 통일하지 않고 source별 별도 규칙 또는 `NULL`을 사용한다.
 - 완료 기준:
   - Notion fee_note, 세일즈맵 확인 금액, 계약 데이터, 보정값을 fee_histories에 저장
   - `GET /api/instructors/{id}` 응답의 `fee_history`에 최신순 데이터 반환
   - 전임강사는 `fee_history` 빈 배열 반환 (이미 구현됨)
   - 특수금액은 `is_special_amount = true`로 구분
+  - refresh route 미연결 상태에서도 dry-run 또는 sample expected/actual 비교로 검증 가능하다.
 
 ### T9. Fallback 배너 UI
 
 - 상태: 구현 필요
 - 설명: API 응답의 `meta.is_fallback`이 `true`일 때 화면 상단에 fallback 배너를 표시한다.
+- 구현 규칙:
+  - 핵심 기능은 `임시 데이터 표시 중` 기본 알림이다.
+  - 표시 트리거는 각 API 응답의 `meta.is_fallback` 단일 신호를 사용한다.
+  - 책임 범위는 `컴포넌트 정의 + props 계약 + 최소 1개 사용 예시`다.
 - 주의:
   - `src/components/FallbackBanner.tsx` 정의는 T9 범위다.
-  - `src/app/page.tsx` 실제 연결은 grouped 병렬 실행 시 Group 1 또는 마지막 T5 통합 단계에서 수행한다.
+  - `src/app/page.tsx` 실제 연결은 grouped 병렬 실행 시 Group 1이 수행한다.
+  - 마지막 `T5` 통합 단계는 fallback 배너 연결을 대신하지 않는다.
   - 따라서 병렬 실행에서는 `12_parallel_bundle_guardrails.md`의 파일 담당 그룹을 우선한다.
 - 참조 문서:
   - `06_implementation_spec.md` Feature M

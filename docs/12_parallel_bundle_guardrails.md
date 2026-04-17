@@ -34,6 +34,20 @@
   - 태스크 의미와 완료 기준은 `11_wave1_tasks.md`를 따른다.
   - 파일 수정 권한과 병렬 실행 규칙은 **이 문서가 우선**한다.
 
+### 1-1. baseline stale 검증 절차
+
+- worktree 기반 sub-agent가 `schema_missing`, 모델/필드 누락, baseline 미반영 같은 진단을 내리면 보고 전에 아래 3개를 먼저 확인한다.
+  1. `pwd`
+  2. `git rev-parse --short HEAD`
+  3. `grep -E "^model " prisma/schema.prisma`
+- 목적:
+  - 현재 세션이 `main HEAD`가 아닌 stale worktree/branch 위에 있는지 확인
+  - 실제 schema 파일 기준으로 누락 여부를 재검증
+- stale로 판명되면:
+  - `git rebase main`
+  - 또는 `main HEAD`에서 새 worktree/새 세션 시작
+- baseline stale 문제는 graceful degrade 코드로 숨기지 않는다.
+
 ## 2. 실행 구조
 
 Wave 1 병렬 실행은 아래 구조를 기본으로 한다.
@@ -88,7 +102,8 @@ Wave 1 병렬 실행은 아래 구조를 기본으로 한다.
 ### 4-4. 파일 담당 그룹
 - `src/app/page.tsx`의 **주 담당 그룹은 Group 1**에 있다.
 - 다른 그룹은 `src/app/page.tsx`를 직접 수정하지 않는다.
-- 마지막 `T5` 통합 단계에서만 최소 범위로 후속 연결이 허용된다.
+- 마지막 `T5` 통합 단계에서는 status/refresh 관련 최소 후속 연결만 허용된다.
+- Group 1은 `page.tsx` 안에서 fallback/status UI가 들어갈 slot과 렌더 조건을 준비하고, fallback 배너의 실제 연결까지 책임진다.
 
 ## 5. Group 2 — `T4, T9`
 
@@ -112,9 +127,9 @@ Wave 1 병렬 실행은 아래 구조를 기본으로 한다.
 ### 5-4. 파일 담당 그룹
 - `T9`는 배너 컴포넌트와 표시 계약만 제공한다.
 - `T9`는 `src/app/page.tsx`에 직접 배너를 삽입하지 않는다.
-- `page.tsx`와의 실제 연결은 **Group 1 또는 마지막 `T5` 통합 단계**에서 수행한다.
+- `page.tsx`와의 실제 연결은 Group 1이 수행한다.
 - Group 2는 단순 렌더링 컴포넌트만 남기지 않는다.
-  - Group 1 또는 `T5`가 바로 연결할 수 있도록 props / 표시 조건 / 사용 예시를 최종 보고에 포함한다.
+  - Group 1이 바로 연결할 수 있도록 props / 표시 조건 / 최소 1개 사용 예시를 최종 보고에 포함한다.
 
 ## 6. Group 3 — `T6, T7, T8`
 
@@ -164,7 +179,7 @@ Wave 1 병렬 실행은 아래 구조를 기본으로 한다.
 ### 7-2. 수정 가능 파일
 - `src/app/api/refresh/route.ts`
 - `src/app/page.tsx`
-  - 단, 배너/상태 슬롯 연결 같은 최소 범위만 허용
+  - 단, status/refresh 관련 최소 범위만 허용
 - 통합 과정에서 필요한 매우 제한된 wiring 파일
 
 ### 7-3. 수정 금지 파일
@@ -175,6 +190,8 @@ Wave 1 병렬 실행은 아래 구조를 기본으로 한다.
 - `T5`는 새 기능을 확장하는 단계가 아니다.
 - `T5`는 Group 1~3 결과를 **문서 계약대로 연결하고 검증하는 단계**다.
 - `T5`에서 upstream 로직 결함이 발견되면 그 그룹으로 되돌리고, 통합 단계에서 임의 우회 구현하지 않는다.
+- `T5`는 fallback 배너의 위치, 조건, 실제 연결을 새로 설계하거나 대신 구현하지 않는다.
+- Group 1이 fallback 배너 연결을 완료하지 못한 상태면 `T5` 진입 blocker로 본다.
 - `T5`는 아래를 구분해서 보고한다.
   - 구현 실패: wiring 누락, 문서 계약 불일치, 타입/빌드 실패, API 응답 구조 불일치
   - 외부 source/runtime 실패: 인증, 권한, 네트워크, 외부 API 응답 문제

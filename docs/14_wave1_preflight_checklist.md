@@ -94,8 +94,14 @@ Group 3은 아래 데이터와 구조가 baseline에 반영되어 있어야 한�
 - Group 1 최종 보고에 blocker가 없다.
 - Group 2 최종 보고에 blocker가 없다.
 - Group 3 최종 보고에 blocker가 없다.
+- Group 1 최종 보고에는 `page.tsx`의 fallback 배너 표시/숨김 연결 완료가 포함되어 있다.
 - Group 2 최종 보고에는 `FallbackBanner`의 props / 표시 조건 / 사용 예시가 포함되어 있다.
 - Group 3 최종 보고에는 `refresh` 미연결 범위와 `T5` 연결 entry point가 포함되어 있다.
+- Group 3 최종 보고에는 dry-run 또는 sample expected/actual 검증 결과가 포함되어 있다.
+- Group 3 최종 보고에는 도메인 sanity check 3개 결과가 포함되어 있다.
+  - 실습코치 0점 처리
+  - 전임강사 제외
+  - 특수금액 분리
 
 ### 3-4. 빌드 체크
 - Group 1은 `npm run build`를 통과했다.

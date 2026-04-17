@@ -659,3 +659,20 @@
   - `00_docs_index.md`
   - `10_execution_plan.md`
   - `12_parallel_bundle_guardrails.md`
+
+#### `13_parallel_bundle_prompts.md` 역할 축소
+- 결정:
+  - `13_parallel_bundle_prompts.md`는 grouped 실행용 복사 프롬프트 문서로만 유지한다.
+  - 영구 규칙은 아래 문서로 승격한다.
+    - 이번 웨이브 전용 운영 원칙: `10_execution_plan.md`
+    - 태스크 의미와 완료 정의: `11_wave1_tasks.md`
+    - cross-group 책임 경계 / stale schema 검증: `12_parallel_bundle_guardrails.md`
+    - 시작 전 / `T5` 진입 전 게이트: `14_wave1_preflight_checklist.md`
+  - 따라서 `13_parallel_bundle_prompts.md`는 정책을 재정의하지 않고, `10/11/12/14`를 읽도록 안내하는 실행 보조 문서로만 사용한다.
+- 반영 문서:
+  - `00_docs_index.md`
+  - `10_execution_plan.md`
+  - `11_wave1_tasks.md`
+  - `12_parallel_bundle_guardrails.md`
+  - `13_parallel_bundle_prompts.md`
+  - `14_wave1_preflight_checklist.md`

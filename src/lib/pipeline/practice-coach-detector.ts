@@ -50,12 +50,14 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
       continue;
     }
 
+    // L1: docs/01 §10 — keyword 건수 vs 정규강사 건수 단순 수치 비교.
+    // clarify-result: "보조 2, 정규 3 → 후보 아님" 예시에 맞춰 동률은 후보 아님.
     const matchCount = histories.filter(
       (h) => matchesKeyword(h.contractType) || matchesKeyword(h.detailType)
     ).length;
-    const ratio = matchCount / histories.length;
+    const regularCount = histories.length - matchCount;
 
-    if (ratio <= 0.5) {
+    if (matchCount <= regularCount) {
       nonPracticeCoachIds.push(inst.id);
       continue;
     }

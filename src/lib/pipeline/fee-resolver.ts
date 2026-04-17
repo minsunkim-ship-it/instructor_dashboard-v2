@@ -27,6 +27,31 @@ function containsSpecialKeyword(text: string | null): boolean {
   return SPECIAL_AMOUNT_KEYWORDS.some((kw) => text.includes(kw));
 }
 
+/**
+ * fee_note에서 "기본" 라벨에 연결된 시간당 단가만 기본 단가 후보로 추출.
+ * docs/04 §12-1: "기본 25만 / 심화 35만 / 특강 55만" → 25만(=250000)만 인정.
+ * "기본 25만", "기본 250,000원", "기본: 250000" 같은 표기도 허용.
+ * 실패 시 null.
+ */
+export function parseBaseFeeFromFeeNote(feeNote: string | null): number | null {
+  if (!feeNote) return null;
+  // "기본" 뒤에 오는 최초 금액 표현을 추출.
+  const labelMatch = feeNote.match(/기본[\s:]*([\d,\.]+)\s*(만\s*원?|원)?/);
+  if (!labelMatch) return null;
+  const numStr = labelMatch[1].replace(/,/g, "");
+  const unit = labelMatch[2] ?? "";
+  const num = parseFloat(numStr);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  if (unit.startsWith("만")) {
+    return Math.round(num * 10000);
+  }
+  // "25" 처럼 단위가 없고 num < 1000이면 "만" 단위로 해석 (docs/04 §12-1 예시).
+  if (!unit && num < 1000) {
+    return Math.round(num * 10000);
+  }
+  return Math.round(num);
+}
+
 function computeMode(values: number[]): number | null {
   if (values.length === 0) return null;
   const freq = new Map<number, number>();
@@ -130,6 +155,8 @@ export async function resolveFees(): Promise<FeeResolverResult> {
 
   for (const inst of instructors) {
     if (inst.isFulltime) {
+      // 전임강사: docs/04 §12-2 — 노션 기본 강사료 또는 fee_note 기준만 유지.
+      // 이미 Notion 단계에서 baseFeeHourly/feeNote가 반영되었으므로 resolveFees는 skip.
       result.skippedFulltime++;
       continue;
     }
@@ -178,14 +205,22 @@ export async function resolveFees(): Promise<FeeResolverResult> {
         .map((e) => e.dealFeeHourly);
     };
 
-    // Priority 1: fee_fix_configs
+    // Priority 1: fee_fix_configs (docs/04 §12-1)
     let resolvedFee: number | null =
       fixByDbId.get(inst.id) ?? fixByName.get(inst.name) ?? null;
 
-    // Priority 2: Notion base fee (already stored)
+    // Priority 2: Notion base fee or fee_note "기본" 라벨
+    // inst.baseFeeHourly는 이미 Notion upsert에서 반영되어 있음.
+    // baseFeeHourly가 null일 때만 fee_note에서 "기본" 라벨 값을 추가 추출.
     if (resolvedFee === null && inst.baseFeeHourly !== null) {
       result.unchanged++;
       continue;
+    }
+    if (resolvedFee === null) {
+      const fromFeeNote = parseBaseFeeFromFeeNote(inst.feeNote);
+      if (fromFeeNote !== null) {
+        resolvedFee = fromFeeNote;
+      }
     }
 
     // Priority 3: Salesmap mode

@@ -68,16 +68,23 @@ export const maxDuration = 300;
 
 interface SourceResult {
   sourceType: string;
-  status: "success" | "failed";
+  status: "success" | "partial" | "failed";
   fetchedCount: number;
   updatedCount: number;
   errorMessage: string | null;
   durationMs: number;
 }
 
+interface SourceRunOutput {
+  fetched: number;
+  updated: number;
+  status?: "success" | "partial";
+  message?: string | null;
+}
+
 interface SourceDefinition {
   name: string;
-  fn: () => Promise<{ fetched: number; updated: number }>;
+  fn: () => Promise<SourceRunOutput>;
 }
 
 async function runSourceWithSyncLog(
@@ -98,10 +105,10 @@ async function runSourceWithSyncLog(
     const result = await source.fn();
     const sourceResult: SourceResult = {
       sourceType: source.name,
-      status: "success",
+      status: result.status ?? "success",
       fetchedCount: result.fetched,
       updatedCount: result.updated,
-      errorMessage: null,
+      errorMessage: result.message ?? null,
       durationMs: Date.now() - startedAt.getTime(),
     };
 
@@ -111,7 +118,7 @@ async function runSourceWithSyncLog(
         status: sourceResult.status,
         fetchedCount: sourceResult.fetchedCount,
         updatedCount: sourceResult.updatedCount,
-        errorMessage: null,
+        errorMessage: sourceResult.errorMessage,
         finishedAt: new Date(),
       },
     });
@@ -158,6 +165,7 @@ function buildRunSummary(
   }
 ): Prisma.InputJsonObject {
   const successCount = sourceResults.filter((r) => r.status === "success").length;
+  const partialCount = sourceResults.filter((r) => r.status === "partial").length;
   const failedCount = sourceResults.filter((r) => r.status === "failed").length;
   const totalRecordsUpdated = sourceResults.reduce(
     (sum, r) => sum + r.updatedCount,
@@ -167,6 +175,7 @@ function buildRunSummary(
   return {
     sources_checked: extra.sourceCount,
     sources_updated: successCount,
+    sources_partial: partialCount,
     sources_failed: failedCount,
     records_updated: totalRecordsUpdated,
     stale_runs_cleaned: extra.staleRunsCleaned,
@@ -261,7 +270,7 @@ async function runSalesmap(): Promise<{ fetched: number; updated: number }> {
 
 async function runSlack(
   runId: string
-): Promise<{ fetched: number; updated: number }> {
+): Promise<SourceRunOutput> {
   const collect = await collectFromSlack({
     checkpoints: [],
     perPageLimit: 200,
@@ -279,16 +288,39 @@ async function runSlack(
 
   const normalized = normalizeSlackCollect(collect);
   const applyResult = await applyActivities(runId, normalized, []);
+  const failedChannels = collect.channels.filter((channel) => channel.error);
+  const reflectionBlocked =
+    totalMessages > 0 && applyResult.aggregateUpdates.length === 0;
+  const notes: string[] = [];
+  let status: SourceRunOutput["status"] = "success";
+
+  if (failedChannels.length > 0) {
+    status = "partial";
+    notes.push(
+      `failed_channels=${failedChannels
+        .map((channel) => channel.channelId)
+        .join(",")}`
+    );
+  }
+
+  if (reflectionBlocked) {
+    status = "partial";
+    notes.push(
+      `reflected_instructors=0 matched=${applyResult.items.matched} unmatched=${applyResult.items.unmatched} ambiguous=${applyResult.items.ambiguous} invalid=${applyResult.items.invalid}`
+    );
+  }
 
   return {
     fetched: totalMessages,
     updated: applyResult.aggregateUpdates.length,
+    status,
+    message: notes.length > 0 ? notes.join("; ") : null,
   };
 }
 
 async function runGmail(
   runId: string
-): Promise<{ fetched: number; updated: number }> {
+): Promise<SourceRunOutput> {
   const collect = await collectFromGmail({
     checkpoints: [],
     maxPages: 5,
@@ -300,10 +332,32 @@ async function runGmail(
 
   const normalized = normalizeGmailCollect(collect);
   const applyResult = await applyActivities(runId, [], normalized);
+  const reflectionBlocked =
+    collect.threads.length > 0 && applyResult.aggregateUpdates.length === 0;
+  const notes: string[] = [];
+  let status: SourceRunOutput["status"] = "success";
+
+  if (collect.targetAddressErrors.length > 0) {
+    status = "partial";
+    notes.push(
+      `target_errors=${collect.targetAddressErrors
+        .map((entry) => entry.targetAddress)
+        .join(",")}`
+    );
+  }
+
+  if (reflectionBlocked) {
+    status = "partial";
+    notes.push(
+      `reflected_instructors=0 matched=${applyResult.items.matched} unmatched=${applyResult.items.unmatched} ambiguous=${applyResult.items.ambiguous} invalid=${applyResult.items.invalid}`
+    );
+  }
 
   return {
     fetched: collect.threads.length,
     updated: applyResult.aggregateUpdates.length,
+    status,
+    message: notes.length > 0 ? notes.join("; ") : null,
   };
 }
 
@@ -458,12 +512,9 @@ export async function POST() {
     }
 
     // 5. 실행 결과 집계
-    const successCount = sourceResults.filter(
-      (r) => r.status === "success"
-    ).length;
-    const failedCount = sourceResults.filter(
-      (r) => r.status === "failed"
-    ).length;
+    const successCount = sourceResults.filter((r) => r.status === "success").length;
+    const partialCount = sourceResults.filter((r) => r.status === "partial").length;
+    const failedCount = sourceResults.filter((r) => r.status === "failed").length;
     const totalRecordsUpdated = sourceResults.reduce(
       (sum, r) => sum + r.updatedCount,
       0
@@ -473,7 +524,7 @@ export async function POST() {
     const runStatus: "success" | "partial" | "failed" =
       failedCount === sources.length
         ? "failed"
-        : failedCount > 0 || pipelineStepError
+        : failedCount > 0 || partialCount > 0 || pipelineStepError
           ? "partial"
           : "success";
 
@@ -532,6 +583,7 @@ export async function POST() {
         summary: {
           sources_checked: sources.length,
           sources_updated: successCount,
+          sources_partial: partialCount,
           records_updated: totalRecordsUpdated,
         },
       },

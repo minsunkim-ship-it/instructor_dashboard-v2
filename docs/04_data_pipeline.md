@@ -477,6 +477,9 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 - 계약시트, 세일즈맵, 지메일, 슬랙은 보조 소스로만 사용한다.
 - Slack/Gmail direct API는 `activity_import_items`에 raw source를 저장한 뒤 `activity_review_registries`로 자동 취합한다.
 - `activity_review_registries`의 `auto_accepted` 또는 `approved` 상태만 `instructors.slack_activity_count`, `email_activity_count`, `ops_report_activity_count`, `dispatch_request_activity_count`, `last_activity_at`에 반영한다.
+- Gmail/Slack activity source는 “API 호출 성공”과 “canonical 반영 성공”을 구분한다.
+  - collector/normalizer/applier가 예외 없이 끝나도, instructor aggregate 반영이 0건이면 source status를 `partial`로 기록할 수 있다.
+  - 예: Gmail thread 수집은 성공했지만 강사 매칭이 0건이어서 `email_activity_count`가 전혀 증가하지 않은 경우.
 - `pending`, `rejected`, `invalid` activity registry는 서비스용 필드에 반영하지 않고 검토 대상으로만 남긴다.
 - Slack/Gmail direct API v1은 `memo_raw`를 직접 갱신하지 않는다.
 
@@ -740,6 +743,10 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 - 증분 병합 로직은 날짜, 파일 경로, 출력 필드명을 하드코딩한 스크립트 복제로 늘리지 않는다. 하나의 canonical 구현에서 입력 payload만 교체 가능해야 한다.
 - review registry는 사람이 직접 수정하는 patch 저장소가 아니다. 사람이 판단한 내용은 `review_decisions`에만 저장하고, registry는 raw source와 decision 적용 결과로 재생성 가능해야 한다.
 - refresh 결과는 파일 overwrite만으로 끝내지 않고 `pipeline_runs`, `source_sync_logs`, 필요 시 `validation_issues`에 함께 기록한다.
+- `source_sync_logs.status`는 `success`/`partial`/`failed`를 사용할 수 있다.
+  - `success`: source가 기술적으로 끝났고 partial 조건이 없다.
+  - `partial`: source 호출은 끝났지만 일부 target/channel 실패, 또는 raw 수집 후 canonical 반영 0건 같은 데이터 품질 경고가 남아 있다.
+  - `failed`: source runner 자체가 실패했다.
 
 ## 19. 실패 처리
 

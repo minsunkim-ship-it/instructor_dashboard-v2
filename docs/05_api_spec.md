@@ -406,17 +406,50 @@
       {
         "source_type": "notion",
         "status": "success",
-        "last_synced_at": "2026-04-14T06:55:00Z"
+        "last_synced_at": "2026-04-14T06:55:00Z",
+        "fetched_count": 773,
+        "updated_count": 773,
+        "note": null
       },
       {
-        "source_type": "salesmap",
+        "source_type": "gmail",
         "status": "partial",
-        "last_synced_at": "2026-04-14T06:57:00Z"
+        "last_synced_at": "2026-04-14T06:57:00Z",
+        "fetched_count": 998,
+        "updated_count": 0,
+        "note": "reflected_instructors=0 matched=0 unmatched=998 ambiguous=0 invalid=0"
       }
     ]
   }
 }
 ```
+
+### 8-2-1. source status 의미
+
+- `success`
+  - source 수집과 반영이 예외 없이 종료되었고, partial 판정 조건이 없다.
+  - `fetched_count = 0`, `updated_count = 0`이어도 “변경 없음”이면 `success`일 수 있다.
+- `partial`
+  - source 호출 자체는 끝났지만, 일부 target/channel 실패 또는 반영 0건 등으로 데이터 품질 경고가 남은 상태다.
+  - 예:
+    - Gmail 일부 target address 실패
+    - Slack 일부 채널 실패
+    - Gmail/Slack activity source가 데이터를 수집했지만 instructor aggregate 반영이 0건
+- `failed`
+  - source runner 자체가 실패해 수집/반영을 끝내지 못한 상태다.
+- `never_synced`
+  - 아직 한 번도 동기화되지 않은 상태다.
+
+### 8-2-2. source item 필드
+
+| 필드명 | 타입 | 설명 |
+|---|---|---|
+| `source_type` | string | 표준 source key |
+| `status` | string | `success`, `partial`, `failed`, `never_synced` |
+| `last_synced_at` | string \| null | 해당 source의 최근 sync 시각 |
+| `fetched_count` | number | 최근 sync에서 수집한 raw 건수 |
+| `updated_count` | number | 최근 sync에서 canonical 반영에 영향을 준 건수 |
+| `note` | string \| null | partial/failed 판단 근거 또는 운영 참고 메모 |
 
 ### 8-3. 에러 응답
 
@@ -460,6 +493,8 @@
 ### 9-4. 부분 성공 응답
 
 - 일부 소스만 실패해도 갱신이 가능한 경우 `status = "partial"`
+- source별 `partial`도 전체 refresh를 `partial`로 만들 수 있다.
+- 예: Gmail/Slack source는 API 호출은 성공했지만 canonical instructor 반영이 0건이면 `source_sync_logs.status = "partial"`로 기록할 수 있다.
 - `summary`에 소스별 결과를 포함할 수 있다.
 
 ### 9-5. 에러 응답

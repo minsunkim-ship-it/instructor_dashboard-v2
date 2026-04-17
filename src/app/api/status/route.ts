@@ -60,7 +60,13 @@ export async function GET() {
 
     const latestBySource = new Map<
       string,
-      { status: string; lastSyncedAt: string | null }
+      {
+        status: string;
+        lastSyncedAt: string | null;
+        fetchedCount: number;
+        updatedCount: number;
+        note: string | null;
+      }
     >();
 
     for (const log of allSyncLogs) {
@@ -70,6 +76,9 @@ export async function GET() {
       latestBySource.set(standardType, {
         status: log.status,
         lastSyncedAt: log.finishedAt?.toISOString() ?? log.startedAt.toISOString(),
+        fetchedCount: log.fetchedCount,
+        updatedCount: log.updatedCount,
+        note: log.errorMessage,
       });
     }
 
@@ -80,6 +89,9 @@ export async function GET() {
         source_type: sourceType,
         status: entry?.status ?? "never_synced",
         last_synced_at: entry?.lastSyncedAt ?? null,
+        fetched_count: entry?.fetchedCount ?? 0,
+        updated_count: entry?.updatedCount ?? 0,
+        note: entry?.note ?? null,
       };
     });
 

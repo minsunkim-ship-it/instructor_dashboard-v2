@@ -101,6 +101,32 @@ interface TeachingHistoryItem {
   source_type: string | null;
 }
 
+// --- FeeHistory item shape — 05_api_spec.md 6-3절 / 03_data_model.md 4-3절 ---
+
+interface FeeHistoryItem {
+  effective_date: string | null;
+  effective_label: string | null;
+  amount: number | null;
+  fee_kind: string;
+  context: string | null;
+  source_type: string;
+  is_current: boolean;
+  is_special_amount: boolean;
+}
+
+// Feature J: 출처 라벨 정규화 (내부 source_type → 화면 라벨)
+const FEE_SOURCE_LABELS: Record<string, string> = {
+  notion: "노션",
+  salesmap: "세일즈맵",
+  contract_sheet: "계약시트",
+  fee_fix: "수동 보정",
+  manual: "수동",
+};
+
+function formatFeeSource(sourceType: string): string {
+  return FEE_SOURCE_LABELS[sourceType] ?? sourceType;
+}
+
 // --- Main component ---
 
 interface InstructorDetailProps {
@@ -658,10 +684,10 @@ function TeachingHistorySection({ data }: { data: InstructorDetailData }) {
   );
 }
 
-// --- G. Fee History Section ---
+// --- G. Fee History Section — 06_implementation_spec.md Feature J ---
 
 function FeeHistorySection({ data }: { data: InstructorDetailData }) {
-  const history = data.fee_history;
+  const history = data.fee_history as FeeHistoryItem[];
 
   return (
     <section className="space-y-3">
@@ -670,14 +696,74 @@ function FeeHistorySection({ data }: { data: InstructorDetailData }) {
         <p className="text-sm text-gray-400">이력 없음</p>
       ) : (
         <div className="space-y-2">
-          {history.map((item, i) => (
-            <div
-              key={i}
-              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-md text-gray-700"
-            >
-              {JSON.stringify(item)}
-            </div>
-          ))}
+          {history.map((item, i) => {
+            // Feature J: 날짜 — effective_date 우선, 없으면 effective_label, 둘 다 없으면 `-`
+            const dateDisplay = item.effective_date
+              ? formatDate(item.effective_date)
+              : item.effective_label ?? "-";
+
+            // Feature J: 금액 — 특수금액은 원 단위 그대로 + 라벨, 일반은 N만원 형식
+            const amountDisplay = item.amount === null
+              ? "-"
+              : item.is_special_amount
+                ? formatMoney(item.amount)
+                : formatMoney(item.amount);
+
+            // Feature J: 변경 사유/컨텍스트 — 없으면 `-`
+            const contextDisplay = item.context ?? "-";
+
+            // Feature J: 출처
+            const sourceDisplay = formatFeeSource(item.source_type);
+
+            return (
+              <div
+                key={i}
+                className={`px-3 py-2.5 border rounded-md ${
+                  item.is_current
+                    ? "bg-blue-50 border-blue-200"
+                    : item.is_special_amount
+                      ? "bg-orange-50 border-orange-200"
+                      : "bg-white border-gray-200"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium text-gray-900">
+                        {dateDisplay}
+                      </span>
+                      {item.is_current && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
+                          현재
+                        </span>
+                      )}
+                      {item.is_special_amount && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">
+                          특수 금액
+                        </span>
+                      )}
+                      {item.fee_kind !== "hourly" && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600">
+                          {item.fee_kind}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-500">
+                      {contextDisplay}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-sm font-semibold text-gray-900">
+                      {amountDisplay}
+                    </div>
+                    <div className="mt-0.5 text-xs text-gray-400">
+                      {sourceDisplay}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </section>

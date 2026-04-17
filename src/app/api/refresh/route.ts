@@ -452,7 +452,7 @@ export async function POST() {
     // 7. 점수 재계산
     let scoreRecalcError: string | null = null;
     try {
-      await recalculateAllScores();
+      await recalculateAllScores({ runId: run.id });
     } catch (err) {
       scoreRecalcError = summarizeError(err);
     }

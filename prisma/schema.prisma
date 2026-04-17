@@ -32,6 +32,7 @@ model Instructor {
   satisfactionAvg      Decimal?  @map("satisfaction_avg") @db.Decimal(3, 2)
   satisfactionCount    Int       @default(0) @map("satisfaction_count")
   satisfactionIsImputed Boolean  @default(false) @map("satisfaction_is_imputed")
+  contractSheetRows    Int       @default(0) @map("contract_sheet_rows")
   totalCourses         Int       @default(0) @map("total_courses")
   recentCourses6mo     Int       @default(0) @map("recent_courses_6mo")
   slackActivityCount            Int       @default(0) @map("slack_activity_count")
@@ -39,6 +40,8 @@ model Instructor {
   opsReportActivityCount        Int       @default(0) @map("ops_report_activity_count")
   dispatchRequestActivityCount  Int       @default(0) @map("dispatch_request_activity_count")
   lastActivityAt       DateTime? @map("last_activity_at") @db.Timestamptz
+  salesmapDealCount    Int       @default(0) @map("salesmap_deal_count")
+  salesmapLastDealAt   DateTime? @map("salesmap_last_deal_at") @db.Timestamptz
   memoRaw              String?   @map("memo_raw")
   createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

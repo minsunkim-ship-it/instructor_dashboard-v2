@@ -43,13 +43,13 @@ export async function POST(
 
     const body = (await request.json()) as SatisfactionBody;
 
-    // 7-4: score 필수, 0~5 범위
-    if (body.score === undefined || body.score === null || body.score < 0 || body.score > 5) {
+    // demo parity: score 필수, 1~5 범위
+    if (body.score === undefined || body.score === null || body.score < 1 || body.score > 5) {
       return NextResponse.json(
         {
           status: "error",
           meta: { request_id: requestId, data_mode: "live", is_fallback: false },
-          errors: [{ code: "INVALID_SATISFACTION_SCORE", message: "만족도 점수는 0~5 범위여야 합니다." }],
+          errors: [{ code: "INVALID_SATISFACTION_SCORE", message: "만족도 점수는 1~5 범위여야 합니다." }],
         },
         { status: 400 }
       );

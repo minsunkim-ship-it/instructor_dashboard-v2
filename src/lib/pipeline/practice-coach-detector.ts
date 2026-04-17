@@ -20,6 +20,7 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
       id: true,
       isFulltime: true,
       baseFeeHourly: true,
+      flag: true,
       categories: true,
       specialties: true,
       teachingHistories: {
@@ -40,6 +41,7 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
 
   const practiceCoachIds: string[] = [];
   const nonPracticeCoachIds: string[] = [];
+  const clearPracticeCoachFlagIds: string[] = [];
 
   for (const inst of instructors) {
     const histories = inst.teachingHistories;
@@ -47,6 +49,9 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
     // L1: Candidate Detection
     if (histories.length === 0) {
       nonPracticeCoachIds.push(inst.id);
+      if (inst.flag === "실습코치") {
+        clearPracticeCoachFlagIds.push(inst.id);
+      }
       continue;
     }
 
@@ -68,6 +73,9 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
     if (inst.isFulltime) {
       result.protectedByFulltime++;
       nonPracticeCoachIds.push(inst.id);
+      if (inst.flag === "실습코치") {
+        clearPracticeCoachFlagIds.push(inst.id);
+      }
       continue;
     }
 
@@ -80,6 +88,9 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
     ) {
       result.protectedByFee++;
       nonPracticeCoachIds.push(inst.id);
+      if (inst.flag === "실습코치") {
+        clearPracticeCoachFlagIds.push(inst.id);
+      }
       continue;
     }
 
@@ -93,7 +104,7 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
       const batch = practiceCoachIds.slice(i, i + BATCH_SIZE);
       await tx.instructor.updateMany({
         where: { id: { in: batch } },
-        data: { isPracticeCoach: true },
+        data: { isPracticeCoach: true, flag: "실습코치" },
       });
     }
 
@@ -102,6 +113,14 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
       await tx.instructor.updateMany({
         where: { id: { in: batch } },
         data: { isPracticeCoach: false },
+      });
+    }
+
+    for (let i = 0; i < clearPracticeCoachFlagIds.length; i += BATCH_SIZE) {
+      const batch = clearPracticeCoachFlagIds.slice(i, i + BATCH_SIZE);
+      await tx.instructor.updateMany({
+        where: { id: { in: batch } },
+        data: { flag: null },
       });
     }
   });

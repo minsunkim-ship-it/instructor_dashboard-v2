@@ -89,16 +89,29 @@ export async function applySalesmapRows(
 
   // 1) instructors name → id 맵 (exact match). 01_core_policy 4절.
   const allInstructors = await prisma.instructor.findMany({
-    select: { id: true, name: true, lastActivityAt: true },
+    select: {
+      id: true,
+      name: true,
+      lastActivityAt: true,
+      salesmapDealCount: true,
+      salesmapLastDealAt: true,
+    },
   });
   const nameToInstructor = new Map<
     string,
-    { id: string; lastActivityAt: Date | null }
+    {
+      id: string;
+      lastActivityAt: Date | null;
+      salesmapDealCount: number;
+      salesmapLastDealAt: Date | null;
+    }
   >();
   for (const inst of allInstructors) {
     nameToInstructor.set(inst.name, {
       id: inst.id,
       lastActivityAt: inst.lastActivityAt,
+      salesmapDealCount: inst.salesmapDealCount,
+      salesmapLastDealAt: inst.salesmapLastDealAt,
     });
   }
 
@@ -107,7 +120,10 @@ export async function applySalesmapRows(
   interface PerInstructorAgg {
     instructorId: string;
     currentLastActivity: Date | null;
+    currentSalesmapDealCount: number;
+    currentSalesmapLastDealAt: Date | null;
     maxSalesmapActivity: Date | null;
+    dealIds: Set<string>;
     // teaching_histories 보강 후보: (course_id) 별 세일즈맵 값
     courseFills: Map<
       string,
@@ -144,11 +160,16 @@ export async function applySalesmapRows(
       agg = {
         instructorId: matched.id,
         currentLastActivity: matched.lastActivityAt,
+        currentSalesmapDealCount: matched.salesmapDealCount,
+        currentSalesmapLastDealAt: matched.salesmapLastDealAt,
         maxSalesmapActivity: null,
+        dealIds: new Set(),
         courseFills: new Map(),
       };
       perInstructor.set(matched.id, agg);
     }
+
+    agg.dealIds.add(row.dealId);
 
     if (row.lastActivityAt) {
       if (
@@ -184,26 +205,59 @@ export async function applySalesmapRows(
   result.instructorsUnmatched = unmatchedNames.size;
   result.unmatchedInstructorSamples = Array.from(unmatchedNames).slice(0, 10);
 
-  // 3) instructors.last_activity_at 갱신 — 기존값이 없거나 세일즈맵이 더 최근일 때만
-  const instructorUpdates = Array.from(perInstructor.values()).filter((agg) => {
-    if (!agg.maxSalesmapActivity) return false;
-    return (
-      !agg.currentLastActivity ||
-      agg.maxSalesmapActivity > agg.currentLastActivity
-    );
-  });
+  // 3) salesmap canonical stats + instructors.last_activity_at 갱신
+  const instructorUpdates = Array.from(perInstructor.values());
 
   await mapWithConcurrency(
     instructorUpdates,
     DB_WRITE_CONCURRENCY,
     async (agg) => {
+      const salesmapDealCount = agg.dealIds.size;
+      const nextSalesmapLastDealAt = agg.maxSalesmapActivity;
+      const data: {
+        salesmapDealCount: number;
+        salesmapLastDealAt: Date | null;
+        lastActivityAt?: Date | null;
+      } = {
+        salesmapDealCount,
+        salesmapLastDealAt: nextSalesmapLastDealAt,
+      };
+      if (
+        nextSalesmapLastDealAt &&
+        (!agg.currentLastActivity || nextSalesmapLastDealAt > agg.currentLastActivity)
+      ) {
+        data.lastActivityAt = nextSalesmapLastDealAt;
+      }
       await prisma.instructor.update({
         where: { id: agg.instructorId },
-        data: { lastActivityAt: agg.maxSalesmapActivity },
+        data,
       });
-      result.lastActivityUpdated += 1;
+      if (data.lastActivityAt) {
+        result.lastActivityUpdated += 1;
+      }
     }
   );
+
+  const matchedInstructorIds = new Set(Array.from(perInstructor.keys()));
+  const staleSalesmapInstructorIds = allInstructors
+    .filter(
+      (inst) =>
+        !matchedInstructorIds.has(inst.id) &&
+        (inst.salesmapDealCount > 0 || inst.salesmapLastDealAt !== null)
+    )
+    .map((inst) => inst.id);
+  if (staleSalesmapInstructorIds.length > 0) {
+    for (let i = 0; i < staleSalesmapInstructorIds.length; i += 500) {
+      const batch = staleSalesmapInstructorIds.slice(i, i + 500);
+      await prisma.instructor.updateMany({
+        where: { id: { in: batch } },
+        data: {
+          salesmapDealCount: 0,
+          salesmapLastDealAt: null,
+        },
+      });
+    }
+  }
 
   // 4) teaching_histories 보강 — 필요한 후보를 먼저 전부 읽고, 업데이트만 제한 병렬로 수행
   const instructorIdsWithCourseFills = Array.from(perInstructor.values())

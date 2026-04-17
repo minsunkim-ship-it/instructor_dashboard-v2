@@ -653,7 +653,10 @@ export async function applySatisfactionImports({
     const firstResponseRef = aggregate.sourceRefs[0];
     const firstResponseDate = getString(asRecord(firstResponseRef).response_date);
     const baseStatus =
-      avgScore === null || aggregate.responseCount === 0
+      avgScore === null ||
+      aggregate.responseCount === 0 ||
+      avgScore < 1 ||
+      avgScore > 5
         ? "invalid"
         : aggregate.suggestedInstructorId
           ? "auto_accepted"
@@ -719,7 +722,7 @@ export async function applySatisfactionImports({
   await refreshSatisfactionAggregates(affectedInstructorIds);
 
   if (recalculateScores) {
-    await recalculateAllScores();
+    await recalculateAllScores({ runId });
   }
 
   return {

@@ -11,29 +11,40 @@ async function main() {
 }
 
 /**
- * score_policy_versions v1 초기 데이터 — 03_data_model.md 5-4절
+ * score_policy_versions v3 초기 데이터 — demo parity 메타데이터
  *
- * - version: "v1"
- * - weights: 01_core_policy.md 9절 기준
- * - missing_satisfaction_policy: "median" (01_core_policy 9절: 전체 수집 강사의 중앙값으로 대체)
- * - recency_decay_days: 180 (03_data_model.md 5-4 기본값)
+ * - version: "v3"
+ * - weights: instructor_db_demo Engagement Score v3 기준
+ * - missing_satisfaction_policy: "median_or_4.0"
+ * - recency_decay_days: 180
  * - active: true
  *
- * 중복 생성 방지: version="v1" row가 이미 있으면 skip.
+ * 주의: 실제 계산 로직은 demo parity를 코드로 직접 구현한다.
+ * 이 row는 운영 메타데이터/표시용 기준점으로 유지한다.
  */
 async function seedScorePolicy() {
   const existing = await prisma.scorePolicyVersion.findFirst({
-    where: { version: "v1" },
+    where: { version: "v3" },
   });
 
   if (existing) {
-    console.log(`score_policy_versions v1 already exists (id: ${existing.id}), skipping`);
+    console.log(
+      `score_policy_versions v3 already exists (id: ${existing.id}), syncing active flag`
+    );
+    await prisma.scorePolicyVersion.updateMany({
+      where: { version: "v3" },
+      data: { active: true },
+    });
     return;
   }
 
+  await prisma.scorePolicyVersion.updateMany({
+    data: { active: false },
+  });
+
   await prisma.scorePolicyVersion.create({
     data: {
-      version: "v1",
+      version: "v3",
       weights: {
         courses: 35,
         satisfaction: 15,
@@ -43,13 +54,13 @@ async function seedScorePolicy() {
         email: 5,
         ops_channel: 5,
       },
-      missingSatisfactionPolicy: "median",
+      missingSatisfactionPolicy: "median_or_4.0",
       recencyDecayDays: 180,
       active: true,
     },
   });
 
-  console.log("Seeded score_policy_versions v1");
+  console.log("Seeded score_policy_versions v3");
 }
 
 main()

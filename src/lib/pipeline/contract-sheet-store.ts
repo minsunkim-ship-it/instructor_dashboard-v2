@@ -148,6 +148,7 @@ export async function storeContractRows(
  * 04_data_pipeline.md 18-1, 05_api_spec.md 5-5, 06_implementation_spec.md 5-4:
  *
  * teaching_histories 변경 이후 파생 집계값을 같은 실행 안에서 갱신한다.
+ * - contract_sheet_rows: 해당 instructor의 contract_sheet teaching_histories 건수
  * - total_courses: 해당 instructor의 전체 teaching_histories 건수
  * - recent_courses_6mo: start_date >= now - 6개월인 teaching_histories 건수
  *
@@ -163,7 +164,13 @@ export async function recomputeAggregatesForInstructors(
   let updatedCount = 0;
 
   for (const instructorId of instructorIds) {
-    const [totalCourses, recentCourses6mo] = await Promise.all([
+    const [contractSheetRows, totalCourses, recentCourses6mo] = await Promise.all([
+      prisma.teachingHistory.count({
+        where: {
+          instructorDbId: instructorId,
+          sourceType: "contract_sheet",
+        },
+      }),
       prisma.teachingHistory.count({
         where: { instructorDbId: instructorId },
       }),
@@ -178,6 +185,7 @@ export async function recomputeAggregatesForInstructors(
     await prisma.instructor.update({
       where: { id: instructorId },
       data: {
+        contractSheetRows,
         totalCourses,
         recentCourses6mo,
       },

@@ -22,10 +22,10 @@
 
 ### 즉시 확인된 gap
 
-#### G1. 인증은 문서상 완료지만 현재 앱에는 실제 보호가 없다
-- `src/app/layout.tsx`에 로그인/세션 provider가 없다
-- `src/app/api/instructors/route.ts`, `src/app/api/status/route.ts`, `src/app/api/refresh/route.ts`에 `401/403` 가드가 없다
-- 따라서 현재 상태를 "내부 서비스 운영 준비 완료"로 판단하면 안 된다
+#### G1. 인증은 문서상 완료지만 실제 구현 여부를 별도 확인해야 한다
+- 2026-04-17 기준으로 Google 로그인 + `@day1company.co.kr` 도메인 제한 + API `401/403` proxy 가드는 구현됐다
+- 다만 Railway 등 실제 배포 환경에서 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET`이 적용돼 있어야 한다
+- 따라서 현재 상태를 "내부 서비스 운영 준비 완료"로 판단하려면 코드뿐 아니라 배포 환경의 인증 설정까지 함께 확인해야 한다
 
 #### G2. fallback UI는 있지만 실제 fallback 데이터 경로는 아직 없다
 - 목록/상세 API가 현재 `meta.is_fallback = false`를 고정 반환한다

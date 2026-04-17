@@ -11,7 +11,6 @@ import {
 } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import type { InstructorListItem, InstructorListResponse } from "@/types/api";
-import FallbackBanner from "@/components/FallbackBanner";
 
 // 정렬 옵션 — 06_implementation_spec.md Feature D
 const SORT_OPTIONS = [
@@ -194,11 +193,8 @@ function InstructorListInner({ onSelectInstructor, selectedInstructorId }: Instr
     );
   }
 
-  const isFallback = data?.meta.is_fallback ?? false;
-
   return (
     <div className="flex flex-col h-full">
-      <FallbackBanner isFallback={isFallback} />
       {/* Feature A: 목록 영역 상단 — 제목, 전체 강사 수, 마지막 업데이트 시각 */}
       <div className="px-4 py-3 border-b border-gray-200">
         <h1 className="text-lg font-semibold text-gray-900">강사 목록</h1>

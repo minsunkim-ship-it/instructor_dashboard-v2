@@ -69,6 +69,197 @@ function formatDate(dateStr: string | null): string {
   return dateStr.replace(/-/g, ".");
 }
 
+function parseAffiliationTags(affiliation: string | null): string[] {
+  if (!affiliation) return [];
+  return affiliation
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function formatDateRange(
+  startDate: string | null,
+  endDate: string | null
+): string {
+  if (startDate && endDate) {
+    const start = formatDate(startDate);
+    const end = formatDate(endDate);
+    return start === end ? start : `${start} ~ ${end}`;
+  }
+  if (startDate) return formatDate(startDate);
+  if (endDate) return formatDate(endDate);
+  return "-";
+}
+
+function extractDateRangeFromLabel(
+  label: string | null
+): { start: string | null; end: string | null } {
+  if (!label) return { start: null, end: null };
+
+  const lines = label
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const dates: string[] = [];
+  let lastYear: string | null = null;
+
+  for (const line of lines) {
+    const fullMatch = line.match(/(\d{4})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})/);
+    if (fullMatch) {
+      const [, year, month, day] = fullMatch;
+      lastYear = year;
+      dates.push(
+        `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
+      );
+      continue;
+    }
+
+    const koreanMatch = line.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/);
+    if (koreanMatch) {
+      const [, year, month, day] = koreanMatch;
+      lastYear = year;
+      dates.push(
+        `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
+      );
+      continue;
+    }
+
+    const monthDayMatch = line.match(/(?:^|\s)(\d{1,2})\s*[./-]\s*(\d{1,2})(?=\D|$)/);
+    if (monthDayMatch && lastYear) {
+      const [, month, day] = monthDayMatch;
+      dates.push(
+        `${lastYear}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
+      );
+    }
+  }
+
+  if (dates.length === 0) return { start: null, end: null };
+  return { start: dates[0], end: dates[dates.length - 1] };
+}
+
+function formatTeachingPeriod(item: TeachingHistoryItem): string {
+  if (item.start_date || item.end_date) {
+    return formatDateRange(item.start_date, item.end_date);
+  }
+
+  const { start, end } = extractDateRangeFromLabel(item.date_label);
+  return formatDateRange(start, end);
+}
+
+function formatTeachingSummary(item: TeachingHistoryItem): string {
+  const parts: string[] = [];
+
+  if (item.total_sessions && item.total_sessions > 0) {
+    parts.push(`${item.total_sessions}회`);
+  }
+
+  if (item.total_hours && item.total_hours > 0) {
+    const hours =
+      item.total_hours % 1 === 0
+        ? String(item.total_hours)
+        : item.total_hours.toFixed(1);
+    parts.push(`${hours}시간`);
+  }
+
+  return parts.join(" · ");
+}
+
+function isDisplayableTeachingHistory(item: TeachingHistoryItem): boolean {
+  return Boolean(
+    item.course_name ||
+      item.company_name ||
+      item.start_date ||
+      item.end_date ||
+      item.date_label
+  );
+}
+
+type FeeChangeDirection = "initial" | "up" | "down";
+
+interface CollapsedFeeHistoryItem {
+  amount: number;
+  source_type: string;
+  context: string | null;
+  start_label: string;
+  end_label: string | null;
+  start_key: string;
+  end_key: string | null;
+  is_current: boolean;
+  direction: FeeChangeDirection;
+  notes: TeachingFeeNoteItem[];
+}
+
+function getFeeDateLabel(item: FeeHistoryItem): string {
+  if (item.effective_date) return formatDate(item.effective_date);
+  return item.effective_label ?? "-";
+}
+
+function getFeeSortKey(item: FeeHistoryItem): string {
+  return item.effective_date ?? item.effective_label ?? "";
+}
+
+function sortFeeHistoryChronologically(
+  history: FeeHistoryItem[]
+): FeeHistoryItem[] {
+  return [...history].sort((a, b) => {
+    const aKey = getFeeSortKey(a);
+    const bKey = getFeeSortKey(b);
+    return aKey.localeCompare(bKey);
+  });
+}
+
+function collapseFeeTimeline(
+  history: FeeHistoryItem[]
+): CollapsedFeeHistoryItem[] {
+  const timeline = sortFeeHistoryChronologically(history).filter(
+    (item) =>
+      !item.is_special_amount &&
+      item.fee_kind === "hourly" &&
+      item.amount !== null
+  );
+
+  const collapsed: CollapsedFeeHistoryItem[] = [];
+
+  for (const item of timeline) {
+    const label = getFeeDateLabel(item);
+    const sortKey = getFeeSortKey(item);
+    const current = collapsed[collapsed.length - 1];
+
+    if (current && current.amount === item.amount) {
+      current.end_label = label;
+      current.end_key = sortKey;
+      current.is_current = current.is_current || item.is_current;
+      if (!current.context && item.context) {
+        current.context = item.context;
+      }
+      continue;
+    }
+
+    const previous = collapsed[collapsed.length - 1];
+    const direction: FeeChangeDirection = !previous
+      ? "initial"
+      : item.amount! > previous.amount
+        ? "up"
+        : "down";
+
+    collapsed.push({
+      amount: item.amount!,
+      source_type: item.source_type,
+      context: item.context,
+      start_label: label,
+      end_label: null,
+      start_key: sortKey,
+      end_key: null,
+      is_current: item.is_current,
+      direction,
+      notes: [],
+    });
+  }
+
+  return collapsed;
+}
+
 // --- Score breakdown label/max mapping ---
 
 const SCORE_LABELS: Record<string, { label: string; max: number }> = {
@@ -114,6 +305,16 @@ interface FeeHistoryItem {
   is_special_amount: boolean;
 }
 
+interface TeachingFeeNoteItem {
+  id: string;
+  period: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  amount: number | null;
+  context: string | null;
+  note: string;
+}
+
 // Feature J: 출처 라벨 정규화 (내부 source_type → 화면 라벨)
 const FEE_SOURCE_LABELS: Record<string, string> = {
   notion: "노션",
@@ -125,6 +326,67 @@ const FEE_SOURCE_LABELS: Record<string, string> = {
 
 function formatFeeSource(sourceType: string): string {
   return FEE_SOURCE_LABELS[sourceType] ?? sourceType;
+}
+
+function extractTeachingFeeNotes(
+  history: TeachingHistoryItem[]
+): TeachingFeeNoteItem[] {
+  return history
+    .flatMap((item) => {
+      const notes = [item.special_notes, item.fee_extra].filter(
+        (value): value is string => Boolean(value && value.trim())
+      );
+      if (notes.length === 0) return [];
+
+      const contextParts = [item.company_name, item.course_name].filter(
+        (value): value is string => Boolean(value && value.trim())
+      );
+
+      return notes.map((note, index) => ({
+        id: `${item.id}-${index}`,
+        period:
+          item.start_date || item.end_date
+            ? formatDateRange(item.start_date, item.end_date)
+            : null,
+        start_date: item.start_date,
+        end_date: item.end_date,
+        amount: item.deal_fee_hourly,
+        context: contextParts.length > 0 ? contextParts.join(" / ") : null,
+        note,
+      }));
+    })
+    .sort((a, b) => (a.period ?? "").localeCompare(b.period ?? ""));
+}
+
+function noteMatchesTimeline(
+  note: TeachingFeeNoteItem,
+  item: CollapsedFeeHistoryItem
+): boolean {
+  if (note.amount === null || note.amount !== item.amount) return false;
+
+  if (!note.start_date) return true;
+
+  if (!item.start_key) return true;
+
+  const endKey = item.end_key ?? item.start_key;
+  if (item.is_current && note.start_date >= item.start_key) return true;
+  return note.start_date >= item.start_key && note.start_date <= endKey;
+}
+
+function attachTeachingFeeNotes(
+  timeline: CollapsedFeeHistoryItem[],
+  notes: TeachingFeeNoteItem[]
+): CollapsedFeeHistoryItem[] {
+  const next = timeline.map((item) => ({ ...item, notes: [] as TeachingFeeNoteItem[] }));
+
+  for (const note of notes) {
+    const target = next.find((item) => noteMatchesTimeline(note, item));
+    if (target) {
+      target.notes.push(note);
+    }
+  }
+
+  return next;
 }
 
 // --- Main component ---
@@ -186,6 +448,8 @@ export default function InstructorDetail({
 // --- A. Header Section ---
 
 function HeaderSection({ data }: { data: InstructorDetailData }) {
+  const affiliationTags = parseAffiliationTags(data.affiliation);
+
   return (
     <section className="space-y-3">
       <div className="flex items-start justify-between">
@@ -203,14 +467,19 @@ function HeaderSection({ data }: { data: InstructorDetailData }) {
               </span>
             )}
           </div>
-          {data.affiliation && (
-            <p className="text-sm text-gray-500">{data.affiliation}</p>
-          )}
         </div>
       </div>
 
-      {/* Categories & Specialties */}
+      {/* Categories / Affiliations / Specialties */}
       <div className="flex flex-wrap gap-1.5">
+        {affiliationTags.map((tag) => (
+          <span
+            key={`aff-${tag}`}
+            className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700"
+          >
+            {tag}
+          </span>
+        ))}
         {data.categories.map((cat) => (
           <span
             key={cat}
@@ -616,65 +885,63 @@ function OpsIntelligenceSection({ data }: { data: InstructorDetailData }) {
 
 function TeachingHistorySection({ data }: { data: InstructorDetailData }) {
   const history = data.teaching_history as TeachingHistoryItem[];
+  const visibleHistory = history.filter(isDisplayableTeachingHistory);
+  const hiddenCount = history.length - visibleHistory.length;
   const remaining = data.teaching_history_remaining_count;
 
   return (
     <section className="space-y-3">
       <h3 className="text-sm font-semibold text-gray-900">강의 이력</h3>
 
-      {history.length === 0 ? (
+      {visibleHistory.length === 0 ? (
         <p className="text-sm text-gray-400">강의 이력이 없습니다</p>
       ) : (
-        <div className="overflow-x-auto border border-gray-200 rounded-lg">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 text-left text-xs text-gray-500 uppercase tracking-wider">
-                <th className="px-4 py-2 font-medium">기업명</th>
-                <th className="px-4 py-2 font-medium">과정명</th>
-                <th className="px-4 py-2 font-medium">일정</th>
-                <th className="px-4 py-2 font-medium text-right">출강단가</th>
-                <th className="px-4 py-2 font-medium">특이사항</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {history.map((h) => {
-                const dateDisplay = h.date_label
-                  ? h.date_label
-                  : h.start_date && h.end_date
-                    ? `${formatDate(h.start_date)} ~ ${formatDate(h.end_date)}`
-                    : h.start_date
-                      ? formatDate(h.start_date)
-                      : "-";
+        <div className="space-y-2 rounded-lg border border-gray-200 bg-white p-3">
+          {visibleHistory.map((h) => {
+            const dateDisplay = formatTeachingPeriod(h);
+            const summary = formatTeachingSummary(h);
 
-                const feeDisplay =
-                  h.deal_fee_hourly !== null
-                    ? formatMoney(h.deal_fee_hourly)
-                    : "-";
+            return (
+              <div
+                key={h.id}
+                className="rounded-md border border-gray-100 px-4 py-3"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    {h.course_name && (
+                      <div className="text-sm font-medium text-gray-900">
+                        {h.course_name}
+                      </div>
+                    )}
+                    {h.company_name && (
+                      <div className="text-sm text-gray-500">
+                        {h.company_name}
+                      </div>
+                    )}
+                  </div>
+                  <div className="shrink-0 text-right">
+                    {dateDisplay !== "-" && (
+                      <div className="text-sm font-medium text-gray-900">
+                        {dateDisplay}
+                      </div>
+                    )}
+                    {summary && (
+                      <div className="mt-1 text-xs text-gray-500">{summary}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
 
-                return (
-                  <tr key={h.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-2 text-gray-900">
-                      {h.company_name ?? "-"}
-                    </td>
-                    <td className="px-4 py-2 text-gray-600">
-                      {h.course_name ?? "-"}
-                    </td>
-                    <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
-                      {dateDisplay}
-                    </td>
-                    <td className="px-4 py-2 text-gray-900 text-right whitespace-nowrap">
-                      {feeDisplay}
-                    </td>
-                    <td className="px-4 py-2 text-gray-500 text-xs">
-                      {h.special_notes ?? "-"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {hiddenCount > 0 && (
+            <div className="px-1 pt-1 text-xs text-gray-400">
+              과정명·기업명·기간 정보가 없는 계약 행 {hiddenCount}건은 숨김 처리했습니다.
+            </div>
+          )}
+
           {remaining > 0 && (
-            <div className="px-4 py-2 text-xs text-gray-500 bg-gray-50 border-t border-gray-200">
+            <div className="px-1 pt-1 text-xs text-gray-500">
               {remaining}건 더 있음
             </div>
           )}
@@ -688,6 +955,13 @@ function TeachingHistorySection({ data }: { data: InstructorDetailData }) {
 
 function FeeHistorySection({ data }: { data: InstructorDetailData }) {
   const history = data.fee_history as FeeHistoryItem[];
+  const timeline = attachTeachingFeeNotes(
+    collapseFeeTimeline(history),
+    extractTeachingFeeNotes(data.teaching_history as TeachingHistoryItem[])
+  );
+  const referenceItems = sortFeeHistoryChronologically(history).filter(
+    (item) => item.is_special_amount || item.fee_kind !== "hourly"
+  );
 
   return (
     <section className="space-y-3">
@@ -695,75 +969,136 @@ function FeeHistorySection({ data }: { data: InstructorDetailData }) {
       {history.length === 0 ? (
         <p className="text-sm text-gray-400">이력 없음</p>
       ) : (
-        <div className="space-y-2">
-          {history.map((item, i) => {
-            // Feature J: 날짜 — effective_date 우선, 없으면 effective_label, 둘 다 없으면 `-`
-            const dateDisplay = item.effective_date
-              ? formatDate(item.effective_date)
-              : item.effective_label ?? "-";
-
-            // Feature J: 금액 — 특수금액은 원 단위 그대로 + 라벨, 일반은 N만원 형식
-            const amountDisplay = item.amount === null
-              ? "-"
-              : item.is_special_amount
-                ? formatMoney(item.amount)
-                : formatMoney(item.amount);
-
-            // Feature J: 변경 사유/컨텍스트 — 없으면 `-`
-            const contextDisplay = item.context ?? "-";
-
-            // Feature J: 출처
-            const sourceDisplay = formatFeeSource(item.source_type);
-
-            return (
-              <div
-                key={i}
-                className={`px-3 py-2.5 border rounded-md ${
-                  item.is_current
-                    ? "bg-blue-50 border-blue-200"
-                    : item.is_special_amount
-                      ? "bg-orange-50 border-orange-200"
-                      : "bg-white border-gray-200"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-medium text-gray-900">
-                        {dateDisplay}
-                      </span>
-                      {item.is_current && (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">
-                          현재
-                        </span>
-                      )}
-                      {item.is_special_amount && (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">
-                          특수 금액
-                        </span>
-                      )}
-                      {item.fee_kind !== "hourly" && (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600">
-                          {item.fee_kind}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-1 text-xs text-gray-500">
-                      {contextDisplay}
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-sm font-semibold text-gray-900">
-                      {amountDisplay}
-                    </div>
-                    <div className="mt-0.5 text-xs text-gray-400">
-                      {sourceDisplay}
-                    </div>
-                  </div>
-                </div>
+        <div className="space-y-4">
+          {timeline.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-gray-500">
+                동일 금액은 묶어서 오래된 순으로 표시합니다.
               </div>
-            );
-          })}
+              {timeline.map((item, index) => {
+                const sourceDisplay = formatFeeSource(item.source_type);
+                const periodDisplay =
+                  item.is_current && item.end_label
+                    ? `${item.start_label} ~ 현재`
+                    : item.end_label
+                      ? `${item.start_label} ~ ${item.end_label}`
+                      : item.start_label;
+                const directionLabel =
+                  item.direction === "initial"
+                    ? "초기"
+                    : item.direction === "up"
+                      ? "상승"
+                      : "하락";
+
+                return (
+                  <div
+                    key={`${item.start_label}-${item.amount}-${index}`}
+                    className={`rounded-md border px-4 py-3 ${
+                      item.is_current
+                        ? "border-blue-200 bg-blue-50"
+                        : "border-gray-200 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium text-gray-900">
+                            {periodDisplay}
+                          </span>
+                          <span
+                            className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
+                              item.direction === "up"
+                                ? "bg-green-100 text-green-700"
+                                : item.direction === "down"
+                                  ? "bg-red-100 text-red-700"
+                                  : "bg-gray-100 text-gray-600"
+                            }`}
+                          >
+                            {directionLabel}
+                          </span>
+                          {item.is_current && (
+                            <span className="inline-flex items-center rounded bg-blue-100 px-1.5 py-0.5 text-xs font-medium text-blue-700">
+                              현재
+                            </span>
+                          )}
+                        </div>
+                      <div className="text-xs text-gray-500">
+                          {sourceDisplay}
+                          {item.context ? ` · ${item.context}` : ""}
+                        </div>
+                        {item.notes.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {item.notes.map((note) => (
+                              <div
+                                key={note.id}
+                                className="rounded bg-gray-100 px-2 py-1.5 text-xs text-gray-600"
+                              >
+                                {(note.period || note.context) && (
+                                  <div className="mb-0.5 text-[11px] text-gray-500">
+                                    {[note.period, note.context]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </div>
+                                )}
+                                <div>{note.note}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="text-sm font-semibold text-gray-900">
+                          {formatMoney(item.amount)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {referenceItems.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-gray-500">
+                특수 금액 / 참고 이력
+              </div>
+              <div className="space-y-2">
+                {referenceItems.map((item, index) => (
+                  <div
+                    key={`${item.source_type}-${index}`}
+                    className="rounded-md border border-orange-200 bg-orange-50 px-4 py-3"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium text-gray-900">
+                            {getFeeDateLabel(item)}
+                          </span>
+                          <span className="inline-flex items-center rounded bg-orange-100 px-1.5 py-0.5 text-xs font-medium text-orange-700">
+                            특수 금액
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {formatFeeSource(item.source_type)}
+                          {item.context ? ` · ${item.context}` : ""}
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="text-sm font-semibold text-gray-900">
+                          {formatMoney(item.amount)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {timeline.length === 0 && referenceItems.length === 0 && (
+            <p className="text-sm text-gray-400">이력 없음</p>
+          )}
         </div>
       )}
     </section>

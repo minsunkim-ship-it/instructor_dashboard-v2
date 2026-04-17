@@ -59,6 +59,14 @@ function formatScore(score: number | null): string {
   return score.toFixed(1);
 }
 
+function parseAffiliationTags(affiliation: string | null): string[] {
+  if (!affiliation) return [];
+  return affiliation
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 interface InstructorListInnerProps {
   onSelectInstructor?: (id: string) => void;
   selectedInstructorId?: string | null;
@@ -307,8 +315,7 @@ function InstructorCard({
   onClick: () => void;
 }) {
   const { categories, specialties } = instructor;
-  const primaryCategory = categories[0] ?? null;
-  // Feature A: 전문분야는 최대 2개만 표시
+  const affiliationTags = parseAffiliationTags(instructor.affiliation);
   const displaySpecialties = specialties.slice(0, 2);
 
   return (
@@ -327,27 +334,33 @@ function InstructorCard({
           {instructor.rank !== null ? instructor.rank : "-"}
         </div>
 
-        {/* 중앙: 이름, 카테고리, 소속, 전문분야 */}
+        {/* 중앙: 이름, 태그 */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-medium text-gray-900 truncate">
               {instructor.name}
             </span>
-            {/* Feature A: 전임강사 배지 */}
-            {instructor.is_fulltime && (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700">
-                전임강사
-              </span>
-            )}
           </div>
-          <div className="mt-0.5 text-sm text-gray-500">
-            {/* Feature A: 카테고리나 소속이 없으면 - */}
-            <span>{primaryCategory ?? "-"}</span>
-            <span className="mx-1 text-gray-300">|</span>
-            <span>{instructor.affiliation ?? "-"}</span>
-          </div>
-          {displaySpecialties.length > 0 && (
+          {(categories.length > 0 ||
+            affiliationTags.length > 0 ||
+            displaySpecialties.length > 0) && (
             <div className="mt-1 flex flex-wrap gap-1">
+              {categories.map((cat) => (
+                <span
+                  key={`cat-${cat}`}
+                  className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700"
+                >
+                  {cat}
+                </span>
+              ))}
+              {affiliationTags.map((tag) => (
+                <span
+                  key={`aff-${tag}`}
+                  className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700"
+                >
+                  {tag}
+                </span>
+              ))}
               {displaySpecialties.map((spec) => (
                 <span
                   key={spec}

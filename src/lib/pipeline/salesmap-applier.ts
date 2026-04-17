@@ -6,8 +6,8 @@
  * 파일럿 적용 규칙 (사용자 지시 + 문서 계약):
  * - 세일즈맵 단독으로 새 강사를 생성하지 않는다. `instructors.name` exact match 되는 기존 강사만 보강한다.
  * - `base_fee_hourly` 는 오염시키지 않는다. 세일즈맵 강사료는 hourly-interpretable 후보 건수만 집계한다.
- * - `teaching_histories` 는 새로 생성하지 않는다. 기존 행 중 `(instructor_db_id, course_id)` 가 매칭되고
- *   `company_name` 또는 `course_name` 이 NULL 인 행만 보강한다.
+ * - `teaching_histories` 는 새로 생성하지 않는다. 기존 행은 `course_id` 기준으로 기업명/과정명을 보강한다.
+ *   `(instructor_db_id, course_id)` exact match 가 있으면 그 값을 우선하고, 없으면 `course_id` 전역 매핑으로 fallback 한다.
  * - `instructors.last_activity_at` 은 세일즈맵 강사별 최신 활동일이 기존 값보다 더 최근일 때만 갱신한다.
  */
 
@@ -32,7 +32,7 @@ export interface SalesmapApplyResult {
   teachingHistoriesCompanyFilled: number;
   /** teaching_histories 중 course_name 을 보강한 행 수 */
   teachingHistoriesCourseNameFilled: number;
-  /** teaching_histories 보강 대상이었으나 (instructor, course_id) 매칭 실패로 건너뛴 세일즈맵 slot 수 */
+  /** teaching_histories 보강 대상이었으나 course_id 기준으로도 보강하지 못한 행 수 */
   teachingHistoriesUnmatched: number;
 
   /** 시간당 단가로 해석 가능한 강사료 후보 slot 수 (DB 에 반영하지 않고 집계만) */
@@ -131,9 +131,12 @@ export async function applySalesmapRows(
     >;
   }
   const perInstructor = new Map<string, PerInstructorAgg>();
+  const globalCourseFills = new Map<
+    string,
+    { companyName: string | null; courseName: string | null }
+  >();
   const unmatchedNames = new Set<string>();
-  // teaching_histories 매칭 대상이었으나 course_id 가 없거나 instructor 가 매칭 안 된 slot 수 집계
-  let thUnmatchedSlots = 0;
+  let thUnmatchedRows = 0;
 
   for (const row of rows) {
     if (row.feeRaw) {
@@ -145,13 +148,28 @@ export async function applySalesmapRows(
     }
 
     const name = row.instructorName;
+    if (row.courseId) {
+      const globalExisting = globalCourseFills.get(row.courseId);
+      if (!globalExisting) {
+        globalCourseFills.set(row.courseId, {
+          companyName: row.companyName,
+          courseName: row.courseName,
+        });
+      } else {
+        if (!globalExisting.companyName && row.companyName) {
+          globalExisting.companyName = row.companyName;
+        }
+        if (!globalExisting.courseName && row.courseName) {
+          globalExisting.courseName = row.courseName;
+        }
+      }
+    }
+
     if (!name) continue;
 
     const matched = nameToInstructor.get(name);
     if (!matched) {
       unmatchedNames.add(name);
-      // course_id 있어도 instructor 매칭 실패면 teaching_histories 보강 불가
-      if (row.courseId) thUnmatchedSlots += 1;
       continue;
     }
 
@@ -260,24 +278,15 @@ export async function applySalesmapRows(
   }
 
   // 4) teaching_histories 보강 — 필요한 후보를 먼저 전부 읽고, 업데이트만 제한 병렬로 수행
-  const instructorIdsWithCourseFills = Array.from(perInstructor.values())
-    .filter((agg) => agg.courseFills.size > 0)
-    .map((agg) => agg.instructorId);
-  const targetCourseIds = Array.from(
-    new Set(
-      Array.from(perInstructor.values()).flatMap((agg) =>
-        Array.from(agg.courseFills.keys())
-      )
-    )
-  );
+  const targetCourseIds = Array.from(globalCourseFills.keys());
 
   const existingHistories =
-    instructorIdsWithCourseFills.length === 0 || targetCourseIds.length === 0
+    targetCourseIds.length === 0
       ? []
       : await prisma.teachingHistory.findMany({
           where: {
-            instructorDbId: { in: instructorIdsWithCourseFills },
             courseId: { in: targetCourseIds },
+            OR: [{ companyName: null }, { courseName: null }],
           },
           select: {
             id: true,
@@ -288,62 +297,39 @@ export async function applySalesmapRows(
           },
         });
 
-  const historiesByPair = new Map<
-    string,
-    Array<{
-      id: string;
-      companyName: string | null;
-      courseName: string | null;
-    }>
-  >();
-  for (const history of existingHistories) {
-    const key = `${history.instructorDbId}::${history.courseId}`;
-    const arr = historiesByPair.get(key);
-    const entry = {
-      id: history.id,
-      companyName: history.companyName,
-      courseName: history.courseName,
-    };
-    if (arr) {
-      arr.push(entry);
-    } else {
-      historiesByPair.set(key, [entry]);
-    }
-  }
-
   type HistoryUpdateTask = {
     historyId: string;
     data: { companyName?: string; courseName?: string };
   };
   const historyUpdateTasks: HistoryUpdateTask[] = [];
 
-  for (const agg of perInstructor.values()) {
-    if (agg.courseFills.size === 0) continue;
-    for (const [courseId, fill] of agg.courseFills) {
-      const key = `${agg.instructorId}::${courseId}`;
-      const targets = historiesByPair.get(key);
+  for (const history of existingHistories) {
+    if (!history.courseId) continue;
 
-      if (!targets || targets.length === 0) {
-        thUnmatchedSlots += 1;
-        continue;
-      }
+    const exactFill = perInstructor.get(history.instructorDbId)?.courseFills.get(
+      history.courseId
+    );
+    const fallbackFill = globalCourseFills.get(history.courseId);
+    const fill = exactFill ?? fallbackFill;
 
-      for (const target of targets) {
-        const data: { companyName?: string; courseName?: string } = {};
-        if (fill.companyName && !target.companyName) {
-          data.companyName = fill.companyName;
-        }
-        if (fill.courseName && !target.courseName) {
-          data.courseName = fill.courseName;
-        }
-        if (Object.keys(data).length === 0) continue;
-
-        historyUpdateTasks.push({
-          historyId: target.id,
-          data,
-        });
-      }
+    if (!fill) {
+      thUnmatchedRows += 1;
+      continue;
     }
+
+    const data: { companyName?: string; courseName?: string } = {};
+    if (fill.companyName && !history.companyName) {
+      data.companyName = fill.companyName;
+    }
+    if (fill.courseName && !history.courseName) {
+      data.courseName = fill.courseName;
+    }
+    if (Object.keys(data).length === 0) continue;
+
+    historyUpdateTasks.push({
+      historyId: history.id,
+      data,
+    });
   }
 
   await mapWithConcurrency(
@@ -359,7 +345,7 @@ export async function applySalesmapRows(
     }
   );
 
-  result.teachingHistoriesUnmatched = thUnmatchedSlots;
+  result.teachingHistoriesUnmatched = thUnmatchedRows;
 
   return result;
 }

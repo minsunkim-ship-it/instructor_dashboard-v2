@@ -104,6 +104,8 @@ Wave 1 병렬 실행은 아래 구조를 기본으로 한다.
 - 다른 그룹은 `src/app/page.tsx`를 직접 수정하지 않는다.
 - 마지막 `T5` 통합 단계에서는 status/refresh 관련 최소 후속 연결만 허용된다.
 - Group 1은 `page.tsx` 안에서 fallback/status UI가 들어갈 slot과 렌더 조건을 준비하고, fallback 배너의 실제 연결까지 책임진다.
+- 단, Group 1의 fallback 배너 **실제 import / JSX wiring / 최종 build 완료는 Group 2의 T9 산출물 이후에만** 수행한다.
+  - Group 2가 `src/components/FallbackBanner.tsx`, props 계약, 최소 1개 사용 예시를 제공하기 전에는 slot/조건 준비까지만 진행한다.
 
 ## 5. Group 2 — `T4, T9`
 

@@ -62,7 +62,8 @@ docs 폴더 문서를 00_docs_index.md의 Read Order와 Source of Truth Priority
 1. T2 검증 및 문서 기준 보완
 2. T3 검증 및 문서 기준 보완
 3. InstructorList -> page.tsx -> InstructorDetail 연결 완성
-4. null/empty/loading/error/fallback 노출을 문서 기준으로 점검
+4. Group 2의 T9 산출물 이후 `FallbackBanner` 실제 import / JSX 삽입까지 완료
+5. null/empty/loading/error/fallback 노출을 문서 기준으로 점검
 
 검증:
 - node wave1-preflight.mjs

@@ -126,6 +126,14 @@
 - 각 그룹은 자기 수정 가능 범위 안에서만 파일을 수정한다.
 - 실제 시작 체크는 `14_wave1_preflight_checklist.md`를 따른다.
 
+### 6-0. 병렬 실행 순서 보정
+
+- Group 1, Group 2, Group 3은 병렬로 시작할 수 있다.
+- 단, **Group 1의 fallback 배너 실제 wiring과 최종 build 완료는 Group 2의 T9 산출물 이후에만 수행한다.**
+  - Group 1은 먼저 `page.tsx`의 slot / 렌더 조건 / 상태 분기 구조를 준비할 수 있다.
+  - Group 2가 `FallbackBanner` 컴포넌트, props 계약, 최소 1개 사용 예시를 보고한 뒤에만 Group 1이 실제 import / JSX 삽입을 마무리한다.
+- 따라서 실행 운영상으로는 `Group 2·Group 3 선행 병렬 + Group 1 마무리 + 검사 + T5` 순서를 허용한다.
+
 ### 6-1. 현재 웨이브 운영 원칙
 
 - 이번 웨이브는 **결과 품질 우선**으로 운영한다.

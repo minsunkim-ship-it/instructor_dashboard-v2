@@ -232,6 +232,40 @@ function mergeContractSourceRef(
   };
 }
 
+function sourceRefEquals(
+  left: unknown,
+  right: {
+    spreadsheet_id: string;
+    worksheet_gid: number;
+    row_number: number;
+    timestamp_raw: string | null;
+    recorded_at: string | null;
+  }
+): boolean {
+  const existing =
+    left && typeof left === "object" && !Array.isArray(left)
+      ? (left as Record<string, unknown>)
+      : null;
+
+  return (
+    (typeof existing?.spreadsheet_id === "string"
+      ? existing.spreadsheet_id
+      : null) === right.spreadsheet_id &&
+    (typeof existing?.worksheet_gid === "number"
+      ? existing.worksheet_gid
+      : null) === right.worksheet_gid &&
+    (typeof existing?.row_number === "number"
+      ? existing.row_number
+      : null) === right.row_number &&
+    ((typeof existing?.timestamp_raw === "string" || existing?.timestamp_raw === null)
+      ? (existing.timestamp_raw as string | null)
+      : null) === right.timestamp_raw &&
+    ((typeof existing?.recorded_at === "string" || existing?.recorded_at === null)
+      ? (existing.recorded_at as string | null)
+      : null) === right.recorded_at
+  );
+}
+
 async function cleanupLegacyCrossWorksheetContractDuplicates(
   instructorIds: Iterable<string>
 ): Promise<number> {
@@ -701,7 +735,7 @@ export async function storeContractRows(
           duplicate.contractType !== nextData.contractType ||
           duplicate.detailType !== nextData.detailType ||
           duplicate.specialNotes !== nextData.specialNotes ||
-          JSON.stringify(duplicate.sourceRef ?? {}) !== JSON.stringify(nextData.sourceRef);
+          !sourceRefEquals(duplicate.sourceRef, nextData.sourceRef);
 
         if (changed) {
           updatePayloads.push({

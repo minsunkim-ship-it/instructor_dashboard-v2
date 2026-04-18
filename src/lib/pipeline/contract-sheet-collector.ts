@@ -51,6 +51,13 @@ export interface CollectResult {
   worksheets: WorksheetCollectResult[];
 }
 
+export interface ContractSheetCollectProgressEvent {
+  gid: number;
+  stage: "collect_start" | "collect_complete";
+  fetchedCount?: number;
+  error?: string | null;
+}
+
 interface SpreadsheetMetaResponse {
   sheets?: Array<{
     properties?: {
@@ -180,6 +187,14 @@ async function fetchWorksheet(
  * worksheet별 결과를 분리 반환해 source_sync_logs에 per-worksheet로 기록할 수 있도록 한다.
  */
 export async function collectFromContractSheets(): Promise<CollectResult> {
+  return collectFromContractSheetsWithProgress();
+}
+
+export async function collectFromContractSheetsWithProgress(options?: {
+  onProgress?: (
+    event: ContractSheetCollectProgressEvent
+  ) => Promise<void> | void;
+}): Promise<CollectResult> {
   const spreadsheetId = process.env.GOOGLE_CONTRACTS_SPREADSHEET_ID;
   if (!spreadsheetId) {
     throw new Error(
@@ -191,15 +206,33 @@ export async function collectFromContractSheets(): Promise<CollectResult> {
   const worksheets: WorksheetCollectResult[] = [];
 
   for (const gid of PILOT_4_1_WORKSHEET_GIDS) {
+    await options?.onProgress?.({
+      gid,
+      stage: "collect_start",
+    });
+
     try {
       const rows = await fetchWorksheet(accessToken, spreadsheetId, gid);
       worksheets.push({ gid, fetchedCount: rows.length, rows });
+      await options?.onProgress?.({
+        gid,
+        stage: "collect_complete",
+        fetchedCount: rows.length,
+        error: null,
+      });
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       worksheets.push({
         gid,
         fetchedCount: 0,
         rows: [],
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
+      });
+      await options?.onProgress?.({
+        gid,
+        stage: "collect_complete",
+        fetchedCount: 0,
+        error: message,
       });
     }
   }

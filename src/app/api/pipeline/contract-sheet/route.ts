@@ -17,10 +17,13 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   collectFromContractSheets,
+  collectFromContractSheetsWithProgress,
+  type ContractSheetCollectProgressEvent,
   type WorksheetCollectResult,
 } from "@/lib/pipeline/contract-sheet-collector";
 import { normalizeContractRow } from "@/lib/pipeline/contract-sheet-normalizer";
 import {
+  type ContractSheetStoreProgress,
   storeContractRows,
   recomputeAggregatesForInstructors,
   type WorksheetStoreResult,
@@ -38,6 +41,52 @@ interface WorksheetSummary {
   error_message: string | null;
 }
 
+function formatProgressMessage(parts: Record<string, unknown>): string {
+  return Object.entries(parts)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
+}
+
+async function mergeRunSummary(
+  runId: string,
+  patch: Prisma.InputJsonObject
+): Promise<void> {
+  const current = await prisma.pipelineRun.findUnique({
+    where: { id: runId },
+    select: { summary: true },
+  });
+
+  const base =
+    current?.summary &&
+    typeof current.summary === "object" &&
+    !Array.isArray(current.summary)
+      ? (current.summary as Prisma.InputJsonObject)
+      : {};
+
+  await prisma.pipelineRun.update({
+    where: { id: runId },
+    data: {
+      summary: {
+        ...base,
+        ...patch,
+      },
+    },
+  });
+}
+
+function logContractSheetProgress(
+  requestId: string,
+  runId: string,
+  message: string,
+  extra?: Record<string, unknown>
+) {
+  const suffix = extra ? ` ${JSON.stringify(extra)}` : "";
+  console.info(
+    `[contract-sheet][${requestId}][run:${runId}] ${message}${suffix}`
+  );
+}
+
 export async function POST() {
   const requestId = `req_${crypto.randomUUID()}`;
 
@@ -47,34 +96,163 @@ export async function POST() {
       runType: "pilot_4_1_contract_sheet",
       status: "running",
       triggeredBy: "pilot_4_1",
+      summary: {
+        request_id: requestId,
+        stage: "starting",
+      },
     },
   });
+  logContractSheetProgress(requestId, run.id, "run_created");
 
   try {
+    const syncLogIdsByGid = new Map<number, string>();
+
+    const ensureSyncLog = async (gid: number): Promise<string> => {
+      const existing = syncLogIdsByGid.get(gid);
+      if (existing) return existing;
+
+      const syncLog = await prisma.sourceSyncLog.create({
+        data: {
+          runId: run.id,
+          sourceType: "contract_sheet",
+          status: "running",
+          startedAt: new Date(),
+          errorMessage: formatProgressMessage({
+            stage: "collect_start",
+            gid,
+          }),
+        },
+      });
+
+      syncLogIdsByGid.set(gid, syncLog.id);
+      return syncLog.id;
+    };
+
+    const updateSyncLogProgress = async (
+      gid: number,
+      parts: Record<string, unknown>,
+      extra?: Partial<{
+        status: "running" | "success" | "partial" | "failed";
+        fetchedCount: number;
+        updatedCount: number;
+        finishedAt: Date;
+      }>
+    ) => {
+      const syncLogId = await ensureSyncLog(gid);
+      await prisma.sourceSyncLog.update({
+        where: { id: syncLogId },
+        data: {
+          ...(extra?.status ? { status: extra.status } : {}),
+          ...(typeof extra?.fetchedCount === "number"
+            ? { fetchedCount: extra.fetchedCount }
+            : {}),
+          ...(typeof extra?.updatedCount === "number"
+            ? { updatedCount: extra.updatedCount }
+            : {}),
+          ...(extra?.finishedAt ? { finishedAt: extra.finishedAt } : {}),
+          errorMessage: formatProgressMessage(parts),
+        },
+      });
+    };
+
+    await mergeRunSummary(run.id, {
+      stage: "collecting",
+      current_gid: null,
+      stage_started_at: new Date().toISOString(),
+    });
+
+    const handleCollectProgress = async (
+      event: ContractSheetCollectProgressEvent
+    ) => {
+      if (event.stage === "collect_start") {
+        await ensureSyncLog(event.gid);
+        await mergeRunSummary(run.id, {
+          stage: "collecting",
+          current_gid: event.gid,
+          stage_started_at: new Date().toISOString(),
+        });
+        logContractSheetProgress(requestId, run.id, "collect_start", {
+          gid: event.gid,
+        });
+        return;
+      }
+
+      await updateSyncLogProgress(
+        event.gid,
+        {
+          stage: event.error ? "collect_error" : "collect_complete",
+          gid: event.gid,
+          fetched: event.fetchedCount ?? 0,
+          error: event.error ?? null,
+        },
+        {
+          fetchedCount: event.fetchedCount ?? 0,
+        }
+      );
+      logContractSheetProgress(requestId, run.id, "collect_complete", {
+        gid: event.gid,
+        fetched: event.fetchedCount ?? 0,
+        error: event.error ?? null,
+      });
+    };
+
     // Step 1: 두 worksheet 수집 (collector가 내부에서 worksheet별 error 분리)
-    const collected = await collectFromContractSheets();
+    const collected = await collectFromContractSheetsWithProgress({
+      onProgress: handleCollectProgress,
+    });
+    logContractSheetProgress(requestId, run.id, "collect_all_complete", {
+      spreadsheetId: collected.spreadsheetId,
+      worksheets: collected.worksheets.map((worksheet) => ({
+        gid: worksheet.gid,
+        fetched: worksheet.fetchedCount,
+        error: worksheet.error ?? null,
+      })),
+    });
 
     // Step 2: worksheet별 정규화 + 저장 + source_sync_logs 1건씩 기록
     const worksheetSummaries: WorksheetSummary[] = [];
     const allAffectedInstructorIds = new Set<string>();
 
     for (const ws of collected.worksheets) {
-      const syncLogStartedAt = new Date();
+      const syncLogId = await ensureSyncLog(ws.gid);
+      await updateSyncLogProgress(ws.gid, {
+        stage: "normalize_start",
+        gid: ws.gid,
+        fetched: ws.fetchedCount,
+      });
 
-      const { summary, storeResult } = await processWorksheet(ws);
+      const { summary, storeResult } = await processWorksheet(ws, {
+        onStage: async (parts) => {
+          await updateSyncLogProgress(ws.gid, parts);
+          await mergeRunSummary(run.id, {
+            stage: String(parts.stage ?? "worksheet_processing"),
+            current_gid: ws.gid,
+            stage_progress: parts as unknown as Prisma.InputJsonObject,
+            stage_started_at: new Date().toISOString(),
+          });
+          logContractSheetProgress(
+            requestId,
+            run.id,
+            `worksheet_stage:${String(parts.stage ?? "unknown")}`,
+            parts
+          );
+        },
+      });
 
-      // source_sync_logs 기록 — 04_data_pipeline 21-1, worksheet별 분리
-      await prisma.sourceSyncLog.create({
+      await prisma.sourceSyncLog.update({
+        where: { id: syncLogId },
         data: {
-          runId: run.id,
-          sourceType: "contract_sheet",
           status: summary.status,
           fetchedCount: summary.fetched,
           updatedCount: summary.appended,
           errorMessage: summary.error_message,
-          startedAt: syncLogStartedAt,
           finishedAt: new Date(),
         },
+      });
+
+      logContractSheetProgress(requestId, run.id, "worksheet_complete", {
+        gid: ws.gid,
+        summary,
       });
 
       worksheetSummaries.push(summary);
@@ -87,9 +265,20 @@ export async function POST() {
     }
 
     // Step 3: 영향 instructor 집계 갱신 — 04_data_pipeline 18-1
+    await mergeRunSummary(run.id, {
+      stage: "recompute_aggregates",
+      affected_instructors: allAffectedInstructorIds.size,
+      stage_started_at: new Date().toISOString(),
+    });
+    logContractSheetProgress(requestId, run.id, "aggregate_start", {
+      affectedInstructors: allAffectedInstructorIds.size,
+    });
     const aggregatesUpdated = await recomputeAggregatesForInstructors(
       allAffectedInstructorIds
     );
+    logContractSheetProgress(requestId, run.id, "aggregate_complete", {
+      aggregatesUpdated,
+    });
 
     // Step 4: pipeline_runs 종료
     const hasFailure = worksheetSummaries.some((s) => s.status === "failed");
@@ -136,6 +325,14 @@ export async function POST() {
         finishedAt: new Date(),
         summary: runSummary,
       },
+    });
+    logContractSheetProgress(requestId, run.id, "run_complete", {
+      runStatus,
+      totalAppended,
+      totalDeduped,
+      totalSkipped,
+      totalErrors,
+      aggregatesUpdated,
     });
 
     return NextResponse.json({
@@ -196,7 +393,10 @@ export async function POST() {
  * worksheet 수집 단계에서 error가 있었다면 저장 단계를 건너뛴다.
  */
 async function processWorksheet(
-  ws: WorksheetCollectResult
+  ws: WorksheetCollectResult,
+  options?: {
+    onStage?: (parts: Record<string, unknown>) => Promise<void> | void;
+  }
 ): Promise<{
   summary: WorksheetSummary;
   storeResult: WorksheetStoreResult | null;
@@ -218,8 +418,37 @@ async function processWorksheet(
     };
   }
 
+  await options?.onStage?.({
+    stage: "normalize_complete",
+    gid: ws.gid,
+    fetched: ws.fetchedCount,
+    normalized: ws.rows.length,
+  });
+
   const normalized = ws.rows.map(normalizeContractRow);
-  const storeResult = await storeContractRows(normalized);
+  await options?.onStage?.({
+    stage: "store_start",
+    gid: ws.gid,
+    normalized: normalized.length,
+  });
+  const storeResult = await storeContractRows(normalized, {
+    progressInterval: 25,
+    onProgress: async (progress: ContractSheetStoreProgress) => {
+      await options?.onStage?.({
+        stage: progress.stage,
+        gid: ws.gid,
+        processed: progress.processed ?? null,
+        total: progress.total ?? null,
+        appended: progress.appended,
+        updated: progress.updated,
+        skipped: progress.skipped,
+        deduped: progress.deduped,
+        instructors_created: progress.instructorsCreated,
+        errors: progress.errors,
+        deleted_duplicates: progress.deletedDuplicates ?? null,
+      });
+    },
+  });
 
   const status: WorksheetSummary["status"] =
     storeResult.errors.length > 0 ? "partial" : "success";

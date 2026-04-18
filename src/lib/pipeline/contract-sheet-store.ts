@@ -33,6 +33,26 @@ export interface WorksheetStoreResult {
   instructorIdsAffected: Set<string>;
 }
 
+export interface ContractSheetStoreProgress {
+  stage:
+    | "prepare_instructors"
+    | "prepare_existing_rows"
+    | "plan_rows"
+    | "apply_updates"
+    | "apply_creates"
+    | "cleanup_duplicates"
+    | "done";
+  processed?: number;
+  total?: number;
+  appended: number;
+  updated: number;
+  skipped: number;
+  deduped: number;
+  instructorsCreated: number;
+  errors: number;
+  deletedDuplicates?: number;
+}
+
 function emptyResult(): WorksheetStoreResult {
   return {
     appended: 0,
@@ -141,6 +161,16 @@ function getRowNumber(sourceRef: unknown): number | null {
   return typeof raw === "number" ? raw : null;
 }
 
+function buildSourceIdentity(input: {
+  instructorDbId: string;
+  spreadsheetId: string;
+  rowNumber: number;
+}): string {
+  return [input.instructorDbId, input.spreadsheetId, input.rowNumber].join(
+    "::"
+  );
+}
+
 function compareContractRowPreference(
   a: { sourceRef: unknown; createdAt: Date },
   b: { sourceRef: unknown; createdAt: Date }
@@ -157,7 +187,7 @@ function compareContractRowPreference(
   return a.createdAt.getTime() - b.createdAt.getTime();
 }
 
-async function cleanupCrossWorksheetContractDuplicates(
+async function cleanupLegacyCrossWorksheetContractDuplicates(
   instructorIds: Iterable<string>
 ): Promise<number> {
   let deletedCount = 0;
@@ -346,60 +376,240 @@ async function cleanupCrossWorksheetContractDuplicates(
  * - 그 외: teaching_histories insert
  */
 export async function storeContractRows(
-  rows: NormalizedContractRow[]
+  rows: NormalizedContractRow[],
+  options?: {
+    onProgress?: (
+      progress: ContractSheetStoreProgress
+    ) => Promise<void> | void;
+    progressInterval?: number;
+  }
 ): Promise<WorksheetStoreResult> {
   const result = emptyResult();
+  const progressInterval = Math.max(options?.progressInterval ?? 100, 1);
 
-  for (const row of rows) {
+  const emitProgress = async (
+    progress: Omit<ContractSheetStoreProgress, "errors">
+  ) => {
+    await options?.onProgress?.({
+      ...progress,
+      errors: result.errors.length,
+    });
+  };
+
+  const validRows = rows.filter((row) => Boolean(row.name));
+  const uniqueNames = Array.from(
+    new Set(validRows.map((row) => row.name!).filter(Boolean))
+  );
+
+  await emitProgress({
+    stage: "prepare_instructors",
+    processed: 0,
+    total: uniqueNames.length,
+    appended: result.appended,
+    updated: result.updated,
+    skipped: result.skipped,
+    deduped: result.deduped,
+    instructorsCreated: result.instructorsCreated,
+  });
+
+  const existingInstructors = await prisma.instructor.findMany({
+    where: {
+      name: {
+        in: uniqueNames,
+      },
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  const instructorsByName = new Map(existingInstructors.map((row) => [row.name, row]));
+  const missingNames = uniqueNames.filter((name) => !instructorsByName.has(name));
+
+  if (missingNames.length > 0) {
+    await prisma.instructor.createMany({
+      data: missingNames.map((name) => ({
+        name,
+        displayName: name,
+      })),
+      skipDuplicates: true,
+    });
+
+    const createdInstructors = await prisma.instructor.findMany({
+      where: {
+        name: {
+          in: missingNames,
+        },
+      },
+      select: {
+        id: true,
+        name: true,
+      },
+    });
+
+    for (const instructor of createdInstructors) {
+      if (!instructorsByName.has(instructor.name)) {
+        result.instructorsCreated++;
+      }
+      instructorsByName.set(instructor.name, instructor);
+    }
+  }
+
+  await emitProgress({
+    stage: "prepare_existing_rows",
+    processed: 0,
+    total: validRows.length,
+    appended: result.appended,
+    updated: result.updated,
+    skipped: result.skipped,
+    deduped: result.deduped,
+    instructorsCreated: result.instructorsCreated,
+  });
+
+  const instructorIds = Array.from(
+    new Set(Array.from(instructorsByName.values()).map((row) => row.id))
+  );
+
+  const existingContractRows =
+    instructorIds.length === 0
+      ? []
+      : await prisma.teachingHistory.findMany({
+          where: {
+            sourceType: "contract_sheet",
+            instructorDbId: {
+              in: instructorIds,
+            },
+          },
+          select: {
+            id: true,
+            instructorDbId: true,
+            companyName: true,
+            courseName: true,
+            courseId: true,
+            startDate: true,
+            endDate: true,
+            dateLabel: true,
+            dealFeeHourly: true,
+            feeExtra: true,
+            totalHours: true,
+            totalSessions: true,
+            contractType: true,
+            detailType: true,
+            specialNotes: true,
+            sourceRef: true,
+            createdAt: true,
+          },
+        });
+
+  const existingRowsByIdentity = new Map<
+    string,
+    (typeof existingContractRows)[number]
+  >();
+
+  for (const row of existingContractRows) {
+    const spreadsheetId = getSpreadsheetId(row.sourceRef);
+    const worksheetGid = getWorksheetGid(row.sourceRef);
+    const rowNumber = getRowNumber(row.sourceRef);
+    if (!spreadsheetId || worksheetGid === null || rowNumber === null) {
+      continue;
+    }
+
+    existingRowsByIdentity.set(
+      buildSourceIdentity({
+        instructorDbId: row.instructorDbId,
+        spreadsheetId,
+        rowNumber,
+      }),
+      row
+    );
+  }
+
+  const createPayloads: Array<{
+    instructorDbId: string;
+    companyName: string | null;
+    courseName: string | null;
+    courseId: string | null;
+    startDate: Date | null;
+    endDate: Date | null;
+    dateLabel: string | null;
+    dealFeeHourly: number | null;
+    feeExtra: string | null;
+    totalHours: typeof rows[number]["totalHours"];
+    totalSessions: number | null;
+    contractType: string | null;
+    detailType: string | null;
+    specialNotes: string | null;
+    sourceType: "contract_sheet";
+    sourceRef: {
+      spreadsheet_id: string;
+      worksheet_gid: number;
+      row_number: number;
+      timestamp_raw: string | null;
+      recorded_at: string | null;
+    };
+  }> = [];
+  const updatePayloads: Array<{
+    id: string;
+    data: {
+      companyName: string | null;
+      courseName: string | null;
+      courseId: string | null;
+      startDate: Date | null;
+      endDate: Date | null;
+      dateLabel: string | null;
+      dealFeeHourly: number | null;
+      feeExtra: string | null;
+      totalHours: typeof rows[number]["totalHours"];
+      totalSessions: number | null;
+      contractType: string | null;
+      detailType: string | null;
+      specialNotes: string | null;
+      sourceRef: {
+        spreadsheet_id: string;
+        worksheet_gid: number;
+        row_number: number;
+        timestamp_raw: string | null;
+        recorded_at: string | null;
+      };
+    };
+  }> = [];
+
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
     try {
       if (!row.name) {
         result.skipped++;
+        const processed = index + 1;
+        if (processed % progressInterval === 0 || processed === rows.length) {
+          await emitProgress({
+            stage: "plan_rows",
+            processed,
+            total: rows.length,
+            appended: result.appended,
+            updated: result.updated,
+            skipped: result.skipped,
+            deduped: result.deduped,
+            instructorsCreated: result.instructorsCreated,
+          });
+        }
         continue;
       }
 
       // 1. instructor 매칭 (exact match) 또는 최소 생성
-      let instructor = await prisma.instructor.findFirst({
-        where: { name: row.name },
-      });
+      const instructor = instructorsByName.get(row.name);
 
       if (!instructor) {
-        instructor = await prisma.instructor.create({
-          data: {
-            name: row.name,
-            displayName: row.name, // 03_data_model 4-1: display_name 기본값 = name
-          },
-        });
-        result.instructorsCreated++;
+        throw new Error(`instructor preload failed for name=${row.name}`);
       }
 
-      // 2. dedupe 검사 — source_ref identity (spreadsheetId + worksheetGid + rowNumber)
-      // Prisma Json 필드는 equals 매칭이 가능하지만, 확실하게 path 기반으로 검색한다.
-      const duplicate = await prisma.teachingHistory.findFirst({
-        where: {
-          sourceType: "contract_sheet",
-          instructorDbId: instructor.id,
-          AND: [
-            {
-              sourceRef: {
-                path: ["spreadsheet_id"],
-                equals: row.spreadsheetId,
-              },
-            },
-            {
-              sourceRef: {
-                path: ["worksheet_gid"],
-                equals: row.worksheetGid,
-              },
-            },
-            {
-              sourceRef: {
-                path: ["row_number"],
-                equals: row.rowNumber,
-              },
-            },
-          ],
-        },
+      const identity = buildSourceIdentity({
+        instructorDbId: instructor.id,
+        spreadsheetId: row.spreadsheetId,
+        rowNumber: row.rowNumber,
       });
+
+      const duplicate = existingRowsByIdentity.get(identity);
 
       const sourceRef = {
         spreadsheet_id: row.spreadsheetId,
@@ -410,6 +620,41 @@ export async function storeContractRows(
       };
 
       if (duplicate) {
+        const preferredSourceRef =
+          duplicate.sourceRef &&
+          typeof duplicate.sourceRef === "object" &&
+          !Array.isArray(duplicate.sourceRef)
+            ? (duplicate.sourceRef as Record<string, unknown>)
+            : null;
+        const nextSourceRef =
+          getWorksheetGid(duplicate.sourceRef) === PREFERRED_CONTRACT_WORKSHEET_GID &&
+          preferredSourceRef
+            ? {
+                spreadsheet_id:
+                  typeof preferredSourceRef.spreadsheet_id === "string"
+                    ? preferredSourceRef.spreadsheet_id
+                    : row.spreadsheetId,
+                worksheet_gid:
+                  typeof preferredSourceRef.worksheet_gid === "number"
+                    ? preferredSourceRef.worksheet_gid
+                    : row.worksheetGid,
+                row_number:
+                  typeof preferredSourceRef.row_number === "number"
+                    ? preferredSourceRef.row_number
+                    : row.rowNumber,
+                timestamp_raw:
+                  typeof preferredSourceRef.timestamp_raw === "string" ||
+                  preferredSourceRef.timestamp_raw === null
+                    ? preferredSourceRef.timestamp_raw
+                    : row.timestampRaw,
+                recorded_at:
+                  typeof preferredSourceRef.recorded_at === "string" ||
+                  preferredSourceRef.recorded_at === null
+                    ? preferredSourceRef.recorded_at
+                    : toDateOnlyString(row.recordedAt),
+              }
+            : sourceRef;
+
         const changed =
           duplicate.companyName !== row.companyName ||
           duplicate.courseName !== row.courseName ||
@@ -425,11 +670,11 @@ export async function storeContractRows(
           duplicate.contractType !== row.contractType ||
           duplicate.detailType !== row.detailType ||
           duplicate.specialNotes !== row.specialNotes ||
-          JSON.stringify(duplicate.sourceRef ?? {}) !== JSON.stringify(sourceRef);
+          JSON.stringify(duplicate.sourceRef ?? {}) !== JSON.stringify(nextSourceRef);
 
         if (changed) {
-          await prisma.teachingHistory.update({
-            where: { id: duplicate.id },
+          updatePayloads.push({
+            id: duplicate.id,
             data: {
               companyName: row.companyName,
               courseName: row.courseName,
@@ -444,10 +689,9 @@ export async function storeContractRows(
               contractType: row.contractType,
               detailType: row.detailType,
               specialNotes: row.specialNotes,
-              sourceRef,
+              sourceRef: nextSourceRef,
             },
           });
-
           result.updated++;
         }
 
@@ -457,25 +701,23 @@ export async function storeContractRows(
       }
 
       // 3. insert
-      await prisma.teachingHistory.create({
-        data: {
-          instructorDbId: instructor.id,
-          companyName: row.companyName, // null
-          courseName: row.courseName,
-          courseId: row.courseId,
-          startDate: row.startDate,
-          endDate: row.endDate,
-          dateLabel: row.dateLabel,
-          dealFeeHourly: row.dealFeeHourly,
-          feeExtra: row.feeExtra,
-          totalHours: row.totalHours,
-          totalSessions: row.totalSessions,
-          contractType: row.contractType,
-          detailType: row.detailType,
-          specialNotes: row.specialNotes,
-          sourceType: "contract_sheet",
-          sourceRef,
-        },
+      createPayloads.push({
+        instructorDbId: instructor.id,
+        companyName: row.companyName,
+        courseName: row.courseName,
+        courseId: row.courseId,
+        startDate: row.startDate,
+        endDate: row.endDate,
+        dateLabel: row.dateLabel,
+        dealFeeHourly: row.dealFeeHourly,
+        feeExtra: row.feeExtra,
+        totalHours: row.totalHours,
+        totalSessions: row.totalSessions,
+        contractType: row.contractType,
+        detailType: row.detailType,
+        specialNotes: row.specialNotes,
+        sourceType: "contract_sheet",
+        sourceRef,
       });
 
       result.appended++;
@@ -486,12 +728,101 @@ export async function storeContractRows(
         message: err instanceof Error ? err.message : String(err),
       });
     }
+
+    const processed = index + 1;
+    if (processed % progressInterval === 0 || processed === rows.length) {
+      await emitProgress({
+        stage: "plan_rows",
+        processed,
+        total: rows.length,
+        appended: result.appended,
+        updated: result.updated,
+        skipped: result.skipped,
+        deduped: result.deduped,
+        instructorsCreated: result.instructorsCreated,
+      });
+    }
   }
 
-  const cleanedDuplicates = await cleanupCrossWorksheetContractDuplicates(
-    result.instructorIdsAffected
-  );
-  result.deduped += cleanedDuplicates;
+  await emitProgress({
+    stage: "apply_updates",
+    processed: 0,
+    total: updatePayloads.length,
+    appended: result.appended,
+    updated: result.updated,
+    skipped: result.skipped,
+    deduped: result.deduped,
+    instructorsCreated: result.instructorsCreated,
+  });
+
+  const updateConcurrency = 50;
+  let appliedUpdates = 0;
+  for (let i = 0; i < updatePayloads.length; i += updateConcurrency) {
+    const batch = updatePayloads.slice(i, i + updateConcurrency);
+    await Promise.all(
+      batch.map((payload) =>
+        prisma.teachingHistory.update({
+          where: { id: payload.id },
+          data: payload.data,
+        })
+      )
+    );
+    appliedUpdates += batch.length;
+    await emitProgress({
+      stage: "apply_updates",
+      processed: appliedUpdates,
+      total: updatePayloads.length,
+      appended: result.appended,
+      updated: result.updated,
+      skipped: result.skipped,
+      deduped: result.deduped,
+      instructorsCreated: result.instructorsCreated,
+    });
+  }
+
+  await emitProgress({
+    stage: "apply_creates",
+    processed: 0,
+    total: createPayloads.length,
+    appended: result.appended,
+    updated: result.updated,
+    skipped: result.skipped,
+    deduped: result.deduped,
+    instructorsCreated: result.instructorsCreated,
+  });
+
+  const createBatchSize = 200;
+  let appliedCreates = 0;
+  for (let i = 0; i < createPayloads.length; i += createBatchSize) {
+    const batch = createPayloads.slice(i, i + createBatchSize);
+    await prisma.teachingHistory.createMany({
+      data: batch,
+      skipDuplicates: false,
+    });
+    appliedCreates += batch.length;
+    await emitProgress({
+      stage: "apply_creates",
+      processed: appliedCreates,
+      total: createPayloads.length,
+      appended: result.appended,
+      updated: result.updated,
+      skipped: result.skipped,
+      deduped: result.deduped,
+      instructorsCreated: result.instructorsCreated,
+    });
+  }
+
+  await emitProgress({
+    stage: "done",
+    processed: rows.length,
+    total: rows.length,
+    appended: result.appended,
+    updated: result.updated,
+    skipped: result.skipped,
+    deduped: result.deduped,
+    instructorsCreated: result.instructorsCreated,
+    deletedDuplicates: 0,
+  });
 
   return result;
 }

@@ -312,6 +312,32 @@ interface TeachingFeeNoteItem {
   note: string;
 }
 
+const HIDDEN_CONTRACT_NOTE_PATTERNS = [
+  /사업자등록증/,
+  /통장사본/,
+  /폴더\s*링크/,
+  /서류\s*취합/,
+  /계약서\s*재작성/,
+  /담당자\s*확인\s*요청/,
+];
+
+function shouldHideContractNote(note: string): boolean {
+  return HIDDEN_CONTRACT_NOTE_PATTERNS.some((pattern) => pattern.test(note));
+}
+
+function extractVisibleContractNotes(
+  ...values: Array<string | null | undefined>
+): string[] {
+  return values
+    .flatMap((value) =>
+      (value ?? "")
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+    )
+    .filter((note) => !shouldHideContractNote(note));
+}
+
 // Feature J: 출처 라벨 정규화 (내부 source_type → 화면 라벨)
 const FEE_SOURCE_LABELS: Record<string, string> = {
   notion: "노션",
@@ -330,8 +356,9 @@ function extractTeachingFeeNotes(
 ): TeachingFeeNoteItem[] {
   return history
     .flatMap((item) => {
-      const notes = [item.special_notes, item.fee_extra].filter(
-        (value): value is string => Boolean(value && value.trim())
+      const notes = extractVisibleContractNotes(
+        item.special_notes,
+        item.fee_extra
       );
       if (notes.length === 0) return [];
 

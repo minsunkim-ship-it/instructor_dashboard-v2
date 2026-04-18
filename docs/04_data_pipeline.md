@@ -74,12 +74,12 @@
 ## 4. 소스별 접근 방식
 
 ### 4-1. 계약시트
-- 접근 방식: Google Sheets API (Service Account)
-- 필수 환경변수: `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_CONTRACTS_SPREADSHEET_ID`
+- 접근 방식: Google Sheets API (Google user OAuth refresh token)
+- 필수 환경변수: `GOOGLE_CONTRACTS_SPREADSHEET_ID`, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_ACCOUNT_EMAIL`
 - Canonical spreadsheet ID: `1QFlQItxBOrnTfF_wvjb5T7fhImbibeK2De4ZFyb0EWA`
 - 대상 worksheet: `gid=158052384`, `gid=1875350219`
 - 두 worksheet는 동일 헤더 매핑을 사용하며, 필드 매핑 계약은 5-1-1절을 따른다.
-- Service Account 메일은 대상 스프레드시트에 Viewer 이상으로 공유되어 있어야 한다.
+- `GMAIL_ACCOUNT_EMAIL` 계정은 대상 스프레드시트에 Viewer 이상으로 접근 가능해야 한다.
 - 목적: 출강 이력, 계약 유형, 상세 유형, 강사료 기준 정보, 실습코치 판정 근거, 운영 메모 후보 수집
 
 ### 4-2. 노션

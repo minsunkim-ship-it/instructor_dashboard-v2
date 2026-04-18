@@ -84,13 +84,13 @@
 - `.env.example`를 기준으로 `.env` 작성
 - `DATABASE_URL` 실제 연결 확인
 - `NOTION_API_KEY`, `NOTION_DATABASE_ID` 확인
-- `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_CONTRACTS_SPREADSHEET_ID` 확인
+- `GOOGLE_CONTRACTS_SPREADSHEET_ID` 확인
 - `SALESMAP_SNAPSHOT_PATH` 실제 파일 경로 확인
 - `SLACK_BOT_TOKEN`, `SLACK_WORKSPACE_ID` 확인
 - `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_ACCOUNT_EMAIL`, `GMAIL_TARGET_ADDRESSES` 확인
 
 ### 4-2. 외부 접근 권한
-- Service Account 메일이 계약 스프레드시트에 공유되어 있는지 확인
+- `GMAIL_ACCOUNT_EMAIL` 계정이 계약 스프레드시트에 실제 접근 가능한지 확인
 - `GMAIL_ACCOUNT_EMAIL` 계정이 만족도 스프레드시트들에 실제 접근 가능한지 확인
 - Slack bot이 canonical 채널 3개를 읽을 수 있는지 확인
 - Notion integration이 대상 DB에 연결되어 있는지 확인
@@ -130,7 +130,7 @@
 ## 6. fail-fast 규칙
 
 - Notion access 실패: UI부터 만들지 말고 integration 권한부터 해결한다
-- 계약시트 access 실패: Service Account 공유 설정부터 해결한다
+- 계약시트 access 실패: `GMAIL_ACCOUNT_EMAIL` 계정의 실제 스프레드시트 접근 권한부터 해결한다
 - Gmail token refresh 실패: Slack/Gmail/만족도 시트 수집을 동시에 막을 수 있으므로 최우선 해결한다
 - Salesmap snapshot 경로 미확정: 이 소스는 Day-1 Must-have에서 제외하고 뒤로 미룬다
 - 인증 미구현: 외부 공개 중지

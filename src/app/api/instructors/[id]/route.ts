@@ -4,8 +4,49 @@
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { countGroupedTeachingHistories } from "@/lib/teaching-history-display";
-import { isNonTeachingCompensationItem } from "@/lib/teaching-history-kind";
+import {
+  calculateTeachingHistoryTotalPaid,
+  countGroupedTeachingHistories,
+  dedupeTeachingHistories,
+} from "@/lib/teaching-history-display";
+
+function dedupeFeeHistoryItems<
+  T extends {
+    effectiveDate: Date | null;
+    effectiveLabel: string | null;
+    amount: number | null;
+    feeKind: string;
+    context: string | null;
+    sourceType: string;
+    isCurrent: boolean;
+    isSpecialAmount: boolean;
+  },
+>(items: T[]): T[] {
+  const deduped = new Map<string, T>();
+
+  for (const item of items) {
+    const key = [
+      item.effectiveDate?.toISOString().split("T")[0] ?? "",
+      item.effectiveLabel ?? "",
+      item.amount ?? "",
+      item.feeKind,
+      item.context ?? "",
+      item.sourceType,
+      item.isSpecialAmount ? "1" : "0",
+    ].join("||");
+
+    const existing = deduped.get(key);
+    if (!existing || (!existing.isCurrent && item.isCurrent)) {
+      deduped.set(key, item);
+    }
+  }
+
+  return Array.from(deduped.values()).sort((a, b) => {
+    const aDate = a.effectiveDate?.toISOString().split("T")[0] ?? "";
+    const bDate = b.effectiveDate?.toISOString().split("T")[0] ?? "";
+    return bDate.localeCompare(aDate);
+  });
+}
 
 export async function GET(
   _request: Request,
@@ -44,25 +85,6 @@ export async function GET(
       );
     }
 
-    // 6-4: total_paid = SUM(deal_fee_hourly * total_hours), 계산 가능한 행만
-    let totalPaid: number | null = null;
-    if (inst.teachingHistories.length > 0) {
-      const allPayable = await prisma.teachingHistory.findMany({
-        where: {
-          instructorDbId: id,
-          dealFeeHourly: { not: null },
-          totalHours: { not: null },
-        },
-        select: { dealFeeHourly: true, totalHours: true },
-      });
-      if (allPayable.length > 0) {
-        totalPaid = allPayable.reduce(
-          (sum, h) => sum + h.dealFeeHourly! * Number(h.totalHours!),
-          0
-        );
-      }
-    }
-
     // 6-4: 전임강사 규칙
     const isFulltime = inst.isFulltime;
     const today = new Date().toISOString().split("T")[0];
@@ -87,8 +109,20 @@ export async function GET(
       source_type: h.sourceType,
     }));
 
-    const teachingHistory = teachingHistoryAll.filter(
-      (item) => !isNonTeachingCompensationItem(item)
+    const totalPaid = calculateTeachingHistoryTotalPaid(teachingHistoryAll, {
+      fromDate: "2025-01-01",
+      untilDate: today,
+    });
+
+    const teachingHistory = dedupeTeachingHistories(teachingHistoryAll, {
+      fromDate: "2025-01-01",
+      untilDate: today,
+    });
+    const feeHistory = dedupeFeeHistoryItems(inst.feeHistories);
+    const teachingHistoryVisible = teachingHistory.slice(0, 30);
+    const teachingHistoryRemainingCount = Math.max(
+      0,
+      teachingHistory.length - teachingHistoryVisible.length
     );
 
     const totalCourses = countGroupedTeachingHistories(teachingHistory, {
@@ -143,7 +177,7 @@ export async function GET(
         // 6-4: 전임강사는 fee_history 빈 배열. T8: 비전임 강사는 fee_histories 테이블에서 조회.
         fee_history: isFulltime
           ? []
-          : inst.feeHistories.map((f) => ({
+          : feeHistory.map((f) => ({
               effective_date: f.effectiveDate
                 ? f.effectiveDate.toISOString().split("T")[0]
                 : null,
@@ -155,8 +189,8 @@ export async function GET(
               is_current: f.isCurrent,
               is_special_amount: f.isSpecialAmount,
             })),
-        teaching_history: teachingHistory,
-        teaching_history_remaining_count: 0,
+        teaching_history: teachingHistoryVisible,
+        teaching_history_remaining_count: teachingHistoryRemainingCount,
       },
     };
 

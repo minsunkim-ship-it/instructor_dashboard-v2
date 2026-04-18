@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { auth, isAllowedEmail } from "@/auth";
+import { auth, isAllowedEmail, isAuthDisabled } from "@/auth";
 
 type AuthProxyRequest = NextRequest & {
   auth: {
@@ -32,7 +32,20 @@ function buildApiError(
 
 export default auth((req: AuthProxyRequest) => {
   const { nextUrl } = req;
-  const { pathname, search } = nextUrl;
+  const { pathname, search, hostname } = nextUrl;
+
+  if (isAuthDisabled()) {
+    return NextResponse.next();
+  }
+
+  const isLocalDevRefresh =
+    process.env.NODE_ENV !== "production" &&
+    pathname === "/api/refresh" &&
+    (hostname === "localhost" || hostname === "127.0.0.1");
+
+  if (isLocalDevRefresh) {
+    return NextResponse.next();
+  }
 
   if (pathname.startsWith("/api/auth")) {
     return NextResponse.next();

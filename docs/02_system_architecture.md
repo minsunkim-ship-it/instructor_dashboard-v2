@@ -241,13 +241,13 @@ flowchart LR
 - `GMAIL_REFRESH_TOKEN`
 - `GMAIL_ACCOUNT_EMAIL`
 - `GMAIL_TARGET_ADDRESSES`
-- `GOOGLE_SERVICE_ACCOUNT_JSON`
 - `GOOGLE_CONTRACTS_SPREADSHEET_ID`
 
 현재 버전의 canonical 환경변수 이름은 위 목록을 사용한다.
 - Notion 수집기는 `NOTION_API_KEY`, `NOTION_DATABASE_ID`를 필수로 사용한다.
-- 계약시트 수집기는 `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_CONTRACTS_SPREADSHEET_ID`를 필수로 사용한다.
-- 계약시트 접근은 Google Sheets API를 Service Account 방식으로 호출하며, Service Account 메일은 대상 스프레드시트에 Viewer 이상으로 공유되어 있어야 한다.
+- 계약시트 수집기는 `GOOGLE_CONTRACTS_SPREADSHEET_ID`를 필수로 사용한다.
+- 계약시트 접근은 Google Sheets API를 Google user OAuth refresh token 방식으로 호출한다.
+- 계약시트, 강사별 출강시트, 만족도 시트는 동일한 Google user OAuth 계정 권한 범위 안에서 접근 가능해야 한다.
 - 세일즈맵 수집기는 현재 단계에서 local SQLite snapshot file을 사용하며 `SALESMAP_SNAPSHOT_PATH`를 필수로 사용한다.
 - `SALESMAP_RELEASE_URL`은 후속 자동 다운로드 단계가 생길 때 사용하는 배포/획득 경로로 남겨두며, 현재 Pilot 4-3의 직접 실행에는 사용하지 않는다.
 - Slack 활동 수집기는 direct Slack API를 사용하며 `SLACK_BOT_TOKEN`, `SLACK_WORKSPACE_ID`를 필수로 사용한다.

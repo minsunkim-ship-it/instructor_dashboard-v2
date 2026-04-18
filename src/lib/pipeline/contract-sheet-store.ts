@@ -15,7 +15,12 @@ import { prisma } from "@/lib/prisma";
 import type { NormalizedContractRow } from "./contract-sheet-normalizer";
 import { toDateOnlyString } from "@/lib/contract-sheet-parser";
 import { COURSE_COUNT_SOURCE_TYPES } from "./teaching-history-sources";
-import { countGroupedTeachingHistories } from "@/lib/teaching-history-display";
+import {
+  countGroupedTeachingHistories,
+  getTeachingHistoryDedupSignature,
+} from "@/lib/teaching-history-display";
+
+const PREFERRED_CONTRACT_WORKSHEET_GID = 158052384;
 
 export interface WorksheetStoreResult {
   appended: number;
@@ -57,6 +62,279 @@ function asComparableHours(value: unknown): string | null {
     return value.toString();
   }
   return String(value);
+}
+
+function buildNormalizedRowSignature(row: NormalizedContractRow): string {
+  return getTeachingHistoryDedupSignature({
+    course_name: row.courseName,
+    company_name: row.companyName,
+    course_id: row.courseId,
+    deal_fee_hourly: row.dealFeeHourly,
+    contract_type: row.contractType,
+    detail_type: row.detailType,
+    fee_extra: row.feeExtra,
+    special_notes: row.specialNotes,
+    start_date: row.startDate,
+    end_date: row.endDate,
+    date_label: row.dateLabel,
+    total_sessions: row.totalSessions,
+    total_hours: row.totalHours !== null ? Number(row.totalHours) : null,
+  });
+}
+
+function buildStoredRowSignature(row: {
+  companyName: string | null;
+  courseName: string | null;
+  courseId: string | null;
+  dealFeeHourly: number | null;
+  contractType: string | null;
+  detailType: string | null;
+  feeExtra: string | null;
+  specialNotes: string | null;
+  startDate: Date | null;
+  endDate: Date | null;
+  dateLabel: string | null;
+  totalSessions: number | null;
+  totalHours: unknown;
+}): string {
+  return getTeachingHistoryDedupSignature({
+    course_name: row.courseName,
+    company_name: row.companyName,
+    course_id: row.courseId,
+    deal_fee_hourly: row.dealFeeHourly,
+    contract_type: row.contractType,
+    detail_type: row.detailType,
+    fee_extra: row.feeExtra,
+    special_notes: row.specialNotes,
+    start_date: row.startDate,
+    end_date: row.endDate,
+    date_label: row.dateLabel,
+    total_sessions: row.totalSessions,
+    total_hours: asComparableHours(row.totalHours),
+  });
+}
+
+function getWorksheetGid(sourceRef: unknown): number | null {
+  if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef)) {
+    return null;
+  }
+
+  const raw = (sourceRef as Record<string, unknown>).worksheet_gid;
+  return typeof raw === "number" ? raw : null;
+}
+
+function getSpreadsheetId(sourceRef: unknown): string | null {
+  if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef)) {
+    return null;
+  }
+
+  const raw = (sourceRef as Record<string, unknown>).spreadsheet_id;
+  return typeof raw === "string" ? raw : null;
+}
+
+function getRowNumber(sourceRef: unknown): number | null {
+  if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef)) {
+    return null;
+  }
+
+  const raw = (sourceRef as Record<string, unknown>).row_number;
+  return typeof raw === "number" ? raw : null;
+}
+
+function compareContractRowPreference(
+  a: { sourceRef: unknown; createdAt: Date },
+  b: { sourceRef: unknown; createdAt: Date }
+): number {
+  const aWorksheet = getWorksheetGid(a.sourceRef);
+  const bWorksheet = getWorksheetGid(b.sourceRef);
+  const aPreferred = aWorksheet === PREFERRED_CONTRACT_WORKSHEET_GID ? 1 : 0;
+  const bPreferred = bWorksheet === PREFERRED_CONTRACT_WORKSHEET_GID ? 1 : 0;
+
+  if (aPreferred !== bPreferred) {
+    return bPreferred - aPreferred;
+  }
+
+  return a.createdAt.getTime() - b.createdAt.getTime();
+}
+
+async function cleanupCrossWorksheetContractDuplicates(
+  instructorIds: Iterable<string>
+): Promise<number> {
+  let deletedCount = 0;
+
+  for (const instructorId of instructorIds) {
+    const rows = await prisma.teachingHistory.findMany({
+      where: {
+        instructorDbId: instructorId,
+        sourceType: "contract_sheet",
+      },
+      select: {
+        id: true,
+        companyName: true,
+        courseName: true,
+        courseId: true,
+        startDate: true,
+        endDate: true,
+        dateLabel: true,
+        dealFeeHourly: true,
+        feeExtra: true,
+        totalHours: true,
+        totalSessions: true,
+        contractType: true,
+        detailType: true,
+        specialNotes: true,
+        sourceRef: true,
+        createdAt: true,
+      },
+    });
+
+    const groupedByRowIdentity = new Map<string, typeof rows>();
+
+    for (const row of rows) {
+      const spreadsheetId = getSpreadsheetId(row.sourceRef);
+      const rowNumber = getRowNumber(row.sourceRef);
+      if (!spreadsheetId || rowNumber === null) {
+        continue;
+      }
+
+      const identity = `${spreadsheetId}::${rowNumber}`;
+      const bucket = groupedByRowIdentity.get(identity) ?? [];
+      bucket.push(row);
+      groupedByRowIdentity.set(identity, bucket);
+    }
+
+    for (const bucket of groupedByRowIdentity.values()) {
+      if (bucket.length <= 1) continue;
+
+      const sorted = [...bucket].sort(compareContractRowPreference);
+      const [survivor, ...duplicates] = sorted;
+
+      if (duplicates.length === 0) continue;
+
+      const mergedData = {
+        companyName:
+          survivor.companyName ??
+          duplicates.find((row) => row.companyName)?.companyName ??
+          null,
+        courseName:
+          survivor.courseName ??
+          duplicates.find((row) => row.courseName)?.courseName ??
+          null,
+        courseId:
+          survivor.courseId ??
+          duplicates.find((row) => row.courseId)?.courseId ??
+          null,
+        startDate:
+          survivor.startDate ??
+          duplicates.find((row) => row.startDate)?.startDate ??
+          null,
+        endDate:
+          survivor.endDate ??
+          duplicates.find((row) => row.endDate)?.endDate ??
+          null,
+        dateLabel:
+          survivor.dateLabel ??
+          duplicates.find((row) => row.dateLabel)?.dateLabel ??
+          null,
+        dealFeeHourly:
+          survivor.dealFeeHourly ??
+          duplicates.find((row) => row.dealFeeHourly !== null)?.dealFeeHourly ??
+          null,
+        feeExtra:
+          survivor.feeExtra ??
+          duplicates.find((row) => row.feeExtra)?.feeExtra ??
+          null,
+        totalHours:
+          survivor.totalHours ??
+          duplicates.find((row) => row.totalHours !== null)?.totalHours ??
+          null,
+        totalSessions:
+          survivor.totalSessions ??
+          duplicates.find((row) => row.totalSessions !== null)?.totalSessions ??
+          null,
+        contractType:
+          survivor.contractType ??
+          duplicates.find((row) => row.contractType)?.contractType ??
+          null,
+        detailType:
+          survivor.detailType ??
+          duplicates.find((row) => row.detailType)?.detailType ??
+          null,
+        specialNotes:
+          survivor.specialNotes ??
+          duplicates.find((row) => row.specialNotes)?.specialNotes ??
+          null,
+      };
+
+      await prisma.teachingHistory.update({
+        where: { id: survivor.id },
+        data: mergedData,
+      });
+
+      await prisma.teachingHistory.deleteMany({
+        where: {
+          id: {
+            in: duplicates.map((row) => row.id),
+          },
+        },
+      });
+
+      deletedCount += duplicates.length;
+    }
+
+    const remainingRows = await prisma.teachingHistory.findMany({
+      where: {
+        instructorDbId: instructorId,
+        sourceType: "contract_sheet",
+      },
+      select: {
+        id: true,
+        companyName: true,
+        courseName: true,
+        courseId: true,
+        startDate: true,
+        endDate: true,
+        dateLabel: true,
+        dealFeeHourly: true,
+        feeExtra: true,
+        totalHours: true,
+        totalSessions: true,
+        contractType: true,
+        detailType: true,
+        specialNotes: true,
+        sourceRef: true,
+        createdAt: true,
+      },
+    });
+
+    const groupedBySignature = new Map<string, typeof remainingRows>();
+    for (const row of remainingRows) {
+      const signature = buildStoredRowSignature(row);
+      const bucket = groupedBySignature.get(signature) ?? [];
+      bucket.push(row);
+      groupedBySignature.set(signature, bucket);
+    }
+
+    for (const bucket of groupedBySignature.values()) {
+      if (bucket.length <= 1) continue;
+
+      const sorted = [...bucket].sort(compareContractRowPreference);
+      const [, ...duplicates] = sorted;
+      if (duplicates.length === 0) continue;
+
+      await prisma.teachingHistory.deleteMany({
+        where: {
+          id: {
+            in: duplicates.map((row) => row.id),
+          },
+        },
+      });
+
+      deletedCount += duplicates.length;
+    }
+  }
+
+  return deletedCount;
 }
 
 /**
@@ -209,6 +487,11 @@ export async function storeContractRows(
       });
     }
   }
+
+  const cleanedDuplicates = await cleanupCrossWorksheetContractDuplicates(
+    result.instructorIdsAffected
+  );
+  result.deduped += cleanedDuplicates;
 
   return result;
 }

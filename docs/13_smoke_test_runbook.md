@@ -209,9 +209,12 @@ curl -X POST "http://localhost:3000/api/instructors/INSTRUCTOR_ID/satisfaction" 
 - integration share 여부
 
 ### 7-2. contract sheet 실패
-- `GOOGLE_SERVICE_ACCOUNT_JSON`
 - `GOOGLE_CONTRACTS_SPREADSHEET_ID`
-- Service Account mail share 여부
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+- `GMAIL_ACCOUNT_EMAIL`
+- OAuth account spreadsheet access 여부
 
 ### 7-3. salesmap 실패
 - `SALESMAP_SNAPSHOT_PATH`

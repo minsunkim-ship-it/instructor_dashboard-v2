@@ -696,3 +696,21 @@
   - Wave 1 Group 3 구현은 본 정책 명확화와 일치해야 한다. 경로별 판정 기준:
     - Notion `fee_note` 경로: 키워드 판정 적용.
     - `teaching_histories` 경로: `deal_fee_hourly`에 대해 outlier 기준만 적용.
+
+### 2026-04-18
+
+#### 계약시트 Google Sheets 인증 경로를 user OAuth refresh token으로 통일
+- 결정:
+  - 계약시트 수집은 더 이상 Service Account를 사용하지 않는다.
+  - 계약시트, 강사별 출강시트, 만족도 시트는 동일한 Google user OAuth refresh token 계정(`GMAIL_ACCOUNT_EMAIL`) 권한 범위 안에서 읽는다.
+  - 계약시트 접근 문제의 1차 확인 항목은 `GOOGLE_SERVICE_ACCOUNT_JSON`이 아니라 `GMAIL_ACCOUNT_EMAIL`의 실제 spreadsheet access다.
+- 배경:
+  - 실제 운영 환경에서 Service Account를 사용할 수 없었고, 같은 저장소 안의 다른 시트 수집기(`instructor_dispatch_sheet`, `satisfaction`)는 이미 user OAuth 경로를 사용 중이었다.
+  - 인증 전략이 collector마다 달라 계약시트만 지속적으로 permission error를 내고 있었다.
+- 반영 문서:
+  - `docs/02_system_architecture.md`
+  - `docs/04_data_pipeline.md`
+  - `docs/10_execution_plan.md`
+  - `docs/12_solo_launch_readiness.md`
+  - `docs/13_smoke_test_runbook.md`
+  - `docs/14_wave1_preflight_checklist.md`

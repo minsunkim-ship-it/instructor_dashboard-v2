@@ -1,9 +1,12 @@
 /**
  * Contract Sheet Collector — Pilot 4-1
  *
- * 04_data_pipeline.md 4-1절: Google Sheets API (Service Account)
+ * 04_data_pipeline.md 4-1절: Google Sheets API
  * 04_data_pipeline.md 5-1절, 5-1-1절: 헤더 매핑 계약
- * 02_system_architecture.md 11-3절: canonical env 변수
+ *
+ * 현재 구현:
+ * - 계약시트 접근은 Google user OAuth refresh token 경로를 사용한다.
+ * - 인증 helper는 `src/lib/google-user-oauth.ts`를 따른다.
  *
  * Pilot 4-1 확정 계약:
  * - Canonical source: Google Sheets API
@@ -12,7 +15,13 @@
  * - 두 worksheet는 동일 헤더 매핑을 사용한다.
  */
 
-import { google, sheets_v4 } from "googleapis";
+import {
+  exchangeGoogleUserAccessToken,
+  googleApiGet,
+} from "@/lib/google-user-oauth";
+
+const SHEETS_API_BASE = "https://sheets.googleapis.com/v4";
+const GOOGLE_SHEETS_REQUEST_TIMEOUT_MS = 20_000;
 
 // Pilot 4-1 대상 worksheet gid 목록
 export const PILOT_4_1_WORKSHEET_GIDS = [158052384, 1875350219] as const;
@@ -42,56 +51,46 @@ export interface CollectResult {
   worksheets: WorksheetCollectResult[];
 }
 
-/**
- * Service Account 자격증명으로 Google Sheets client 생성.
- */
-async function getSheetsClient(): Promise<sheets_v4.Sheets> {
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!raw) {
-    throw new Error(
-      "GOOGLE_SERVICE_ACCOUNT_JSON 환경변수가 설정되지 않았습니다."
-    );
-  }
-
-  let credentials: Record<string, unknown>;
-  try {
-    credentials = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `GOOGLE_SERVICE_ACCOUNT_JSON 파싱 실패: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
-  });
-
-  return google.sheets({ version: "v4", auth });
+interface SpreadsheetMetaResponse {
+  sheets?: Array<{
+    properties?: {
+      sheetId?: number;
+      title?: string;
+    };
+  }>;
 }
 
-/**
- * gid로부터 worksheet title 조회.
- * Google Sheets API values.get은 A1 range 문자열에 worksheet title이 필요하다.
- */
+function normalizeHeader(value: unknown): string {
+  return String(value ?? "")
+    .split("\n")[0]
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function getSheetTitleByGid(
-  sheets: sheets_v4.Sheets,
+  accessToken: string,
   spreadsheetId: string,
   gid: number
 ): Promise<string> {
-  const meta = await sheets.spreadsheets.get({
-    spreadsheetId,
-    fields: "sheets.properties",
-  });
-  const sheet = meta.data.sheets?.find(
-    (s: sheets_v4.Schema$Sheet) => s.properties?.sheetId === gid
+  const meta = await googleApiGet<SpreadsheetMetaResponse>(
+    accessToken,
+    SHEETS_API_BASE,
+    `/spreadsheets/${spreadsheetId}`,
+    { fields: "sheets.properties" },
+    { timeoutMs: GOOGLE_SHEETS_REQUEST_TIMEOUT_MS }
   );
-  const title = sheet?.properties?.title;
+
+  const sheet = meta.sheets?.find(
+    (entry) => entry.properties?.sheetId === gid
+  );
+  const title = sheet?.properties?.title?.trim();
+
   if (!title) {
     throw new Error(
       `spreadsheet ${spreadsheetId}에서 gid=${gid} worksheet를 찾을 수 없습니다.`
     );
   }
+
   return title;
 }
 
@@ -104,35 +103,29 @@ async function getSheetTitleByGid(
  * - 헤더가 빈 문자열인 열은 건너뛴다.
  */
 async function fetchWorksheet(
-  sheets: sheets_v4.Sheets,
+  accessToken: string,
   spreadsheetId: string,
   gid: number
 ): Promise<RawContractRow[]> {
-  const title = await getSheetTitleByGid(sheets, spreadsheetId, gid);
-
-  // worksheet 전체 범위 — title만 넘기면 시트 전체를 읽는다.
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `'${title.replace(/'/g, "''")}'`,
-    valueRenderOption: "UNFORMATTED_VALUE",
-    dateTimeRenderOption: "FORMATTED_STRING",
-  });
-
-  const rawRows = res.data.values ?? [];
-  if (rawRows.length === 0) return [];
-
-  // 실제 시트 헤더에는 `\n(ex. ...)` 형태 주석이 포함되는 컬럼이 있음.
-  // 문서 5-1-1의 canonical 헤더명(예: `강의 일정`, `기타-계약관련 특이사항 기재`)과
-  // 매칭하기 위해 첫 개행 이전 부분만 사용하고 내부 공백을 단일 space로 정규화한다.
-  const normalizeHeader = (h: string): string =>
-    h.split("\n")[0].replace(/\s+/g, " ").trim();
-
-  const headers: string[] = (rawRows[0] as unknown[]).map((h) =>
-    normalizeHeader(String(h ?? ""))
+  const title = await getSheetTitleByGid(accessToken, spreadsheetId, gid);
+  const data = await googleApiGet<{ values?: unknown[][] }>(
+    accessToken,
+    SHEETS_API_BASE,
+    `/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+      `'${title.replace(/'/g, "''")}'`
+    )}`,
+    {
+      valueRenderOption: "UNFORMATTED_VALUE",
+      dateTimeRenderOption: "FORMATTED_STRING",
+    },
+    { timeoutMs: GOOGLE_SHEETS_REQUEST_TIMEOUT_MS }
   );
 
-  // 04_data_pipeline.md 5-1-1: `세부 유형` canonical은 `계약서 유형 선택` 바로 다음 occurrence
-  // 이를 헤더 인덱스 수준에서 해결한다. 다른 중복 헤더는 첫 occurrence 우선.
+  const rawRows = data.values ?? [];
+  if (rawRows.length === 0) return [];
+
+  const headers: string[] = (rawRows[0] as unknown[]).map(normalizeHeader);
+
   const contractTypeIdx = headers.indexOf("계약서 유형 선택");
   let canonicalDetailTypeIdx = -1;
   if (contractTypeIdx >= 0) {
@@ -144,7 +137,6 @@ async function fetchWorksheet(
     }
   }
   if (canonicalDetailTypeIdx === -1) {
-    // fallback: 첫 occurrence
     canonicalDetailTypeIdx = headers.indexOf("세부 유형");
   }
 
@@ -155,29 +147,27 @@ async function fetchWorksheet(
     const values: Record<string, string> = {};
 
     for (let j = 0; j < headers.length; j++) {
-      const h = headers[j];
-      if (!h) continue;
+      const header = headers[j];
+      if (!header) continue;
 
       const cell = String(row?.[j] ?? "").trim();
 
-      if (h === "세부 유형") {
-        // canonical detail_type은 특정 인덱스만 사용
+      if (header === "세부 유형") {
         if (j === canonicalDetailTypeIdx && !("세부 유형" in values)) {
           values["세부 유형"] = cell;
         }
         continue;
       }
 
-      // 그 외 헤더: 첫 occurrence 우선
-      if (!(h in values)) {
-        values[h] = cell;
+      if (!(header in values)) {
+        values[header] = cell;
       }
     }
 
     dataRows.push({
       spreadsheetId,
       worksheetGid: gid,
-      rowNumber: i + 1, // 1-indexed: 헤더가 1행, 데이터는 2행부터
+      rowNumber: i + 1,
       values,
     });
   }
@@ -197,17 +187,20 @@ export async function collectFromContractSheets(): Promise<CollectResult> {
     );
   }
 
-  const sheets = await getSheetsClient();
-
+  const accessToken = await exchangeGoogleUserAccessToken();
   const worksheets: WorksheetCollectResult[] = [];
 
   for (const gid of PILOT_4_1_WORKSHEET_GIDS) {
     try {
-      const rows = await fetchWorksheet(sheets, spreadsheetId, gid);
+      const rows = await fetchWorksheet(accessToken, spreadsheetId, gid);
       worksheets.push({ gid, fetchedCount: rows.length, rows });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      worksheets.push({ gid, fetchedCount: 0, rows: [], error: msg });
+      worksheets.push({
+        gid,
+        fetchedCount: 0,
+        rows: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

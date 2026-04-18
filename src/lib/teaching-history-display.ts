@@ -9,6 +9,7 @@ export interface TeachingHistoryDisplayItem {
   course_name?: string | null;
   company_name?: string | null;
   course_id?: string | null;
+  deal_fee_hourly?: number | null;
   contract_type?: string | null;
   detail_type?: string | null;
   fee_extra?: string | null;
@@ -42,6 +43,17 @@ function parseHours(value: number | string | null | undefined): number | null {
   }
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function parseFee(value: number | string | null | undefined): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value.replace(/,/g, ""));
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
@@ -196,14 +208,18 @@ function getCourseSignature(item: TeachingHistoryDisplayItem): string {
   ].join("||");
 }
 
-function getDedupSignature(item: TeachingHistoryDisplayItem): string {
+export function getTeachingHistoryDedupSignature(
+  item: TeachingHistoryDisplayItem
+): string {
   const range = extractTeachingHistoryRange(item);
   const totalHours = parseHours(item.total_hours);
+  const dealFeeHourly = parseFee(item.deal_fee_hourly);
 
   return [
     item.course_name?.trim() ?? "",
     item.company_name?.trim() ?? "",
     item.course_id?.trim() ?? "",
+    dealFeeHourly ?? "",
     item.contract_type?.trim() ?? "",
     item.detail_type?.trim() ?? "",
     item.fee_extra?.trim() ?? "",
@@ -214,6 +230,62 @@ function getDedupSignature(item: TeachingHistoryDisplayItem): string {
     totalHours ?? "",
     item.date_label?.trim() ?? "",
   ].join("||");
+}
+
+export function dedupeTeachingHistories(
+  items: TeachingHistoryDisplayItem[],
+  options?: {
+    fromDate?: string;
+    untilDate?: string;
+  }
+): TeachingHistoryDisplayItem[] {
+  const fromDate = options?.fromDate ?? "2025-01-01";
+  const untilDate =
+    options?.untilDate ?? new Date().toISOString().split("T")[0];
+  const unique = new Map<string, TeachingHistoryDisplayItem>();
+
+  for (const item of items) {
+    if (isNonTeachingCompensationItem(item)) continue;
+
+    const overlap = getOverlapRange(item, fromDate, untilDate);
+    if (!overlap) continue;
+
+    const signature = getTeachingHistoryDedupSignature(item);
+    if (!unique.has(signature)) {
+      unique.set(signature, {
+        ...item,
+        start_date: overlap.start_date,
+        end_date: overlap.end_date,
+      });
+    }
+  }
+
+  return Array.from(unique.values());
+}
+
+export function calculateTeachingHistoryTotalPaid(
+  items: TeachingHistoryDisplayItem[],
+  options?: {
+    fromDate?: string;
+    untilDate?: string;
+  }
+): number | null {
+  const deduped = dedupeTeachingHistories(items, options);
+  const payable = deduped
+    .map((item) => ({
+      fee: parseFee(item.deal_fee_hourly),
+      hours: parseHours(item.total_hours),
+    }))
+    .filter(
+      (item): item is { fee: number; hours: number } =>
+        item.fee !== null && item.hours !== null
+    );
+
+  if (payable.length === 0) {
+    return null;
+  }
+
+  return payable.reduce((sum, item) => sum + item.fee * item.hours, 0);
 }
 
 export function getTeachingHistoryDisplayTitle(
@@ -251,25 +323,9 @@ export function groupTeachingHistories(
     untilDate?: string;
   }
 ): GroupedTeachingHistory[] {
-  const fromDate = options?.fromDate ?? "2025-01-01";
-  const untilDate =
-    options?.untilDate ?? new Date().toISOString().split("T")[0];
   const unique = new Map<string, TeachingHistoryDisplayItem>();
-
-  for (const item of items) {
-    if (isNonTeachingCompensationItem(item)) continue;
-
-    const overlap = getOverlapRange(item, fromDate, untilDate);
-    if (!overlap) continue;
-
-    const signature = getDedupSignature(item);
-    if (!unique.has(signature)) {
-      unique.set(signature, {
-        ...item,
-        start_date: overlap.start_date,
-        end_date: overlap.end_date,
-      });
-    }
+  for (const item of dedupeTeachingHistories(items, options)) {
+    unique.set(getTeachingHistoryDedupSignature(item), item);
   }
 
   const grouped = new Map<string, GroupedTeachingHistory>();

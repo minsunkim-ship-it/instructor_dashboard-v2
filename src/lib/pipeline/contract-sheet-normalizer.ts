@@ -12,6 +12,10 @@
  */
 
 import type { RawContractRow } from "./contract-sheet-collector";
+import {
+  parseContractSchedule,
+  parseContractTimestamp,
+} from "@/lib/contract-sheet-parser";
 
 /**
  * instructor 매칭 + teaching_histories 저장에 필요한 정규화 결과.
@@ -40,6 +44,8 @@ export interface NormalizedContractRow {
   contractType: string | null;
   detailType: string | null;
   specialNotes: string | null;
+  timestampRaw: string | null;
+  recordedAt: Date | null;
 }
 
 /** 6절: 빈 문자열은 NULL로 치환 */
@@ -84,62 +90,6 @@ function parseIntLike(raw: string | null): number | null {
 }
 
 /**
- * `강의 일정` 원문에서 날짜를 추출한다.
- *
- * 지원 포맷 (pragmatic):
- *   - YYYY-MM-DD, YYYY.MM.DD, YYYY/MM/DD
- *   - YYYY년 M월 D일
- *
- * 파싱된 날짜를 발견 순서대로 반환한다. 실패 시 빈 배열.
- * 원문 순서가 연대기 순서와 다른 경우에도 첫 발견 = start, 마지막 발견 = end로 사용한다.
- * 이는 Pilot 4-1 확정 계약("강의 일정 원문에서 파싱 가능한 첫 날짜를 start_date")과 일치한다.
- */
-export function extractDatesFromSchedule(text: string | null): Date[] {
-  if (!text) return [];
-
-  const found: Array<{ index: number; date: Date }> = [];
-
-  // YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD
-  const numericRe = /(\d{4})[-./](\d{1,2})[-./](\d{1,2})/g;
-  let m: RegExpExecArray | null;
-  while ((m = numericRe.exec(text)) !== null) {
-    const d = buildDate(+m[1], +m[2], +m[3]);
-    if (d) found.push({ index: m.index, date: d });
-  }
-
-  // YYYY년 M월 D일
-  const koreanRe = /(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/g;
-  while ((m = koreanRe.exec(text)) !== null) {
-    const d = buildDate(+m[1], +m[2], +m[3]);
-    if (d) found.push({ index: m.index, date: d });
-  }
-
-  // 원문에서의 등장 순서로 정렬
-  found.sort((a, b) => a.index - b.index);
-  return found.map((f) => f.date);
-}
-
-function buildDate(year: number, month: number, day: number): Date | null {
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day))
-    return null;
-  if (year < 1900 || year > 2100) return null;
-  if (month < 1 || month > 12) return null;
-  if (day < 1 || day > 31) return null;
-  // UTC 기준 자정 — prisma.Date는 날짜만 저장
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (Number.isNaN(date.getTime())) return null;
-  // roundtrip validation — (2024-02-30) 같은 유효하지 않은 날짜 제거
-  if (
-    date.getUTCFullYear() !== year ||
-    date.getUTCMonth() !== month - 1 ||
-    date.getUTCDate() !== day
-  ) {
-    return null;
-  }
-  return date;
-}
-
-/**
  * 5-1-1절 헤더 매핑 기준으로 단일 행을 정규화한다.
  * 강사명(name)이 비어 있으면 null로 남겨 저장 단계에서 skip 처리한다.
  */
@@ -162,11 +112,12 @@ export function normalizeContractRow(
   const contractType = emptyToNull(v["강사 계약 유형"]);
   const detailType = emptyToNull(v["세부 유형"]);
   const specialNotes = emptyToNull(v["기타-계약관련 특이사항 기재"]);
+  const timestamp = parseContractTimestamp(v["타임스탬프"] ?? null);
 
   // 날짜 파싱 — Pilot 4-1 확정
-  const dates = extractDatesFromSchedule(dateLabel);
-  const startDate = dates.length > 0 ? dates[0] : null;
-  const endDate = dates.length > 0 ? dates[dates.length - 1] : null;
+  const schedule = parseContractSchedule(dateLabel, timestamp.yearHint);
+  const startDate = schedule.startDate;
+  const endDate = schedule.endDate;
 
   return {
     spreadsheetId: raw.spreadsheetId,
@@ -188,5 +139,7 @@ export function normalizeContractRow(
     contractType,
     detailType,
     specialNotes,
+    timestampRaw: timestamp.raw,
+    recordedAt: timestamp.recordedAt,
   };
 }

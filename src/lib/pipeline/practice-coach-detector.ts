@@ -1,17 +1,11 @@
 import { prisma } from "@/lib/prisma";
-
-const PRACTICE_COACH_KEYWORDS = ["보조강사", "코치", "실습코치", "멘토", "문항개발"];
+import { isPracticeCoachCandidate } from "./practice-coach-utils";
 
 export interface PracticeCoachResult {
   detected: number;
   protectedByFee: number;
   protectedByFulltime: number;
   updated: number;
-}
-
-function matchesKeyword(value: string | null): boolean {
-  if (!value) return false;
-  return PRACTICE_COACH_KEYWORDS.some((kw) => value.includes(kw));
 }
 
 export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
@@ -27,6 +21,7 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
         select: {
           contractType: true,
           detailType: true,
+          specialNotes: true,
         },
       },
     },
@@ -55,15 +50,13 @@ export async function detectPracticeCoaches(): Promise<PracticeCoachResult> {
       continue;
     }
 
-    // L1: docs/01 §10 — keyword 건수 vs 정규강사 건수 단순 수치 비교.
+    // L1: docs/01 §10 — contract_type, detail_type, special_notes까지 포함.
     // clarify-result: "보조 2, 정규 3 → 후보 아님" 예시에 맞춰 동률은 후보 아님.
-    const matchCount = histories.filter(
-      (h) => matchesKeyword(h.contractType) || matchesKeyword(h.detailType)
-    ).length;
-    const regularCount = histories.length - matchCount;
-
-    if (matchCount <= regularCount) {
+    if (!isPracticeCoachCandidate(histories)) {
       nonPracticeCoachIds.push(inst.id);
+      if (inst.flag === "실습코치") {
+        clearPracticeCoachFlagIds.push(inst.id);
+      }
       continue;
     }
 

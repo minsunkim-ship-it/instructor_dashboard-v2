@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { parseBaseFeeFromFeeNote } from "./fee-utils";
+import { isPracticeCoachHistory } from "./practice-coach-utils";
 
 const SPECIAL_AMOUNT_KEYWORDS = [
   "콘텐츠",
@@ -25,31 +27,6 @@ export interface FeeResolverResult {
 function containsSpecialKeyword(text: string | null): boolean {
   if (!text) return false;
   return SPECIAL_AMOUNT_KEYWORDS.some((kw) => text.includes(kw));
-}
-
-/**
- * fee_note에서 "기본" 라벨에 연결된 시간당 단가만 기본 단가 후보로 추출.
- * docs/04 §12-1: "기본 25만 / 심화 35만 / 특강 55만" → 25만(=250000)만 인정.
- * "기본 25만", "기본 250,000원", "기본: 250000" 같은 표기도 허용.
- * 실패 시 null.
- */
-export function parseBaseFeeFromFeeNote(feeNote: string | null): number | null {
-  if (!feeNote) return null;
-  // "기본" 뒤에 오는 최초 금액 표현을 추출.
-  const labelMatch = feeNote.match(/기본[\s:]*([\d,\.]+)\s*(만\s*원?|원)?/);
-  if (!labelMatch) return null;
-  const numStr = labelMatch[1].replace(/,/g, "");
-  const unit = labelMatch[2] ?? "";
-  const num = parseFloat(numStr);
-  if (!Number.isFinite(num) || num <= 0) return null;
-  if (unit.startsWith("만")) {
-    return Math.round(num * 10000);
-  }
-  // "25" 처럼 단위가 없고 num < 1000이면 "만" 단위로 해석 (docs/04 §12-1 예시).
-  if (!unit && num < 1000) {
-    return Math.round(num * 10000);
-  }
-  return Math.round(num);
 }
 
 function computeMode(values: number[]): number | null {
@@ -120,6 +97,8 @@ export async function resolveFees(): Promise<FeeResolverResult> {
       sourceType: true,
       dealFeeHourly: true,
       feeExtra: true,
+      contractType: true,
+      detailType: true,
       specialNotes: true,
     },
   });
@@ -127,6 +106,8 @@ export async function resolveFees(): Promise<FeeResolverResult> {
   interface HistoryEntry {
     dealFeeHourly: number;
     feeExtra: string | null;
+    contractType: string | null;
+    detailType: string | null;
     specialNotes: string | null;
   }
 
@@ -137,6 +118,8 @@ export async function resolveFees(): Promise<FeeResolverResult> {
     const entry: HistoryEntry = {
       dealFeeHourly: h.dealFeeHourly!,
       feeExtra: h.feeExtra,
+      contractType: h.contractType,
+      detailType: h.detailType,
       specialNotes: h.specialNotes,
     };
     const map =
@@ -168,6 +151,7 @@ export async function resolveFees(): Promise<FeeResolverResult> {
     const regularFees = allEntries
       .filter(
         (e) =>
+          !isPracticeCoachHistory(e) &&
           !containsSpecialKeyword(e.feeExtra) &&
           !containsSpecialKeyword(e.specialNotes)
       )
@@ -194,6 +178,7 @@ export async function resolveFees(): Promise<FeeResolverResult> {
     const filterSpecial = (entries: HistoryEntry[]): number[] => {
       return entries
         .filter((e) => {
+          if (isPracticeCoachHistory(e)) return false;
           if (
             containsSpecialKeyword(e.feeExtra) ||
             containsSpecialKeyword(e.specialNotes)

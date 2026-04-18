@@ -18,14 +18,8 @@
 
 import { PrismaClient } from "@prisma/client";
 import { buildFeeHistoryEntries } from "../src/lib/pipeline/fee-history-store";
-import { parseBaseFeeFromFeeNote } from "../src/lib/pipeline/fee-resolver";
-
-const PRACTICE_COACH_KEYWORDS = ["보조강사", "코치", "실습코치", "멘토", "문항개발"];
-
-function matchesKeyword(value: string | null | undefined): boolean {
-  if (!value) return false;
-  return PRACTICE_COACH_KEYWORDS.some((kw) => value.includes(kw));
-}
+import { parseBaseFeeFromFeeNote } from "../src/lib/pipeline/fee-utils";
+import { isPracticeCoachCandidate } from "../src/lib/pipeline/practice-coach-utils";
 
 /**
  * T6: practice-coach-detector를 메모리 내에서 재현
@@ -37,7 +31,7 @@ async function simulatePracticeCoach(prisma: PrismaClient) {
       id: true, name: true, isFulltime: true, baseFeeHourly: true,
       categories: true, specialties: true,
       teachingHistories: {
-        select: { contractType: true, detailType: true },
+        select: { contractType: true, detailType: true, specialNotes: true },
       },
     },
   });
@@ -51,12 +45,7 @@ async function simulatePracticeCoach(prisma: PrismaClient) {
     const histories = inst.teachingHistories;
     if (histories.length === 0) continue;
 
-    const matchCount = histories.filter(
-      (h) => matchesKeyword(h.contractType) || matchesKeyword(h.detailType)
-    ).length;
-    const regularCount = histories.length - matchCount;
-
-    if (matchCount <= regularCount) continue;
+    if (!isPracticeCoachCandidate(histories)) continue;
 
     candidates++;
 

@@ -2,10 +2,15 @@
  * Group 3 pure unit tests — T6/T7/T8
  *
  * DB 접근 없이 sample 데이터만으로 판정 규칙을 검증한다.
- * 실행: npx tsx scripts/unit-test-group3.ts
+ * 실행: node --experimental-strip-types scripts/unit-test-group3.ts
  */
 
-import { parseBaseFeeFromFeeNote } from "../src/lib/pipeline/fee-resolver";
+const { parseBaseFeeFromFeeNote } = await import(
+  new URL("../src/lib/pipeline/fee-utils.ts", import.meta.url).href
+);
+const { isPracticeCoachCandidate, isPracticeCoachHistory } = await import(
+  new URL("../src/lib/pipeline/practice-coach-utils.ts", import.meta.url).href
+);
 
 let passed = 0;
 let failed = 0;
@@ -44,32 +49,25 @@ assertEq("250,000원 no label", parseBaseFeeFromFeeNote("250,000원"), null);
 // ====== T6: L1 판정 프레임워크 ======
 console.log("\n=== T6: L1 matchCount vs regularCount ===");
 
-type History = { contractType: string | null; detailType: string | null };
-const PRACTICE_COACH_KEYWORDS = ["보조강사", "코치", "실습코치", "멘토", "문항개발"];
-
-function matchesKeyword(value: string | null | undefined): boolean {
-  if (!value) return false;
-  return PRACTICE_COACH_KEYWORDS.some((kw) => value.includes(kw));
-}
+type History = {
+  contractType: string | null;
+  detailType: string | null;
+  specialNotes: string | null;
+};
 
 function l1Candidate(histories: History[]): boolean {
-  if (histories.length === 0) return false;
-  const matchCount = histories.filter(
-    (h) => matchesKeyword(h.contractType) || matchesKeyword(h.detailType)
-  ).length;
-  const regularCount = histories.length - matchCount;
-  return matchCount > regularCount;
+  return isPracticeCoachCandidate(histories);
 }
 
 // Sample 1: 보조 2, 정규 3 → 후보 아님 (clarify 예시)
 assertEq(
   "보조2 정규3 → 후보 아님",
   l1Candidate([
-    { contractType: "보조강사", detailType: null },
-    { contractType: "보조강사", detailType: null },
-    { contractType: "정규", detailType: null },
-    { contractType: "정규", detailType: null },
-    { contractType: "정규", detailType: null },
+    { contractType: "보조강사", detailType: null, specialNotes: null },
+    { contractType: "보조강사", detailType: null, specialNotes: null },
+    { contractType: "정규", detailType: null, specialNotes: null },
+    { contractType: "정규", detailType: null, specialNotes: null },
+    { contractType: "정규", detailType: null, specialNotes: null },
   ]),
   false
 );
@@ -78,8 +76,8 @@ assertEq(
 assertEq(
   "코치6 정규4 → 후보",
   l1Candidate([
-    ...Array(6).fill({ contractType: "코치", detailType: null }),
-    ...Array(4).fill({ contractType: "정규", detailType: null }),
+    ...Array(6).fill({ contractType: "코치", detailType: null, specialNotes: null }),
+    ...Array(4).fill({ contractType: "정규", detailType: null, specialNotes: null }),
   ]),
   true
 );
@@ -88,8 +86,8 @@ assertEq(
 assertEq(
   "동률 5/5 → 후보 아님",
   l1Candidate([
-    ...Array(5).fill({ contractType: "멘토", detailType: null }),
-    ...Array(5).fill({ contractType: "정규", detailType: null }),
+    ...Array(5).fill({ contractType: "멘토", detailType: null, specialNotes: null }),
+    ...Array(5).fill({ contractType: "정규", detailType: null, specialNotes: null }),
   ]),
   false
 );
@@ -101,9 +99,36 @@ assertEq("이력 없음 → 후보 아님", l1Candidate([]), false);
 assertEq(
   "detailType에 '실습코치' 3 / 정규 2 → 후보",
   l1Candidate([
-    ...Array(3).fill({ contractType: null, detailType: "실습코치 과정" }),
-    ...Array(2).fill({ contractType: "정규", detailType: null }),
+    ...Array(3).fill({
+      contractType: null,
+      detailType: "실습코치 과정",
+      specialNotes: null,
+    }),
+    ...Array(2).fill({ contractType: "정규", detailType: null, specialNotes: null }),
   ]),
+  true
+);
+
+assertEq(
+  "specialNotes에 실습코치 계약서 파일명만 있어도 후보",
+  l1Candidate([
+    {
+      contractType: null,
+      detailType: null,
+      specialNotes: "250729_송유이_실습코치 표준 계약서.docx",
+    },
+  ]),
+  true
+);
+
+assertEq(
+  "보조강사 + 오프라인 실습코치 행은 fee 계산에서 제외 대상",
+  isPracticeCoachHistory({
+    contractType: "보조강사",
+    detailType: "오프라인 실습코치",
+    specialNotes:
+      "250729_송유이_2025 팀장 AI 리더십 정규과정_실습코치 표준 계약서_20250206 RM수정.docx",
+  }),
   true
 );
 

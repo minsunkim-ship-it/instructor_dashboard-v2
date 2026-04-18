@@ -187,6 +187,51 @@ function compareContractRowPreference(
   return a.createdAt.getTime() - b.createdAt.getTime();
 }
 
+function mergeContractSourceRef(
+  duplicateSourceRef: unknown,
+  incoming: {
+    spreadsheet_id: string;
+    worksheet_gid: number;
+    row_number: number;
+    timestamp_raw: string | null;
+    recorded_at: string | null;
+  }
+) {
+  const existing =
+    duplicateSourceRef &&
+    typeof duplicateSourceRef === "object" &&
+    !Array.isArray(duplicateSourceRef)
+      ? (duplicateSourceRef as Record<string, unknown>)
+      : null;
+
+  const prefersExistingWorksheet =
+    getWorksheetGid(duplicateSourceRef) === PREFERRED_CONTRACT_WORKSHEET_GID;
+
+  return {
+    spreadsheet_id:
+      typeof existing?.spreadsheet_id === "string"
+        ? existing.spreadsheet_id
+        : incoming.spreadsheet_id,
+    worksheet_gid:
+      prefersExistingWorksheet &&
+      typeof existing?.worksheet_gid === "number"
+        ? existing.worksheet_gid
+        : incoming.worksheet_gid,
+    row_number:
+      typeof existing?.row_number === "number"
+        ? existing.row_number
+        : incoming.row_number,
+    timestamp_raw:
+      typeof existing?.timestamp_raw === "string" || existing?.timestamp_raw === null
+        ? (existing.timestamp_raw as string | null)
+        : incoming.timestamp_raw,
+    recorded_at:
+      typeof existing?.recorded_at === "string" || existing?.recorded_at === null
+        ? (existing.recorded_at as string | null)
+        : incoming.recorded_at,
+  };
+}
+
 async function cleanupLegacyCrossWorksheetContractDuplicates(
   instructorIds: Iterable<string>
 ): Promise<number> {
@@ -620,77 +665,48 @@ export async function storeContractRows(
       };
 
       if (duplicate) {
-        const preferredSourceRef =
-          duplicate.sourceRef &&
-          typeof duplicate.sourceRef === "object" &&
-          !Array.isArray(duplicate.sourceRef)
-            ? (duplicate.sourceRef as Record<string, unknown>)
-            : null;
-        const nextSourceRef =
-          getWorksheetGid(duplicate.sourceRef) === PREFERRED_CONTRACT_WORKSHEET_GID &&
-          preferredSourceRef
-            ? {
-                spreadsheet_id:
-                  typeof preferredSourceRef.spreadsheet_id === "string"
-                    ? preferredSourceRef.spreadsheet_id
-                    : row.spreadsheetId,
-                worksheet_gid:
-                  typeof preferredSourceRef.worksheet_gid === "number"
-                    ? preferredSourceRef.worksheet_gid
-                    : row.worksheetGid,
-                row_number:
-                  typeof preferredSourceRef.row_number === "number"
-                    ? preferredSourceRef.row_number
-                    : row.rowNumber,
-                timestamp_raw:
-                  typeof preferredSourceRef.timestamp_raw === "string" ||
-                  preferredSourceRef.timestamp_raw === null
-                    ? preferredSourceRef.timestamp_raw
-                    : row.timestampRaw,
-                recorded_at:
-                  typeof preferredSourceRef.recorded_at === "string" ||
-                  preferredSourceRef.recorded_at === null
-                    ? preferredSourceRef.recorded_at
-                    : toDateOnlyString(row.recordedAt),
-              }
-            : sourceRef;
-
+        const nextSourceRef = mergeContractSourceRef(duplicate.sourceRef, sourceRef);
+        const nextData = {
+          companyName: row.companyName ?? duplicate.companyName,
+          courseName: row.courseName ?? duplicate.courseName,
+          courseId: row.courseId ?? duplicate.courseId,
+          startDate: row.startDate ?? duplicate.startDate,
+          endDate: row.endDate ?? duplicate.endDate,
+          dateLabel: row.dateLabel ?? duplicate.dateLabel,
+          dealFeeHourly: row.dealFeeHourly ?? duplicate.dealFeeHourly,
+          feeExtra: row.feeExtra ?? duplicate.feeExtra,
+          totalHours:
+            row.totalHours ??
+            (duplicate.totalHours !== null
+              ? Number(duplicate.totalHours)
+              : null),
+          totalSessions: row.totalSessions ?? duplicate.totalSessions,
+          contractType: row.contractType ?? duplicate.contractType,
+          detailType: row.detailType ?? duplicate.detailType,
+          specialNotes: row.specialNotes ?? duplicate.specialNotes,
+          sourceRef: nextSourceRef,
+        };
         const changed =
-          duplicate.companyName !== row.companyName ||
-          duplicate.courseName !== row.courseName ||
-          duplicate.courseId !== row.courseId ||
-          asDateOnly(duplicate.startDate) !== asDateOnly(row.startDate) ||
-          asDateOnly(duplicate.endDate) !== asDateOnly(row.endDate) ||
-          duplicate.dateLabel !== row.dateLabel ||
-          duplicate.dealFeeHourly !== row.dealFeeHourly ||
-          duplicate.feeExtra !== row.feeExtra ||
+          duplicate.companyName !== nextData.companyName ||
+          duplicate.courseName !== nextData.courseName ||
+          duplicate.courseId !== nextData.courseId ||
+          asDateOnly(duplicate.startDate) !== asDateOnly(nextData.startDate) ||
+          asDateOnly(duplicate.endDate) !== asDateOnly(nextData.endDate) ||
+          duplicate.dateLabel !== nextData.dateLabel ||
+          duplicate.dealFeeHourly !== nextData.dealFeeHourly ||
+          duplicate.feeExtra !== nextData.feeExtra ||
           asComparableHours(duplicate.totalHours) !==
-            asComparableHours(row.totalHours) ||
-          duplicate.totalSessions !== row.totalSessions ||
-          duplicate.contractType !== row.contractType ||
-          duplicate.detailType !== row.detailType ||
-          duplicate.specialNotes !== row.specialNotes ||
-          JSON.stringify(duplicate.sourceRef ?? {}) !== JSON.stringify(nextSourceRef);
+            asComparableHours(nextData.totalHours) ||
+          duplicate.totalSessions !== nextData.totalSessions ||
+          duplicate.contractType !== nextData.contractType ||
+          duplicate.detailType !== nextData.detailType ||
+          duplicate.specialNotes !== nextData.specialNotes ||
+          JSON.stringify(duplicate.sourceRef ?? {}) !== JSON.stringify(nextData.sourceRef);
 
         if (changed) {
           updatePayloads.push({
             id: duplicate.id,
-            data: {
-              companyName: row.companyName,
-              courseName: row.courseName,
-              courseId: row.courseId,
-              startDate: row.startDate,
-              endDate: row.endDate,
-              dateLabel: row.dateLabel,
-              dealFeeHourly: row.dealFeeHourly,
-              feeExtra: row.feeExtra,
-              totalHours: row.totalHours,
-              totalSessions: row.totalSessions,
-              contractType: row.contractType,
-              detailType: row.detailType,
-              specialNotes: row.specialNotes,
-              sourceRef: nextSourceRef,
-            },
+            data: nextData,
           });
           result.updated++;
         }
@@ -761,7 +777,7 @@ export async function storeContractRows(
     const batch = updatePayloads.slice(i, i + updateConcurrency);
     await Promise.all(
       batch.map((payload) =>
-        prisma.teachingHistory.update({
+        prisma.teachingHistory.updateMany({
           where: { id: payload.id },
           data: payload.data,
         })

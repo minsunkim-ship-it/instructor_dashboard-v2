@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import type { InstructorListItem, InstructorListResponse } from "@/types/api";
+import { countGroupedTeachingHistories } from "@/lib/teaching-history-display";
 
 // 05_api_spec.md 5-3절: 허용된 정렬 키
 const ALLOWED_SORTS = [
@@ -114,11 +115,78 @@ export async function GET(request: NextRequest) {
 
     // 05_api_spec.md 5-7절: total_count는 query+category 필터 후, limit 적용 전
     const totalCount = filtered.length;
+    const today = new Date().toISOString().split("T")[0];
+    const filteredIds = filtered.map((inst) => inst.id);
+    const teachingHistories =
+      filteredIds.length === 0
+        ? []
+        : await prisma.teachingHistory.findMany({
+            where: {
+              instructorDbId: { in: filteredIds },
+            },
+            select: {
+              instructorDbId: true,
+              companyName: true,
+              courseName: true,
+              courseId: true,
+              detailType: true,
+              feeExtra: true,
+              specialNotes: true,
+              startDate: true,
+              endDate: true,
+              dateLabel: true,
+              totalSessions: true,
+              totalHours: true,
+            },
+          });
+
+    const historiesByInstructor = new Map<string, Array<{
+      course_name: string | null;
+      company_name: string | null;
+      course_id: string | null;
+      detail_type: string | null;
+      fee_extra: string | null;
+      special_notes: string | null;
+      start_date: string | null;
+      end_date: string | null;
+      date_label: string | null;
+      total_sessions: number | null;
+      total_hours: number | null;
+    }>>();
+
+    for (const row of teachingHistories) {
+      const bucket = historiesByInstructor.get(row.instructorDbId) ?? [];
+      bucket.push({
+        course_name: row.courseName,
+        company_name: row.companyName,
+        course_id: row.courseId,
+        detail_type: row.detailType,
+        fee_extra: row.feeExtra,
+        special_notes: row.specialNotes,
+        start_date: row.startDate?.toISOString().split("T")[0] ?? null,
+        end_date: row.endDate?.toISOString().split("T")[0] ?? null,
+        date_label: row.dateLabel,
+        total_sessions: row.totalSessions,
+        total_hours: row.totalHours !== null ? Number(row.totalHours) : null,
+      });
+      historiesByInstructor.set(row.instructorDbId, bucket);
+    }
+
+    const enriched = filtered.map((inst) => ({
+      ...inst,
+      totalCourses: countGroupedTeachingHistories(
+        historiesByInstructor.get(inst.id) ?? [],
+        {
+          fromDate: "2025-01-01",
+          untilDate: today,
+        }
+      ),
+    }));
 
     // --- 06_implementation_spec.md Feature D: 정렬 ---
     const sortedKey = sort as SortKey;
 
-    filtered.sort((a, b) => {
+    enriched.sort((a, b) => {
       // 1차 정렬
       const primary = compareBySortKey(a, b, sortedKey);
       if (primary !== 0) return primary;
@@ -132,7 +200,7 @@ export async function GET(request: NextRequest) {
     });
 
     // --- limit 적용 ---
-    const limited = filtered.slice(0, limit);
+    const limited = enriched.slice(0, limit);
 
     // --- 응답 매핑 ---
     const items: InstructorListItem[] = limited.map((inst) => ({

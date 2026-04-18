@@ -6,11 +6,12 @@
  *
  * 다중 소스(Notion fee_note, salesmap, contract_sheet, fee_fix_configs)에서
  * 수수료 이력을 수집하여 fee_histories 테이블에 일괄 저장한다.
- * 전임강사는 skip한다 (05_api_spec.md 6-4절).
+ * 전임강사도 내부 기록은 저장하되, API/UI에서는 별도 정책으로 숨긴다.
  */
 
 import { prisma } from "@/lib/prisma";
-import { parseBaseFeeFromFeeNote } from "./fee-resolver";
+import { parseBaseFeeFromFeeNote } from "./fee-utils";
+import { isPracticeCoachHistory } from "./practice-coach-utils";
 
 const SPECIAL_AMOUNT_KEYWORDS = [
   "콘텐츠",
@@ -45,9 +46,66 @@ export interface FeeHistoryEntry {
   isSpecialAmount: boolean;
 }
 
+function buildFeeHistorySignature(entry: FeeHistoryEntry): string {
+  const effectiveDate = entry.effectiveDate
+    ? entry.effectiveDate.toISOString().split("T")[0]
+    : "";
+
+  return [
+    entry.instructorDbId,
+    effectiveDate,
+    entry.effectiveLabel ?? "",
+    entry.amount ?? "",
+    entry.feeKind,
+    entry.context ?? "",
+    entry.sourceType,
+    entry.isCurrent ? "1" : "0",
+    entry.isSpecialAmount ? "1" : "0",
+  ].join("||");
+}
+
 function containsSpecialKeyword(text: string | null | undefined): boolean {
   if (!text) return false;
   return SPECIAL_AMOUNT_KEYWORDS.some((kw) => text.includes(kw));
+}
+
+function extractAmountsFromText(text: string | null | undefined): number[] {
+  if (!text) return [];
+
+  const amounts: number[] = [];
+  const seen = new Set<number>();
+  const regex = /(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)?/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const raw = match[1]?.replace(/,/g, "");
+    const unit = match[2] ?? "";
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) continue;
+
+    const hasComma = match[1]?.includes(",") ?? false;
+    const hasDecimal = match[1]?.includes(".") ?? false;
+    const plainDigits = raw.replace(/\./g, "");
+
+    if (!unit) {
+      // "1차", "5개", "4.5" 같은 설명 숫자는 금액으로 보지 않는다.
+      if (hasDecimal) continue;
+      if (!hasComma && plainDigits.length < 5) continue;
+    }
+
+    let amount: number;
+    if (unit.startsWith("만")) {
+      amount = Math.round(parsed * 10000);
+    } else {
+      amount = Math.round(parsed);
+    }
+
+    if (amount <= 0 || seen.has(amount)) continue;
+    seen.add(amount);
+    amounts.push(amount);
+  }
+
+  return amounts;
 }
 
 function computeMedianLocal(values: number[]): number | null {
@@ -79,6 +137,31 @@ function parseAmountFromFeeNote(feeNote: string): number | null {
     if (!isNaN(val) && val > 0) return val;
   }
   return null;
+}
+
+function buildTeachingHistoryContext(
+  history: {
+    companyName: string | null;
+    courseName: string | null;
+    courseId: string | null;
+    detailType: string | null;
+    dateLabel: string | null;
+  }
+): string | null {
+  const parts: string[] = [];
+
+  if (history.companyName) parts.push(history.companyName);
+  if (history.courseName) {
+    parts.push(history.courseName);
+  } else if (history.detailType) {
+    parts.push(history.detailType);
+  }
+
+  if (!history.courseId && history.dateLabel) {
+    parts.push(history.dateLabel);
+  }
+
+  return parts.length > 0 ? parts.join(" / ") : null;
 }
 
 /**
@@ -114,7 +197,10 @@ export async function buildFeeHistoryEntries(): Promise<{
     prisma.teachingHistory.findMany({
       where: {
         sourceType: { in: ["salesmap", "contract_sheet"] },
-        dealFeeHourly: { not: null },
+        OR: [
+          { dealFeeHourly: { not: null } },
+          { feeExtra: { not: null } },
+        ],
       },
       select: {
         instructorDbId: true,
@@ -124,7 +210,10 @@ export async function buildFeeHistoryEntries(): Promise<{
         endDate: true,
         companyName: true,
         courseName: true,
+        courseId: true,
         feeExtra: true,
+        contractType: true,
+        detailType: true,
         specialNotes: true,
         dateLabel: true,
       },
@@ -175,8 +264,12 @@ export async function buildFeeHistoryEntries(): Promise<{
   const regularFeesByInstructor = new Map<string, number[]>();
   for (const h of teachingHistories) {
     if (h.dealFeeHourly === null) continue;
-    // 키워드 포함 row는 median 계산에서 제외 (일반 분포 왜곡 방지)
-    if (containsSpecialKeyword(h.feeExtra) || containsSpecialKeyword(h.specialNotes)) {
+    // 실습코치/특수 row는 median 계산에서 제외 (일반 분포 왜곡 방지)
+    if (
+      isPracticeCoachHistory(h) ||
+      containsSpecialKeyword(h.feeExtra) ||
+      containsSpecialKeyword(h.specialNotes)
+    ) {
       continue;
     }
     const arr = regularFeesByInstructor.get(h.instructorDbId);
@@ -189,9 +282,6 @@ export async function buildFeeHistoryEntries(): Promise<{
   }
 
   for (const inst of instructors) {
-    // Skip fulltime instructors (docs/05 §6-4)
-    if (inst.isFulltime) continue;
-
     const entries: FeeHistoryEntry[] = [];
     const median = medianByInstructor.get(inst.id) ?? null;
 
@@ -250,20 +340,16 @@ export async function buildFeeHistoryEntries(): Promise<{
     // Source 2 & 3: Salesmap and Contract Sheet from teaching_histories
     const histories = historiesByInstructor.get(inst.id) ?? [];
     for (const h of histories) {
-      const contextParts: string[] = [];
-      if (h.companyName) contextParts.push(h.companyName);
-      if (h.courseName) contextParts.push(h.courseName);
-      const context = contextParts.length > 0 ? contextParts.join(" / ") : null;
+      const context = buildTeachingHistoryContext(h);
 
-      // is_special_amount 판정 — docs/01 §8 기준.
-      // feeExtra = "강사료 외 추가 금액" (출장비 등), specialNotes = 계약 특이사항.
-      // 두 필드의 키워드는 dealFeeHourly 자체를 설명하지 않으므로 is_special 판정에 사용하지 않는다.
-      // dealFeeHourly가 특수금액인지는 오직 3x outlier 규칙으로만 판정한다.
-      // (키워드 기반 판정은 fee_note 텍스트가 금액을 직접 설명하는 Notion 소스에서만 적용 — 위 Source 1 참조.)
+      // 실습코치 계약 행은 일반 단가 추이에서 제외해야 하므로 reference 전용으로 분리한다.
+      // 그 외 dealFeeHourly는 docs/01 §8의 3x outlier 규칙만으로 특수 금액 판정한다.
       // dealFeeHourly <= 10000 또는 > 10000000 구간은 normalizer 단계에서 이미 NULL 처리
       // (docs/04 §16-3)되므로 별도 체크 불필요.
+      const isCoachContract = isPracticeCoachHistory(h);
       const isSpecial =
-        median !== null && h.dealFeeHourly! >= median * 3;
+        isCoachContract ||
+        (median !== null && h.dealFeeHourly! >= median * 3);
 
       // effective_date: source별 산출식 차등
       let effectiveDate: Date | null;
@@ -275,17 +361,35 @@ export async function buildFeeHistoryEntries(): Promise<{
         effectiveDate = h.startDate ?? h.endDate ?? null;
       }
 
-      entries.push({
-        instructorDbId: inst.id,
-        effectiveDate,
-        effectiveLabel: h.dateLabel ?? null,
-        amount: h.dealFeeHourly!,
-        feeKind: isSpecial ? "special" : "hourly",
-        context,
-        sourceType: h.sourceType as "salesmap" | "contract_sheet",
-        isCurrent: false,
-        isSpecialAmount: isSpecial,
-      });
+      if (h.dealFeeHourly !== null) {
+        entries.push({
+          instructorDbId: inst.id,
+          effectiveDate,
+          effectiveLabel: h.dateLabel ?? null,
+          amount: h.dealFeeHourly,
+          feeKind: isSpecial ? "special" : "hourly",
+          context,
+          sourceType: h.sourceType as "salesmap" | "contract_sheet",
+          isCurrent: false,
+          isSpecialAmount: isSpecial,
+        });
+      }
+
+      // fee_extra에 기록된 출장비/건당 비용은 별도 special row로 보존한다.
+      const specialAmounts = extractAmountsFromText(h.feeExtra);
+      for (const amount of specialAmounts) {
+        entries.push({
+          instructorDbId: inst.id,
+          effectiveDate,
+          effectiveLabel: h.dateLabel ?? h.detailType ?? null,
+          amount,
+          feeKind: "special",
+          context: [context, h.feeExtra].filter(Boolean).join(" · ") || context,
+          sourceType: h.sourceType as "salesmap" | "contract_sheet",
+          isCurrent: false,
+          isSpecialAmount: true,
+        });
+      }
     }
 
     // Source 4: Fee fix configs (manual_fix) — effective_date = config.updatedAt
@@ -415,11 +519,19 @@ export async function storeFeeHistories(): Promise<FeeHistoryStoreResult> {
   const allEntries = built.entries;
   result.instructorsProcessed = built.instructorsProcessed;
   result.specialAmountRecords = built.specialAmountRecords;
+  const dedupedEntries: FeeHistoryEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of allEntries) {
+    const signature = buildFeeHistorySignature(entry);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    dedupedEntries.push(entry);
+  }
 
   // 4. Batch insert for performance
   const BATCH_SIZE = 500;
-  for (let i = 0; i < allEntries.length; i += BATCH_SIZE) {
-    const batch = allEntries.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < dedupedEntries.length; i += BATCH_SIZE) {
+    const batch = dedupedEntries.slice(i, i + BATCH_SIZE);
     await prisma.feeHistory.createMany({
       data: batch.map((e) => ({
         instructorDbId: e.instructorDbId,
@@ -435,8 +547,8 @@ export async function storeFeeHistories(): Promise<FeeHistoryStoreResult> {
     });
   }
 
-  result.totalRecords = allEntries.length;
-  result.specialAmountRecords = allEntries.filter(
+  result.totalRecords = dedupedEntries.length;
+  result.specialAmountRecords = dedupedEntries.filter(
     (e) => e.isSpecialAmount
   ).length;
 

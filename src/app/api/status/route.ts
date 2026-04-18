@@ -11,6 +11,7 @@ import { cleanupStalePipelineRuns } from "@/lib/pipeline/pipeline-run-helpers";
 const SOURCE_TYPES = [
   "notion",
   "contract_sheet",
+  "instructor_dispatch_sheet",
   "salesmap",
   "slack",
   "gmail",

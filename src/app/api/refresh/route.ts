@@ -22,6 +22,9 @@ import {
   storeContractRows,
   recomputeAggregatesForInstructors,
 } from "@/lib/pipeline/contract-sheet-store";
+import { collectInstructorDispatchSheets } from "@/lib/pipeline/instructor-dispatch-sheet-collector";
+import { normalizeInstructorDispatchRow } from "@/lib/pipeline/instructor-dispatch-sheet-normalizer";
+import { storeInstructorDispatchRows } from "@/lib/pipeline/instructor-dispatch-sheet-store";
 
 // --- Salesmap ---
 import { collectFromSalesmapSnapshot } from "@/lib/pipeline/salesmap-collector";
@@ -236,23 +239,83 @@ async function runNotion(): Promise<{ fetched: number; updated: number }> {
 async function runContractSheet(): Promise<{
   fetched: number;
   updated: number;
+  status?: "success" | "partial";
+  message?: string | null;
 }> {
   const collected = await collectFromContractSheets();
   let totalFetched = 0;
   let totalUpdated = 0;
   const allAffectedIds = new Set<string>();
+  const worksheetErrors = collected.worksheets
+    .filter((ws) => ws.error)
+    .map((ws) => `gid=${ws.gid}: ${ws.error}`);
+
+  if (
+    collected.worksheets.length > 0 &&
+    worksheetErrors.length === collected.worksheets.length
+  ) {
+    throw new Error(`계약시트를 읽지 못했습니다. ${worksheetErrors.join("; ")}`);
+  }
 
   for (const ws of collected.worksheets) {
     if (ws.error) continue;
     totalFetched += ws.fetchedCount;
     const normalized = ws.rows.map(normalizeContractRow);
     const result = await storeContractRows(normalized);
-    totalUpdated += result.appended;
+    totalUpdated += result.appended + result.updated;
     result.instructorIdsAffected.forEach((id) => allAffectedIds.add(id));
   }
 
   await recomputeAggregatesForInstructors(allAffectedIds);
-  return { fetched: totalFetched, updated: totalUpdated };
+  return {
+    fetched: totalFetched,
+    updated: totalUpdated,
+    status: worksheetErrors.length > 0 ? "partial" : "success",
+    message: worksheetErrors.length > 0 ? worksheetErrors.join("; ") : null,
+  };
+}
+
+async function runInstructorDispatchSheet(): Promise<{
+  fetched: number;
+  updated: number;
+  status?: "success" | "partial";
+  message?: string | null;
+}> {
+  const collected = await collectInstructorDispatchSheets();
+  let totalFetched = 0;
+  let totalUpdated = 0;
+  const allAffectedIds = new Set<string>();
+  const sheetErrors = collected
+    .filter((sheet) => sheet.error)
+    .map(
+      (sheet) =>
+        `${sheet.definition.instructorName}:${sheet.definition.worksheetGid}: ${sheet.error}`
+    );
+
+  if (collected.length > 0 && sheetErrors.length === collected.length) {
+    throw new Error(
+      `강사별 출강시트를 읽지 못했습니다. ${sheetErrors.join("; ")}`
+    );
+  }
+
+  for (const sheet of collected) {
+    if (sheet.error) continue;
+
+    totalFetched += sheet.fetchedCount;
+    const normalized = sheet.rows.map(normalizeInstructorDispatchRow);
+    const result = await storeInstructorDispatchRows(normalized);
+    totalUpdated += result.appended + result.updated;
+    result.instructorIdsAffected.forEach((id) => allAffectedIds.add(id));
+  }
+
+  await recomputeAggregatesForInstructors(allAffectedIds);
+
+  return {
+    fetched: totalFetched,
+    updated: totalUpdated,
+    status: sheetErrors.length > 0 ? "partial" : "success",
+    message: sheetErrors.length > 0 ? sheetErrors.join("; ") : null,
+  };
 }
 
 async function runSalesmap(): Promise<{ fetched: number; updated: number }> {
@@ -415,11 +478,16 @@ async function runOpsNotes(): Promise<{ fetched: number; updated: number }> {
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
-export async function POST() {
+export async function POST(request: Request) {
   const requestId = `req_${crypto.randomUUID()}`;
   let runId: string | null = null;
 
   try {
+    const url = new URL(request.url);
+    const scope = url.searchParams.get("scope");
+    const isLocalTeachingHistoryOnly =
+      process.env.NODE_ENV !== "production" && scope === "contract_sheet";
+
     const staleCleanup = await cleanupStalePipelineRuns();
 
     // 1. 동시 실행 방지: running 상태 PipelineRun 확인
@@ -449,12 +517,17 @@ export async function POST() {
     // 2. PipelineRun 생성
     const run = await prisma.pipelineRun.create({
       data: {
-        runType: "manual_refresh",
+        runType: isLocalTeachingHistoryOnly
+          ? "manual_refresh_teaching_history"
+          : "manual_refresh",
         status: "running",
-        triggeredBy: "api:/api/refresh",
+        triggeredBy: isLocalTeachingHistoryOnly
+          ? "api:/api/refresh?scope=contract_sheet"
+          : "api:/api/refresh",
         summary: {
           request_id: requestId,
           stale_runs_cleaned: staleCleanup.cleanedRunIds.length,
+          refresh_scope: isLocalTeachingHistoryOnly ? "teaching_history" : "all",
         },
       },
     });
@@ -463,16 +536,28 @@ export async function POST() {
     // 3. 소스별 순차 실행 (resilient: 한 소스가 실패해도 나머지 계속)
     const sourceResults: SourceResult[] = [];
 
-    const sources: SourceDefinition[] = [
-      { name: "notion", fn: runNotion },
-      { name: "contract_sheet", fn: runContractSheet },
-      { name: "salesmap", fn: runSalesmap },
-      { name: "slack", fn: () => runSlack(run.id) },
-      { name: "gmail", fn: () => runGmail(run.id) },
-      { name: "satisfaction", fn: () => runSatisfaction(run.id) },
-      { name: "fulltime", fn: runFulltime },
-      { name: "ops_notes", fn: runOpsNotes },
-    ];
+    const sources: SourceDefinition[] = isLocalTeachingHistoryOnly
+      ? [
+          { name: "contract_sheet", fn: runContractSheet },
+          {
+            name: "instructor_dispatch_sheet",
+            fn: runInstructorDispatchSheet,
+          },
+        ]
+      : [
+          { name: "notion", fn: runNotion },
+          { name: "contract_sheet", fn: runContractSheet },
+          {
+            name: "instructor_dispatch_sheet",
+            fn: runInstructorDispatchSheet,
+          },
+          { name: "salesmap", fn: runSalesmap },
+          { name: "slack", fn: () => runSlack(run.id) },
+          { name: "gmail", fn: () => runGmail(run.id) },
+          { name: "satisfaction", fn: () => runSatisfaction(run.id) },
+          { name: "fulltime", fn: runFulltime },
+          { name: "ops_notes", fn: runOpsNotes },
+        ];
 
     for (const source of sources) {
       const result = await runSourceWithSyncLog(run.id, source);

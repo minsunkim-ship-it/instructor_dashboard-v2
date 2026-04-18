@@ -3,6 +3,7 @@
  *
  * instructor_db_demo/rebuild_master.py 기준 Engagement Score v3를 그대로 적용한다.
  * - 출강횟수: contract_sheet_rows 우선, 없으면 total_courses
+ *   (`contract_sheet_rows` = 계약시트 + 강사별 출강시트 기반 이력 수)
  * - 만족도: avg_score / 5.0, 결측 시 중앙값, 전체 만족도 데이터가 없으면 4.0
  * - 슬랙 평판: slack mentions 전체 최대값 대비 정규화
  * - 최근성: max(slack_last_activity, salesmap_last_deal_at, gmail_last_activity) 기준 exp(-days/180)
@@ -15,6 +16,8 @@
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { countGroupedTeachingHistories } from "@/lib/teaching-history-display";
+import { COURSE_COUNT_SOURCE_TYPES } from "@/lib/pipeline/teaching-history-sources";
 
 const SCORE_VERSION = "v3";
 const RECENCY_DECAY_DAYS = 180;
@@ -174,24 +177,93 @@ async function loadTeachingHistoryCounts(): Promise<{
   contractSheetCounts: Map<string, number>;
   totalCounts: Map<string, number>;
 }> {
-  const [contractCounts, totalCounts] = await Promise.all([
-    prisma.teachingHistory.groupBy({
-      by: ["instructorDbId"],
-      where: { sourceType: "contract_sheet" },
-      _count: { _all: true },
-    }),
-    prisma.teachingHistory.groupBy({
-      by: ["instructorDbId"],
-      _count: { _all: true },
-    }),
-  ]);
+  const histories = await prisma.teachingHistory.findMany({
+    select: {
+      instructorDbId: true,
+      sourceType: true,
+      companyName: true,
+      courseName: true,
+      courseId: true,
+      detailType: true,
+      feeExtra: true,
+      specialNotes: true,
+      startDate: true,
+      endDate: true,
+      dateLabel: true,
+      totalSessions: true,
+      totalHours: true,
+    },
+  });
+
+  const allByInstructor = new Map<string, Array<{
+    company_name: string | null;
+    course_name: string | null;
+    course_id: string | null;
+    detail_type: string | null;
+    fee_extra: string | null;
+    special_notes: string | null;
+    start_date: string | null;
+    end_date: string | null;
+    date_label: string | null;
+    total_sessions: number | null;
+    total_hours: number | null;
+  }>>();
+  const courseCountByInstructor = new Map<string, Array<{
+    company_name: string | null;
+    course_name: string | null;
+    course_id: string | null;
+    detail_type: string | null;
+    fee_extra: string | null;
+    special_notes: string | null;
+    start_date: string | null;
+    end_date: string | null;
+    date_label: string | null;
+    total_sessions: number | null;
+    total_hours: number | null;
+  }>>();
+
+  for (const row of histories) {
+    const item = {
+      company_name: row.companyName,
+      course_name: row.courseName,
+      course_id: row.courseId,
+      detail_type: row.detailType,
+      fee_extra: row.feeExtra,
+      special_notes: row.specialNotes,
+      start_date: row.startDate?.toISOString().split("T")[0] ?? null,
+      end_date: row.endDate?.toISOString().split("T")[0] ?? null,
+      date_label: row.dateLabel,
+      total_sessions: row.totalSessions,
+      total_hours: row.totalHours !== null ? Number(row.totalHours) : null,
+    };
+
+    const allBucket = allByInstructor.get(row.instructorDbId) ?? [];
+    allBucket.push(item);
+    allByInstructor.set(row.instructorDbId, allBucket);
+
+    if (COURSE_COUNT_SOURCE_TYPES.includes(row.sourceType as typeof COURSE_COUNT_SOURCE_TYPES[number])) {
+      const courseBucket = courseCountByInstructor.get(row.instructorDbId) ?? [];
+      courseBucket.push(item);
+      courseCountByInstructor.set(row.instructorDbId, courseBucket);
+    }
+  }
 
   return {
     contractSheetCounts: new Map(
-      contractCounts.map((row) => [row.instructorDbId, row._count._all])
+      Array.from(courseCountByInstructor.entries()).map(([instructorId, items]) => [
+        instructorId,
+        countGroupedTeachingHistories(items, {
+          fromDate: "2025-01-01",
+        }),
+      ])
     ),
     totalCounts: new Map(
-      totalCounts.map((row) => [row.instructorDbId, row._count._all])
+      Array.from(allByInstructor.entries()).map(([instructorId, items]) => [
+        instructorId,
+        countGroupedTeachingHistories(items, {
+          fromDate: "2025-01-01",
+        }),
+      ])
     ),
   };
 }
@@ -267,7 +339,7 @@ async function recordValidationIssues(
         entityId: candidate.id,
         ruleCode: VALIDATION_RULES.contractHistoryCountMismatch,
         severity: "warning",
-        message: `${candidate.name}: contract_sheet_rows가 있는데 contract_sheet teaching_history가 비어 있습니다.`,
+        message: `${candidate.name}: contract_sheet_rows가 있는데 canonical teaching_history(contract_sheet / instructor_dispatch_sheet)가 비어 있습니다.`,
         beforeValue: {
           contract_sheet_rows: candidate.contractSheetRows,
           contract_history_count: candidate.contractHistoryCount,

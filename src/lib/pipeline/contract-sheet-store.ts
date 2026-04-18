@@ -13,9 +13,13 @@
 
 import { prisma } from "@/lib/prisma";
 import type { NormalizedContractRow } from "./contract-sheet-normalizer";
+import { toDateOnlyString } from "@/lib/contract-sheet-parser";
+import { COURSE_COUNT_SOURCE_TYPES } from "./teaching-history-sources";
+import { countGroupedTeachingHistories } from "@/lib/teaching-history-display";
 
 export interface WorksheetStoreResult {
   appended: number;
+  updated: number;
   skipped: number; // 강사명 없음
   deduped: number; // source_ref 동일 행 이미 존재
   instructorsCreated: number; // 계약시트-only 최소 생성
@@ -27,12 +31,32 @@ export interface WorksheetStoreResult {
 function emptyResult(): WorksheetStoreResult {
   return {
     appended: 0,
+    updated: 0,
     skipped: 0,
     deduped: 0,
     instructorsCreated: 0,
     errors: [],
     instructorIdsAffected: new Set<string>(),
   };
+}
+
+function asDateOnly(value: Date | null | undefined): string | null {
+  return value ? value.toISOString().split("T")[0] : null;
+}
+
+function asComparableHours(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return value;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "toString" in value &&
+    typeof value.toString === "function"
+  ) {
+    return value.toString();
+  }
+  return String(value);
 }
 
 /**
@@ -99,7 +123,56 @@ export async function storeContractRows(
         },
       });
 
+      const sourceRef = {
+        spreadsheet_id: row.spreadsheetId,
+        worksheet_gid: row.worksheetGid,
+        row_number: row.rowNumber,
+        timestamp_raw: row.timestampRaw,
+        recorded_at: toDateOnlyString(row.recordedAt),
+      };
+
       if (duplicate) {
+        const changed =
+          duplicate.companyName !== row.companyName ||
+          duplicate.courseName !== row.courseName ||
+          duplicate.courseId !== row.courseId ||
+          asDateOnly(duplicate.startDate) !== asDateOnly(row.startDate) ||
+          asDateOnly(duplicate.endDate) !== asDateOnly(row.endDate) ||
+          duplicate.dateLabel !== row.dateLabel ||
+          duplicate.dealFeeHourly !== row.dealFeeHourly ||
+          duplicate.feeExtra !== row.feeExtra ||
+          asComparableHours(duplicate.totalHours) !==
+            asComparableHours(row.totalHours) ||
+          duplicate.totalSessions !== row.totalSessions ||
+          duplicate.contractType !== row.contractType ||
+          duplicate.detailType !== row.detailType ||
+          duplicate.specialNotes !== row.specialNotes ||
+          JSON.stringify(duplicate.sourceRef ?? {}) !== JSON.stringify(sourceRef);
+
+        if (changed) {
+          await prisma.teachingHistory.update({
+            where: { id: duplicate.id },
+            data: {
+              companyName: row.companyName,
+              courseName: row.courseName,
+              courseId: row.courseId,
+              startDate: row.startDate,
+              endDate: row.endDate,
+              dateLabel: row.dateLabel,
+              dealFeeHourly: row.dealFeeHourly,
+              feeExtra: row.feeExtra,
+              totalHours: row.totalHours,
+              totalSessions: row.totalSessions,
+              contractType: row.contractType,
+              detailType: row.detailType,
+              specialNotes: row.specialNotes,
+              sourceRef,
+            },
+          });
+
+          result.updated++;
+        }
+
         result.deduped++;
         result.instructorIdsAffected.add(instructor.id);
         continue;
@@ -123,11 +196,7 @@ export async function storeContractRows(
           detailType: row.detailType,
           specialNotes: row.specialNotes,
           sourceType: "contract_sheet",
-          sourceRef: {
-            spreadsheet_id: row.spreadsheetId,
-            worksheet_gid: row.worksheetGid,
-            row_number: row.rowNumber,
-          },
+          sourceRef,
         },
       });
 
@@ -148,7 +217,8 @@ export async function storeContractRows(
  * 04_data_pipeline.md 18-1, 05_api_spec.md 5-5, 06_implementation_spec.md 5-4:
  *
  * teaching_histories 변경 이후 파생 집계값을 같은 실행 안에서 갱신한다.
- * - contract_sheet_rows: 해당 instructor의 contract_sheet teaching_histories 건수
+ * - contract_sheet_rows: legacy 필드명. contract_sheet + instructor_dispatch_sheet
+ *   teaching_histories 건수를 함께 저장한다.
  * - total_courses: 해당 instructor의 전체 teaching_histories 건수
  * - recent_courses_6mo: start_date >= now - 6개월인 teaching_histories 건수
  *
@@ -164,23 +234,66 @@ export async function recomputeAggregatesForInstructors(
   let updatedCount = 0;
 
   for (const instructorId of instructorIds) {
-    const [contractSheetRows, totalCourses, recentCourses6mo] = await Promise.all([
-      prisma.teachingHistory.count({
-        where: {
-          instructorDbId: instructorId,
-          sourceType: "contract_sheet",
-        },
-      }),
-      prisma.teachingHistory.count({
-        where: { instructorDbId: instructorId },
-      }),
-      prisma.teachingHistory.count({
-        where: {
-          instructorDbId: instructorId,
-          startDate: { gte: sixMonthsAgo },
-        },
-      }),
-    ]);
+    const histories = await prisma.teachingHistory.findMany({
+      where: { instructorDbId: instructorId },
+      select: {
+        sourceType: true,
+        companyName: true,
+        courseName: true,
+        courseId: true,
+        detailType: true,
+        feeExtra: true,
+        specialNotes: true,
+        startDate: true,
+        endDate: true,
+        dateLabel: true,
+        totalSessions: true,
+        totalHours: true,
+      },
+    });
+
+    const allItems = histories.map((row) => ({
+      company_name: row.companyName,
+      course_name: row.courseName,
+      course_id: row.courseId,
+      detail_type: row.detailType,
+      fee_extra: row.feeExtra,
+      special_notes: row.specialNotes,
+      start_date: row.startDate?.toISOString().split("T")[0] ?? null,
+      end_date: row.endDate?.toISOString().split("T")[0] ?? null,
+      date_label: row.dateLabel,
+      total_sessions: row.totalSessions,
+      total_hours: row.totalHours !== null ? Number(row.totalHours) : null,
+    }));
+
+    const courseCountableItems = histories
+      .filter((row) => COURSE_COUNT_SOURCE_TYPES.includes(row.sourceType as typeof COURSE_COUNT_SOURCE_TYPES[number]))
+      .map((row) => ({
+        company_name: row.companyName,
+        course_name: row.courseName,
+        course_id: row.courseId,
+        detail_type: row.detailType,
+        fee_extra: row.feeExtra,
+        special_notes: row.specialNotes,
+        start_date: row.startDate?.toISOString().split("T")[0] ?? null,
+        end_date: row.endDate?.toISOString().split("T")[0] ?? null,
+        date_label: row.dateLabel,
+        total_sessions: row.totalSessions,
+        total_hours: row.totalHours !== null ? Number(row.totalHours) : null,
+      }));
+
+    const contractSheetRows = countGroupedTeachingHistories(courseCountableItems, {
+      fromDate: "2025-01-01",
+      untilDate: now.toISOString().split("T")[0],
+    });
+    const totalCourses = countGroupedTeachingHistories(allItems, {
+      fromDate: "2025-01-01",
+      untilDate: now.toISOString().split("T")[0],
+    });
+    const recentCourses6mo = countGroupedTeachingHistories(allItems, {
+      fromDate: sixMonthsAgo.toISOString().split("T")[0],
+      untilDate: now.toISOString().split("T")[0],
+    });
 
     await prisma.instructor.update({
       where: { id: instructorId },

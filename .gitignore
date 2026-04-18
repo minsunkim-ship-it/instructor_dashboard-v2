@@ -44,3 +44,4 @@ next-env.d.ts
 edu-base-*.json
 *-service-account*.json
 client_secret_*.json
+.omx/

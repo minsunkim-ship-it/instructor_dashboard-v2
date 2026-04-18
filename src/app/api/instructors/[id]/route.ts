@@ -4,6 +4,8 @@
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { countGroupedTeachingHistories } from "@/lib/teaching-history-display";
+import { isNonTeachingCompensationItem } from "@/lib/teaching-history-kind";
 
 export async function GET(
   _request: Request,
@@ -16,10 +18,8 @@ export async function GET(
     const inst = await prisma.instructor.findUnique({
       where: { id },
       include: {
-        // 6-4: teaching_history는 최신순 최대 30건
         teachingHistories: {
-          orderBy: { startDate: "desc" },
-          take: 30,
+          orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
         },
         satisfactionRecords: true,
         // T8: fee_histories — effectiveDate desc, createdAt desc
@@ -44,16 +44,9 @@ export async function GET(
       );
     }
 
-    // 6-4: teaching_history 초과 건수
-    const totalTeachingCount = await prisma.teachingHistory.count({
-      where: { instructorDbId: id },
-    });
-    const remainingCount = Math.max(0, totalTeachingCount - 30);
-
     // 6-4: total_paid = SUM(deal_fee_hourly * total_hours), 계산 가능한 행만
     let totalPaid: number | null = null;
-    // 30건 제한이 아닌 전체 이력에서 계산해야 하므로 별도 조회
-    if (totalTeachingCount > 0) {
+    if (inst.teachingHistories.length > 0) {
       const allPayable = await prisma.teachingHistory.findMany({
         where: {
           instructorDbId: id,
@@ -72,6 +65,40 @@ export async function GET(
 
     // 6-4: 전임강사 규칙
     const isFulltime = inst.isFulltime;
+    const today = new Date().toISOString().split("T")[0];
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setUTCMonth(sixMonthsAgo.getUTCMonth() - 6);
+
+    const teachingHistoryAll = inst.teachingHistories.map((h) => ({
+      id: h.id,
+      company_name: h.companyName,
+      course_name: h.courseName,
+      course_id: h.courseId,
+      start_date: h.startDate?.toISOString().split("T")[0] ?? null,
+      end_date: h.endDate?.toISOString().split("T")[0] ?? null,
+      date_label: h.dateLabel,
+      deal_fee_hourly: h.dealFeeHourly,
+      fee_extra: h.feeExtra,
+      total_hours: h.totalHours !== null ? Number(h.totalHours) : null,
+      total_sessions: h.totalSessions,
+      contract_type: h.contractType,
+      detail_type: h.detailType,
+      special_notes: h.specialNotes,
+      source_type: h.sourceType,
+    }));
+
+    const teachingHistory = teachingHistoryAll.filter(
+      (item) => !isNonTeachingCompensationItem(item)
+    );
+
+    const totalCourses = countGroupedTeachingHistories(teachingHistory, {
+      fromDate: "2025-01-01",
+      untilDate: today,
+    });
+    const recentCourses6mo = countGroupedTeachingHistories(teachingHistory, {
+      fromDate: sixMonthsAgo.toISOString().split("T")[0],
+      untilDate: today,
+    });
 
     const response = {
       status: "success",
@@ -95,8 +122,8 @@ export async function GET(
         memo: inst.memoRaw,
         is_fulltime: isFulltime,
         is_practice_coach: inst.isPracticeCoach,
-        total_courses: inst.totalCourses,
-        recent_courses_6mo: inst.recentCourses6mo,
+        total_courses: totalCourses,
+        recent_courses_6mo: recentCourses6mo,
         // 6-4: total_paid — teaching_histories 기반 추정 누적 지급액
         total_paid: totalPaid,
         // 6-4: 전임강사는 base_fee_hourly = null
@@ -128,25 +155,8 @@ export async function GET(
               is_current: f.isCurrent,
               is_special_amount: f.isSpecialAmount,
             })),
-        // teaching_history: 최신순 30건
-        teaching_history: inst.teachingHistories.map((h) => ({
-          id: h.id,
-          company_name: h.companyName,
-          course_name: h.courseName,
-          course_id: h.courseId,
-          start_date: h.startDate?.toISOString().split("T")[0] ?? null,
-          end_date: h.endDate?.toISOString().split("T")[0] ?? null,
-          date_label: h.dateLabel,
-          deal_fee_hourly: h.dealFeeHourly,
-          fee_extra: h.feeExtra,
-          total_hours: h.totalHours !== null ? Number(h.totalHours) : null,
-          total_sessions: h.totalSessions,
-          contract_type: h.contractType,
-          detail_type: h.detailType,
-          special_notes: h.specialNotes,
-          source_type: h.sourceType,
-        })),
-        teaching_history_remaining_count: remainingCount,
+        teaching_history: teachingHistory,
+        teaching_history_remaining_count: 0,
       },
     };
 

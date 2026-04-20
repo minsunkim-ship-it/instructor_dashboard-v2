@@ -69,40 +69,91 @@ function containsSpecialKeyword(text: string | null | undefined): boolean {
   return SPECIAL_AMOUNT_KEYWORDS.some((kw) => text.includes(kw));
 }
 
+function parseAmountToken(
+  rawValue: string,
+  rawUnit: string | undefined
+): number | null {
+  const raw = rawValue.replace(/,/g, "");
+  const unit = rawUnit ?? "";
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+
+  const hasComma = rawValue.includes(",");
+  const hasDecimal = rawValue.includes(".");
+  const plainDigits = raw.replace(/\./g, "");
+
+  if (!unit) {
+    if (hasDecimal) return null;
+    if (!hasComma && plainDigits.length < 5) return null;
+  }
+
+  if (unit.startsWith("만")) {
+    return Math.round(parsed * 10000);
+  }
+
+  return Math.round(parsed);
+}
+
+function extractExplicitTotalAmounts(text: string): number[] {
+  const totals: number[] = [];
+  const seen = new Set<number>();
+  const patterns = [
+    /=\s*(?:총\s*)?(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)?/g,
+    /(?:총액|총\s*비용|최종\s*비용)\s*[:=]?\s*(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)?/g,
+    /총\s*(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)/g,
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const amount = parseAmountToken(match[1], match[2]);
+      if (amount === null || seen.has(amount)) continue;
+      seen.add(amount);
+      totals.push(amount);
+    }
+  }
+
+  return totals;
+}
+
 function extractAmountsFromText(text: string | null | undefined): number[] {
   if (!text) return [];
+
+  const explicitTotals = extractExplicitTotalAmounts(text);
+  if (explicitTotals.length > 0) {
+    return explicitTotals;
+  }
 
   const amounts: number[] = [];
   const seen = new Set<number>();
   const regex = /(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)?/g;
   let match: RegExpExecArray | null;
 
+  const pushAmount = (value: number) => {
+    if (value <= 0 || seen.has(value)) return;
+    seen.add(value);
+    amounts.push(value);
+  };
+
   while ((match = regex.exec(text)) !== null) {
-    const raw = match[1]?.replace(/,/g, "");
-    const unit = match[2] ?? "";
-    const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed) || parsed <= 0) continue;
+    const amount = parseAmountToken(match[1], match[2]);
+    if (amount === null) continue;
 
-    const hasComma = match[1]?.includes(",") ?? false;
-    const hasDecimal = match[1]?.includes(".") ?? false;
-    const plainDigits = raw.replace(/\./g, "");
+    const trailing = text.slice(regex.lastIndex);
+    const multiplierMatch = trailing.match(
+      /^\s*(?:x|X|×|\*)\s*(\d+)\s*(?:회|건|번)?/
+    );
 
-    if (!unit) {
-      // "1차", "5개", "4.5" 같은 설명 숫자는 금액으로 보지 않는다.
-      if (hasDecimal) continue;
-      if (!hasComma && plainDigits.length < 5) continue;
+    // "200,000 X 3회"처럼 회당 단가 표현은 총액으로 해석한다.
+    if (multiplierMatch) {
+      const multiplier = Number.parseInt(multiplierMatch[1], 10);
+      if (Number.isFinite(multiplier) && multiplier > 0) {
+        pushAmount(amount * multiplier);
+      }
+      continue;
     }
 
-    let amount: number;
-    if (unit.startsWith("만")) {
-      amount = Math.round(parsed * 10000);
-    } else {
-      amount = Math.round(parsed);
-    }
-
-    if (amount <= 0 || seen.has(amount)) continue;
-    seen.add(amount);
-    amounts.push(amount);
+    pushAmount(amount);
   }
 
   return amounts;

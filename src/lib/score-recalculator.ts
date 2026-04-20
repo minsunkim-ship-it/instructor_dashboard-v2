@@ -1,15 +1,17 @@
 /**
- * Score Recalculator — demo parity
+ * Score Recalculator — demo intent aligned
  *
- * instructor_db_demo/rebuild_master.py 기준 Engagement Score v3를 그대로 적용한다.
+ * instructor_db_demo의 후기 구현에서 생긴 slack/ops 중복을 줄이고,
+ * 초기 build_data.py 시기의 의도에 맞춰 Slack 15점과 운영채널 5점을 분리한다.
  * - 출강횟수: contract_sheet_rows 우선, 없으면 total_courses
  *   (`contract_sheet_rows` = 계약시트 + 강사별 출강시트 기반 이력 수)
  * - 만족도: avg_score / 5.0, 결측 시 중앙값, 전체 만족도 데이터가 없으면 4.0
- * - 슬랙 평판: slack mentions 전체 최대값 대비 정규화
+ * - 슬랙 평판: slack_activity_count 전체 최대값 대비 정규화
  * - 최근성: max(slack_last_activity, salesmap_last_deal_at, gmail_last_activity) 기준 exp(-days/180)
  * - SM 딜: salesmap_deal_count 전체 최대값 대비 정규화
  * - 이메일: gmail thread 수 전체 최대값 대비 정규화
- * - 운영채널: 운영보고 + 출강요청 전체 최대값 대비 정규화
+ * - 운영채널: ops_report_activity_count 전체 최대값 대비 정규화
+ * - dispatch_request_activity_count는 수요 보조 신호로 저장만 하고 점수에는 직접 반영하지 않는다.
  * - 실습코치(flag / boolean)는 0점 처리
  * - tie rank는 기존 강사 생성 순서를 보존하는 stable sort로 처리한다.
  */
@@ -19,7 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { countGroupedTeachingHistories } from "@/lib/teaching-history-display";
 import { COURSE_COUNT_SOURCE_TYPES } from "@/lib/pipeline/teaching-history-sources";
 
-const SCORE_VERSION = "v3";
+const SCORE_VERSION = "v3_demo_intent";
 const RECENCY_DECAY_DAYS = 180;
 const DEFAULT_MISSING_SATISFACTION = 4.0;
 const ACCEPTED_ACTIVITY_STATUSES = ["auto_accepted", "approved"] as const;
@@ -46,7 +48,7 @@ interface ActivityStats {
   slackLastActivityAt: Date | null;
   gmailThreads: number;
   gmailLastActivityAt: Date | null;
-  opsCount: number;
+  opsReportCount: number;
 }
 
 interface ValidationCandidate {
@@ -138,16 +140,14 @@ async function loadActivityStatsByInstructor(): Promise<Map<string, ActivityStat
         slackLastActivityAt: null,
         gmailThreads: 0,
         gmailLastActivityAt: null,
-        opsCount: 0,
+        opsReportCount: 0,
       };
       statsByInstructor.set(instructorId, stats);
     }
 
     stats.slackMentions += registry.slackActivityCount ?? 0;
     stats.gmailThreads += registry.emailActivityCount ?? 0;
-    stats.opsCount +=
-      (registry.opsReportActivityCount ?? 0) +
-      (registry.dispatchRequestActivityCount ?? 0);
+    stats.opsReportCount += registry.opsReportActivityCount ?? 0;
 
     if (registry.sourceType === "slack") {
       if (
@@ -448,7 +448,7 @@ export async function recalculateAllScores(options?: {
   );
   const maxOps = Math.max(
     ...allInstructors.map(
-      (inst) => activityStatsByInstructor.get(inst.id)?.opsCount ?? 0
+      (inst) => activityStatsByInstructor.get(inst.id)?.opsReportCount ?? 0
     ),
     1
   );
@@ -461,7 +461,7 @@ export async function recalculateAllScores(options?: {
       slackLastActivityAt: null,
       gmailThreads: 0,
       gmailLastActivityAt: null,
-      opsCount: 0,
+      opsReportCount: 0,
     };
 
     const contractCount =
@@ -488,7 +488,7 @@ export async function recalculateAllScores(options?: {
         : Math.exp(-daysSinceRecent / RECENCY_DECAY_DAYS) * 15;
     const rawSalesmapScore = safeDiv(inst.salesmapDealCount, maxDeals) * 10;
     const rawEmailScore = safeDiv(activityStats.gmailThreads, maxEmail) * 5;
-    const rawOpsScore = safeDiv(activityStats.opsCount, maxOps) * 5;
+    const rawOpsScore = safeDiv(activityStats.opsReportCount, maxOps) * 5;
 
     const preCoachScore = round1(
       rawCoursesScore +

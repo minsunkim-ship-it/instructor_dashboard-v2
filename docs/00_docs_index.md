@@ -19,6 +19,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 12. `12_parallel_bundle_guardrails.md`
 13. `13_parallel_bundle_prompts.md`
 14. `14_wave1_preflight_checklist.md`
+15. `15_operational_intelligence_classification_spec.md`
 
 ## Source of Truth Priority
 - 정책 충돌 시: `01_core_policy.md`
@@ -34,6 +35,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - grouped `validated-plan` 병렬 실행 시 공통 고정 항목 / 파일 담당 그룹 확인: `12_parallel_bundle_guardrails.md`
 - grouped `validated-plan` 실행용 복사 프롬프트 확인: `13_parallel_bundle_prompts.md`
 - Group 시작 전 / T5 진입 전 실행 체크리스트 확인: `14_wave1_preflight_checklist.md`
+- 운영 인텔리전스 분류 규칙 확인: `15_operational_intelligence_classification_spec.md`
 
 ## Current Execution Plan
 
@@ -160,6 +162,10 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - Wave 1 grouped 병렬 구현을 시작하기 전과 `T5` 통합 단계에 들어가기 전에 확인해야 하는 실행 체크리스트를 정의한다.
 - 환경변수, 데이터 선행조건, 파일 담당 그룹 위반 여부, blocker, build 통과 여부를 점검하는 문서다.
 
+### `15_operational_intelligence_classification_spec.md`
+- 운영 인텔리전스 원문 메모를 어떤 규칙으로 분류하고 어떤 경우를 사람이 검토해야 하는지 정의한다.
+- `raw_operational_notes`, `classified_notes`, `human_followups`, `operational_alerts`, `risk_patterns`, `strength_patterns`, `data_richness` 판정 기준을 포함한다.
+
 ## Legacy Reference
 
 - `구현명세서_v2.md`는 참고용 legacy 문서로만 사용한다.
@@ -182,6 +188,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - grouped `validated-plan` 병렬 실행 전에는 반드시 `12_parallel_bundle_guardrails.md`를 확인한다.
 - 그룹별 복사 프롬프트가 필요하면 `13_parallel_bundle_prompts.md`를 사용하되, 정책 판단은 `10/11/12/14`를 우선한다.
 - Group 1~3 시작 전과 `T5` 시작 전에는 `14_wave1_preflight_checklist.md`를 확인한다.
+- 운영 인텔리전스 분류 또는 검토 큐 구현 전에는 `15_operational_intelligence_classification_spec.md`를 확인한다.
 
 ## Update Rule
 - 정책이 바뀌면 먼저 `01_core_policy.md`를 수정한다.
@@ -195,5 +202,6 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - grouped `validated-plan` 병렬 실행 규칙, 공통 고정 항목, 파일 담당 그룹이 바뀌면 `12_parallel_bundle_guardrails.md`를 수정한다.
 - 그룹별 프롬프트 형식이나 보고 템플릿이 바뀌면 `13_parallel_bundle_prompts.md`를 수정한다.
 - Wave 1 실행 체크리스트 항목이 바뀌면 `14_wave1_preflight_checklist.md`를 수정한다.
+- 운영 인텔리전스 분류 규칙이나 review queue 정책이 바뀌면 `15_operational_intelligence_classification_spec.md`를 수정한다.
 - `구현명세서_v2.md`는 참고만 하고 수정하지 않는다.
 - 중요한 변경은 `08_decision_log.md`에 반드시 남긴다.

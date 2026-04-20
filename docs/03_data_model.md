@@ -534,6 +534,8 @@ Slack/Gmail activity source를 강사별로 자동 취합한 검토용 레지스
 - 화면 집계값(`score`, `satisfaction_avg`, `total_courses`)은 계산 결과를 저장하되, 원본 기록도 유지한다.
 - 점수 구성 요소는 별도 테이블 대신 `instructors.score_breakdown` JSONB에 저장하며, 내부 키는 `courses`, `satisfaction`, `slack`, `recency`, `salesmap`, `email`, `ops_channel`로 고정한다.
 - Slack/Gmail direct API 기반 활동성 입력값은 `instructors.slack_activity_count`, `email_activity_count`, `ops_report_activity_count`, `dispatch_request_activity_count`, `last_activity_at`에 저장한다.
+- score 계산에서 `slack`은 broad slack signal(`slack_activity_count`)을 사용하고, `ops_channel`은 `ops_report_activity_count`만 사용한다.
+- `dispatch_request_activity_count`는 수요 보조 신호/상세 정보 용도로 저장하되, 일반 강사 비교 점수의 direct input으로는 사용하지 않는다.
 - 만족도 대체 여부는 `instructors.satisfaction_is_imputed`로 명시한다.
 - 순위는 API 응답 시 계산하지 않고 `instructors.rank`에 저장한다.
 - 수동 fee 보정의 기준값은 `fee_fix_configs`를 Source of Truth로 사용한다.

@@ -648,7 +648,8 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 - 최근 활동일
 - 세일즈맵 딜 활동량
 - 이메일 활동량 (`instructors.email_activity_count`)
-- 운영 채널 활동량 (`instructors.ops_report_activity_count + dispatch_request_activity_count`)
+- 운영 채널 활동량 (`instructors.ops_report_activity_count`)
+- `dispatch_request_activity_count`는 저장은 하되, 점수의 direct input으로는 사용하지 않는다. 일부 강사 전용 출강요청 채널은 일반 강사 비교 점수의 공통 기준이 아니기 때문이다.
 
 ### 15-2. 계산 순서
 1. 강사별 활동 집계 생성

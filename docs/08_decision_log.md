@@ -714,3 +714,22 @@
   - `docs/12_solo_launch_readiness.md`
   - `docs/13_smoke_test_runbook.md`
   - `docs/14_wave1_preflight_checklist.md`
+
+### 2026-04-20
+
+#### 점수식의 Slack 15점 / 운영채널 5점 역할 재정의
+- 결정:
+  - `slack` 15점은 broad slack signal을 유지하기 위해 `instructors.slack_activity_count`를 사용한다.
+  - `ops_channel` 5점은 `instructors.ops_report_activity_count`만 사용한다.
+  - `dispatch_request_activity_count`는 저장은 유지하되, 일반 강사 비교 점수의 direct input으로는 사용하지 않는다.
+  - score policy version은 `v3_demo_intent`로 기록한다.
+- 배경:
+  - 후기 demo 구현에서는 `slack_stats.mentions = 운영보고 + 출강요청`, `ops_channel = 운영보고 + 출강요청`으로 같은 원천값이 15점과 5점에 중복 반영되고 있었다.
+  - 초기 `build_data.py` 시기의 Slack 15점은 더 넓은 "슬랙에서 잡힌 존재감/검색 hit/출강 흔적"에 가까웠고, 일부 강사 전용 `출강요청` 채널을 일반 점수 기준으로 쓰는 의도는 아니었다.
+  - `출강요청`은 극소수 mapped instructor에게만 존재하는 예외적 수요 신호이므로, 상세 정보와 운영 인텔리전스 근거로는 유용하지만 공통 비교 점수 입력으로는 부적절하다.
+- 반영 문서:
+  - `docs/03_data_model.md`
+  - `docs/04_data_pipeline.md`
+  - `docs/08_decision_log.md`
+- 구현 반영:
+  - `src/lib/score-recalculator.ts`

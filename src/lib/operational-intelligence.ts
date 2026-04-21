@@ -1801,7 +1801,25 @@ function buildRawOperationalNotes(
   };
 }
 
-function extractNotionCommentNotesFromMemo(
+function mergeNotionCommentText(
+  existingText: string,
+  nextText: string
+): string {
+  const merged = new Map<string, string>();
+  for (const segment of [existingText, nextText]
+    .flatMap((value) => value.split(" / "))
+    .map((value) => normalizeText(value))
+    .filter(Boolean)) {
+    const key = segment.toLowerCase();
+    if (!merged.has(key)) {
+      merged.set(key, segment);
+    }
+  }
+
+  return Array.from(merged.values()).join(" / ");
+}
+
+export function extractNotionCommentNotesFromMemo(
   memoRaw: string | null
 ): NotionCommentMemoLine[] {
   if (!memoRaw) return [];
@@ -1817,14 +1835,29 @@ function extractNotionCommentNotesFromMemo(
     if (!match) continue;
 
     const [, author, observedAt, text] = match;
-    if (!normalizeText(text)) continue;
+    const normalizedText = normalizeText(text);
+    if (!normalizedText) continue;
+
+    const normalizedAuthor = normalizeText(author);
+    const normalizedObservedAt =
+      observedAt && /^\d{4}-\d{2}-\d{2}$/.test(observedAt)
+        ? observedAt
+        : null;
+    const previous = notes[notes.length - 1];
+
+    if (
+      previous &&
+      previous.author === normalizedAuthor &&
+      previous.observedAt === normalizedObservedAt
+    ) {
+      previous.text = mergeNotionCommentText(previous.text, normalizedText);
+      continue;
+    }
+
     notes.push({
-      author: normalizeText(author),
-      observedAt:
-        observedAt && /^\d{4}-\d{2}-\d{2}$/.test(observedAt)
-          ? observedAt
-          : null,
-      text: normalizeText(text),
+      author: normalizedAuthor,
+      observedAt: normalizedObservedAt,
+      text: normalizedText,
     });
   }
 

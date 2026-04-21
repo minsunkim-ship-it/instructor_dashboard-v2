@@ -21,6 +21,7 @@ import {
 } from "@/lib/teaching-history-display";
 import { loadCourseIdFallbackRegistry } from "./course-id-fallback";
 import { loadNotionCourseIdFallbackRegistry } from "./notion-course-id-fallback";
+import { sanitizeTeachingHistoryCourseName } from "./notion-comment-course-name";
 
 const PREFERRED_CONTRACT_WORKSHEET_GID = 158052384;
 const INSTRUCTOR_LOOKUP_BATCH_SIZE = 200;
@@ -674,15 +675,23 @@ export async function storeContractRows(
           ? legacyRowsByIdentity.get(fallbackIdentity)
           : undefined);
 
+      const normalizedRowCourseName = sanitizeTeachingHistoryCourseName(
+        row.courseName
+      );
+      const normalizedDuplicateCourseName = sanitizeTeachingHistoryCourseName(
+        duplicate?.courseName
+      );
       const fallbackCourseName =
-        !row.courseName && row.courseId
+        !normalizedRowCourseName && row.courseId
           ? (
               driveCourseIdFallbacks.get(row.courseId)?.courseName ??
               notionCourseIdFallbacks.get(row.courseId)?.courseName ??
               null
             )
           : null;
-      const effectiveCourseName = row.courseName ?? fallbackCourseName;
+      const effectiveCourseName =
+        normalizedRowCourseName ??
+        sanitizeTeachingHistoryCourseName(fallbackCourseName);
 
       const sourceRef = {
         spreadsheet_id: row.spreadsheetId,
@@ -696,7 +705,7 @@ export async function storeContractRows(
         const nextSourceRef = mergeContractSourceRef(duplicate.sourceRef, sourceRef);
         const nextData = {
           companyName: row.companyName ?? duplicate.companyName,
-          courseName: effectiveCourseName ?? duplicate.courseName,
+          courseName: effectiveCourseName ?? normalizedDuplicateCourseName,
           courseId: row.courseId ?? duplicate.courseId,
           startDate: row.startDate ?? duplicate.startDate,
           endDate: row.endDate ?? duplicate.endDate,

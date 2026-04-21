@@ -150,6 +150,12 @@ function normalizeOperationalConfidence(
   }
 }
 
+function getRecentSatisfactionCutoffDate(now = new Date()): string {
+  const cutoff = new Date(now);
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - 6);
+  return cutoff.toISOString().slice(0, 10);
+}
+
 function getRecordString(
   record: Record<string, unknown>,
   keys: string[]
@@ -313,62 +319,32 @@ function buildFeedbackEvidenceSnapshot(args: {
 }
 
 function buildRecentSatisfactionHistory(args: {
-  rows: MatchedSatisfactionImportRow[];
-  instructorId: string;
-  instructorName: string;
+  rows: Array<{
+    observedAt: string | null;
+    companyName: string | null;
+    courseName: string | null;
+    score: number;
+  }>;
 }): Array<{
   observed_at: string | null;
   company_name: string | null;
   course_name: string | null;
   session_label: string | null;
 }> {
-  const sixMonthsAgo = new Date();
-  sixMonthsAgo.setUTCMonth(sixMonthsAgo.getUTCMonth() - 6);
-  const sixMonthsAgoDate = sixMonthsAgo.toISOString().slice(0, 10);
-
   return Array.from(
     args.rows.reduce((map, row) => {
-      if (
-        !matchesInstructorImportRow({
-          row,
-          instructorId: args.instructorId,
-          instructorName: args.instructorName,
-        })
-      ) {
+      if (!row.observedAt) {
         return map;
       }
-      if (row.scoreNormalized === null) {
-        return map;
-      }
-
-      const observedAt =
-        row.responseDate ??
-        getRecordString(row.normalizedPayload, ["response_date", "responseDate"]) ??
-        row.createdAt.toISOString().slice(0, 10);
-      if (!observedAt || observedAt < sixMonthsAgoDate) {
-        return map;
-      }
-
-      const companyName =
-        row.candidateCompanyName ??
-        getRecordString(row.normalizedPayload, ["company_name", "companyName"]);
-      const courseName =
-        row.candidateCourseName ??
-        getRecordString(row.normalizedPayload, ["course_name", "courseName"]);
-      const sessionLabel = getRecordString(row.normalizedPayload, [
-        "session_label",
-        "sessionLabel",
-      ]);
       const key =
-        row.sourceRefKey ??
-        [observedAt, companyName ?? "", courseName ?? "", sessionLabel ?? ""].join("::");
+        [row.observedAt, row.companyName ?? "", row.courseName ?? "", row.score].join("::");
 
       if (!map.has(key)) {
         map.set(key, {
-          observed_at: observedAt,
-          company_name: companyName,
-          course_name: courseName,
-          session_label: sessionLabel,
+          observed_at: row.observedAt,
+          company_name: row.companyName,
+          course_name: row.courseName,
+          session_label: null,
         });
       }
       return map;
@@ -711,6 +687,33 @@ export async function GET(
         .map((row) => normalizeText(row.course_name))
         .filter(Boolean)
     );
+    const recentSatisfactionCutoffDate = getRecentSatisfactionCutoffDate();
+    const recentSatisfactionRecords = await prisma.satisfactionRecord.findMany({
+      where: {
+        instructorDbId: inst.id,
+        sourceType: {
+          in: ["sheet_summary", "google_forms", "gmail_summary"],
+        },
+      },
+      select: {
+        score: true,
+        companyName: true,
+        courseName: true,
+        responseDate: true,
+        createdAt: true,
+      },
+      orderBy: [{ responseDate: "desc" }, { createdAt: "desc" }],
+    });
+    const recentCanonicalSatisfactionRows = recentSatisfactionRecords
+      .map((row) => ({
+        score: Number(row.score),
+        observedAt:
+          row.responseDate?.toISOString().slice(0, 10) ??
+          row.createdAt.toISOString().slice(0, 10),
+        companyName: row.companyName,
+        courseName: row.courseName,
+      }))
+      .filter((row) => row.observedAt >= recentSatisfactionCutoffDate);
     const satisfactionImportSearchClauses = [
       { candidateName: inst.name },
       ...(rawTeachingCompanies.length > 0
@@ -771,10 +774,23 @@ export async function GET(
                 : {},
           }));
     const recentSatisfactionHistory = buildRecentSatisfactionHistory({
-      rows: satisfactionImportRows,
-      instructorId: inst.id,
-      instructorName: inst.name,
+      rows: recentCanonicalSatisfactionRows,
     });
+    const recentSatisfactionSummary = {
+      avg:
+        recentCanonicalSatisfactionRows.length > 0
+          ? Math.round(
+              (recentCanonicalSatisfactionRows.reduce(
+                (sum, row) => sum + row.score,
+                0
+              ) /
+                recentCanonicalSatisfactionRows.length) *
+                100
+            ) / 100
+          : null,
+      count: recentCanonicalSatisfactionRows.length,
+      is_imputed: false,
+    };
     const operationalEvidenceSnapshots = buildOperationalEvidenceSnapshots({
       instructorId: inst.id,
       instructorName: inst.name,
@@ -824,6 +840,7 @@ export async function GET(
           count: inst.satisfactionCount,
           is_imputed: inst.satisfactionIsImputed,
         },
+        recent_satisfaction_summary: recentSatisfactionSummary,
         recent_satisfaction_history: recentSatisfactionHistory,
         recommended_for: recommendedFor,
         avoid_for: avoidFor,

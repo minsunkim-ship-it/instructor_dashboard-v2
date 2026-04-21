@@ -294,6 +294,11 @@ export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnaps
           count: inst.satisfactionCount,
           is_imputed: inst.satisfactionIsImputed,
         },
+        recent_satisfaction_summary: {
+          avg: inst.satisfactionAvg !== null ? Number(inst.satisfactionAvg) : null,
+          count: inst.satisfactionCount,
+          is_imputed: inst.satisfactionIsImputed,
+        },
         recent_satisfaction_history: [],
         ...legacyOperationalFields,
         raw_operational_notes: operationalPayload.raw_operational_notes,

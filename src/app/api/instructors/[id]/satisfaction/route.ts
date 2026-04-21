@@ -6,6 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { shouldIncludeInInstructorList } from "@/lib/instructor-list-visibility";
 import { applySatisfactionImports } from "@/lib/pipeline/satisfaction-applier";
 
 interface SatisfactionBody {
@@ -30,7 +31,7 @@ export async function POST(
       where: { id },
     });
 
-    if (!instructor) {
+    if (!instructor || !shouldIncludeInInstructorList(instructor)) {
       return NextResponse.json(
         {
           status: "error",

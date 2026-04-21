@@ -93,6 +93,11 @@ export interface InstructorDetailData {
     count: number;
     is_imputed: boolean;
   };
+  recent_satisfaction_summary: {
+    avg: number | null;
+    count: number;
+    is_imputed: boolean;
+  };
   recent_satisfaction_history: RecentSatisfactionHistoryItem[];
   recommended_for: string[];
   avoid_for: string[];

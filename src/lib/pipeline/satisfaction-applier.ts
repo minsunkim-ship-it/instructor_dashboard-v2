@@ -51,6 +51,7 @@ interface RegistryAggregate {
 const ACCEPTED_REGISTRY_STATUSES = new Set(["auto_accepted", "approved"]);
 const SATISFACTION_WRITE_BATCH_SIZE = 5;
 const SATISFACTION_CREATE_BATCH_SIZE = 100;
+const SATISFACTION_LOOKBACK_MONTHS = 6;
 const REPLACEABLE_SATISFACTION_SOURCE_TYPES = new Set([
   "sheet_summary",
   "google_forms",
@@ -98,6 +99,12 @@ function toDate(value: Date | string | null | undefined): Date | null {
 function toDateOnlyString(value: Date | string | null | undefined): string | null {
   const date = toDate(value);
   return date ? date.toISOString().slice(0, 10) : null;
+}
+
+function getRecentSatisfactionCutoffDate(now = new Date()): string {
+  const cutoff = new Date(now);
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - SATISFACTION_LOOKBACK_MONTHS);
+  return cutoff.toISOString().slice(0, 10);
 }
 
 function sanitizeSatisfactionScore(value: number | null | undefined): number | null {
@@ -202,59 +209,6 @@ function buildRegistryKey(item: SatisfactionImportItem): string {
   return `${item.sourceType}:invalid:${responseDate ?? "unknown"}:${item.id}`;
 }
 
-type PreparedSatisfactionImportItem = SatisfactionImportItemInput & {
-  sanitizedScore: number | null;
-  normalizedPayload: Record<string, unknown>;
-  responseDateValue: Date | null;
-  storageKey: string | null;
-};
-
-function buildRegistryKeyFromPreparedItem(
-  item: PreparedSatisfactionImportItem
-): string {
-  const sourceRef = asRecord(item.sourceRef);
-  const normalized = asRecord(item.normalizedPayload);
-  const explicitRegistryKey =
-    getString(normalized.registry_key) ?? getString(normalized.registryKey);
-  if (explicitRegistryKey) {
-    return explicitRegistryKey;
-  }
-  const requestId = getString(sourceRef.request_id);
-  if (item.sourceType === "manual" && requestId) {
-    return `manual:request:${requestId}`;
-  }
-
-  const suggestedInstructorId =
-    getString(normalized.suggested_instructor_id) ??
-    getString(normalized.suggestedInstructorId);
-  const candidateName =
-    item.candidateName ??
-    getString(normalized.candidate_name) ??
-    getString(normalized.candidateName);
-  const companyName =
-    item.candidateCompanyName ??
-    getString(normalized.company_name) ??
-    getString(normalized.companyName);
-  const courseName =
-    item.candidateCourseName ??
-    getString(normalized.course_name) ??
-    getString(normalized.courseName);
-  const responseDate =
-    toDateOnlyString(item.responseDateValue) ??
-    getString(normalized.response_date) ??
-    getString(normalized.responseDate);
-
-  if (suggestedInstructorId) {
-    return `${item.sourceType}:instructor:${suggestedInstructorId}:${companyName ?? ""}|${courseName ?? ""}|${responseDate ?? ""}`;
-  }
-
-  if (candidateName || companyName || courseName) {
-    return `${item.sourceType}:candidate:${candidateName ?? ""}|${companyName ?? ""}|${courseName ?? ""}|${responseDate ?? ""}`;
-  }
-
-  return `${item.sourceType}:invalid:${responseDate ?? "unknown"}:${item.sourceRefKey ?? "no-ref-key"}`;
-}
-
 function applyDecision(
   baseStatus: string,
   aggregate: RegistryAggregate,
@@ -354,105 +308,6 @@ function buildRegistryAggregates(items: SatisfactionImportItem[]): Map<string, R
       getString(normalized.eventKey) ??
       getString(normalized.source_ref_key) ??
       item.id;
-
-    const existing = registries.get(registryKey);
-    if (existing) {
-      existing.sourceRefs.push(sourceRefEntry);
-      if (scoreValue !== null && !existing.seenEventKeys.has(eventKey)) {
-        existing.weightedScoreSum += scoreValue * respondentCount;
-        existing.responseCount += respondentCount;
-      }
-      if (!existing.candidateName) {
-        existing.candidateName =
-          item.candidateName ??
-          getString(normalized.candidate_name) ??
-          getString(normalized.candidateName);
-      }
-      if (!existing.companyName) {
-        existing.companyName =
-          item.candidateCompanyName ??
-          getString(normalized.company_name) ??
-          getString(normalized.companyName);
-      }
-      if (!existing.courseName) {
-        existing.courseName =
-          item.candidateCourseName ??
-          getString(normalized.course_name) ??
-          getString(normalized.courseName);
-      }
-      if (!existing.suggestedInstructorId && suggestedInstructorId) {
-        existing.suggestedInstructorId = suggestedInstructorId;
-      }
-      if (!existing.resolutionBasis && resolutionBasis) {
-        existing.resolutionBasis = resolutionBasis;
-      }
-      existing.seenEventKeys.add(eventKey);
-      continue;
-    }
-
-    registries.set(registryKey, {
-      registryKey,
-      sourceType: item.sourceType,
-      sourceRefs: [sourceRefEntry],
-      candidateName:
-        item.candidateName ??
-        getString(normalized.candidate_name) ??
-        getString(normalized.candidateName),
-      companyName:
-        item.candidateCompanyName ??
-        getString(normalized.company_name) ??
-        getString(normalized.companyName),
-      courseName:
-        item.candidateCourseName ??
-        getString(normalized.course_name) ??
-        getString(normalized.courseName),
-      weightedScoreSum: scoreValue !== null ? scoreValue * respondentCount : 0,
-      responseCount: respondentCount,
-      suggestedInstructorId,
-      resolutionBasis,
-      seenEventKeys: new Set([eventKey]),
-    });
-  }
-
-  return registries;
-}
-
-function buildRegistryAggregatesFromPreparedItems(
-  items: PreparedSatisfactionImportItem[]
-): Map<string, RegistryAggregate> {
-  const registries = new Map<string, RegistryAggregate>();
-
-  for (const item of items) {
-    const registryKey = buildRegistryKeyFromPreparedItem(item);
-    const normalized = asRecord(item.normalizedPayload);
-    const sourceRef = asRecord(item.sourceRef);
-    const scoreValue = sanitizeSatisfactionScore(item.sanitizedScore);
-    const respondentCount = Math.max(
-      1,
-      getNumber(normalized.respondent_count) ??
-        getNumber(normalized.respondentCount) ??
-        1
-    );
-    const suggestedInstructorId =
-      getString(normalized.suggested_instructor_id) ??
-      getString(normalized.suggestedInstructorId);
-    const resolutionBasis =
-      getString(normalized.resolution_basis) ??
-      getString(normalized.resolutionBasis);
-    const sourceRefEntry: Prisma.InputJsonObject = {
-      source_ref: toInputJsonObject(sourceRef),
-      response_date:
-        toDateOnlyString(item.responseDateValue) ??
-        getString(normalized.response_date) ??
-        getString(normalized.responseDate),
-      score_normalized: scoreValue,
-    };
-    const eventKey =
-      getString(normalized.event_key) ??
-      getString(normalized.eventKey) ??
-      getString(normalized.source_ref_key) ??
-      item.sourceRefKey ??
-      JSON.stringify(sourceRefEntry);
 
     const existing = registries.get(registryKey);
     if (existing) {
@@ -762,13 +617,55 @@ async function syncSatisfactionCanonical(
   };
 }
 
-async function refreshSatisfactionAggregates(instructorIds: string[]): Promise<void> {
-  if (instructorIds.length === 0) return;
+export async function refreshSatisfactionAggregates(
+  instructorIds?: string[]
+): Promise<void> {
+  const uniqueInstructorIds = instructorIds
+    ? Array.from(new Set(instructorIds))
+    : [];
+  if (instructorIds && uniqueInstructorIds.length === 0) return;
 
-  const uniqueInstructorIds = Array.from(new Set(instructorIds));
-  const instructorIdSqlList = Prisma.join(
-    uniqueInstructorIds.map((id) => Prisma.sql`${id}::uuid`)
-  );
+  const cutoffDate = getRecentSatisfactionCutoffDate();
+
+  if (uniqueInstructorIds.length > 0) {
+    const instructorIdSqlList = Prisma.join(
+      uniqueInstructorIds.map((id) => Prisma.sql`${id}::uuid`)
+    );
+    await prisma.$transaction([
+      prisma.$executeRaw`
+        UPDATE instructors
+        SET
+          satisfaction_avg = NULL,
+          satisfaction_count = 0,
+          satisfaction_is_imputed = FALSE
+        WHERE id IN (${instructorIdSqlList})
+      `,
+      prisma.$executeRaw`
+        WITH aggregated AS (
+          SELECT
+            instructor_db_id,
+            ROUND(AVG(score)::numeric, 2) AS avg_score,
+            COUNT(*)::int AS response_count
+          FROM satisfaction_records
+          WHERE instructor_db_id IN (${instructorIdSqlList})
+            AND COALESCE(
+              response_date,
+              (created_at AT TIME ZONE 'UTC')::date
+            ) >= ${cutoffDate}::date
+          GROUP BY instructor_db_id
+        )
+        UPDATE instructors AS i
+        SET
+          satisfaction_avg = aggregated.avg_score,
+          satisfaction_count = aggregated.response_count,
+          satisfaction_is_imputed = FALSE
+        FROM aggregated
+        WHERE i.id = aggregated.instructor_db_id
+      `,
+    ]);
+    return;
+  }
+
   await prisma.$transaction([
     prisma.$executeRaw`
       UPDATE instructors
@@ -776,7 +673,6 @@ async function refreshSatisfactionAggregates(instructorIds: string[]): Promise<v
         satisfaction_avg = NULL,
         satisfaction_count = 0,
         satisfaction_is_imputed = FALSE
-      WHERE id IN (${instructorIdSqlList})
     `,
     prisma.$executeRaw`
       WITH aggregated AS (
@@ -785,7 +681,10 @@ async function refreshSatisfactionAggregates(instructorIds: string[]): Promise<v
           ROUND(AVG(score)::numeric, 2) AS avg_score,
           COUNT(*)::int AS response_count
         FROM satisfaction_records
-        WHERE instructor_db_id IN (${instructorIdSqlList})
+        WHERE COALESCE(
+          response_date,
+          (created_at AT TIME ZONE 'UTC')::date
+        ) >= ${cutoffDate}::date
         GROUP BY instructor_db_id
       )
       UPDATE instructors AS i
@@ -1176,9 +1075,11 @@ export async function applySatisfactionImports({
   const { affectedInstructorIds, canonicalRecordsUpserted } =
     await syncSatisfactionCanonical(persistedRegistries);
   await onProgress?.("refresh_aggregates", {
-    instructors: affectedInstructorIds.length,
+    instructors: recalculateScores ? "all" : affectedInstructorIds.length,
   });
-  await refreshSatisfactionAggregates(affectedInstructorIds);
+  await refreshSatisfactionAggregates(
+    recalculateScores ? undefined : affectedInstructorIds
+  );
 
   if (recalculateScores) {
     await onProgress?.("recalculate_scores", { runId });

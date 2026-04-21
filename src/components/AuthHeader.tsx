@@ -7,8 +7,8 @@ export default async function AuthHeader() {
   if (!email) return null;
 
   return (
-    <div className="fixed top-3 right-4 z-50 flex items-center gap-3 rounded-full border border-gray-200 bg-white/95 px-4 py-2 text-sm shadow-sm backdrop-blur">
-      <span className="max-w-[220px] truncate text-gray-600">{email}</span>
+    <div className="fixed top-3 right-4 z-50 flex items-center gap-2 rounded-full border border-gray-200/80 bg-white/85 px-3 py-1.5 text-xs shadow-sm backdrop-blur">
+      <span className="max-w-[180px] truncate text-gray-500">{email}</span>
       <form
         action={async () => {
           "use server";
@@ -17,7 +17,7 @@ export default async function AuthHeader() {
       >
         <button
           type="submit"
-          className="rounded-full bg-gray-900 px-3 py-1 text-white transition hover:bg-gray-700"
+          className="rounded-full px-2 py-0.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700"
         >
           로그아웃
         </button>

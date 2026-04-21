@@ -263,6 +263,7 @@ export function getFallbackInstructorDetail(
     score: item.score,
     score_breakdown: item.score_breakdown,
     satisfaction: item.satisfaction,
+    recent_satisfaction_summary: item.satisfaction,
     recent_satisfaction_history: [],
     recommended_for: [],
     avoid_for: [],

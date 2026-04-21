@@ -183,8 +183,10 @@
 | 논리 필드 | 내부 필드 | 실제 Notion 프로퍼티명 | 현재 Notion 타입 | 상태 | 수집 규칙 |
 |---|---|---|---|---|---|
 | 강사명 | `name` | `강사명` | `title` | 확정 | 대표 강사명으로 사용한다. |
+| Notion 페이지 ID | source tracking | 페이지 `id` | page object | 확정 | exact match로 연결된 강사의 `source_links`에 저장하고, 상세 조회 시 본문/댓글 영속화의 lookup key로 사용한다. |
 | 소속정보 | `affiliation` | `소속정보` | `multi_select` | 확정 | multi_select면 순서를 유지한 채 `, `로 join한다. |
 | 카테고리 | `categories` | `카테고리` | `multi_select` | 확정 | multi_select면 순서를 유지한 배열 그대로 저장한다. |
+| 운영 메모 | `memo_raw` 후보 | `메모` | `rich_text` | 확정 | 원문 line을 후보로 수집하고 5-8-1절 및 6절의 운영 메모 필터 규칙을 적용한다. |
 | 프로필 요약 | `profile_summary` | 없음 | 없음 | 간접 | 직접 프로퍼티는 없지만, 다른 소스 또는 원문 근거 기반 후속 파생 규칙이 있으면 채우고 없으면 `NULL`로 둔다. |
 | 이메일 | `contact_email` | `이메일 주소` | `email` | 확정 | 대표 이메일만 구조화 필드에 저장한다. `이메일 주소 (2)`가 있으면 Notion 원문 `메모` 블록에 `보조 이메일:` 라벨로 덧붙여 보존한다. |
 | 보조 이메일 | 보조 원문 | `이메일 주소 (2)` | `email` | 확정 | 대표 이메일로 승격하지 않고 Notion 원문 `메모` 블록에 `보조 이메일:` 라벨로만 보존한다. |
@@ -198,8 +200,7 @@
 | 운영 확인 필요 사항 | `ops_notes` | 없음 | 없음 | 간접 | 직접 프로퍼티는 없지만, 다른 소스 또는 원문 근거 기반 구조화 단계에서 채울 수 있다. |
 
 - 현재 확인된 실제 Notion 프로퍼티 목록에는 `specialties`에 대한 직접 대응 필드가 없다.
-- 실제 Notion 프로퍼티 `메모`는 존재하지만, 현재 문서의 논리 필드 `운영 메모`의 직접 소스로 사용하지 않는다.
-- `URL`, `강사자료(이력서 포함)`, `계좌 정보`, `담당 강의 정보`, `메모`, `이전 강의 및 강사료 History`, `커리큘럼` 등은 현재 파이프라인 v1의 직접 매핑 대상에 포함하지 않는다.
+- `URL`, `강사자료(이력서 포함)`, `계좌 정보`, `담당 강의 정보`, `이전 강의 및 강사료 History`, `커리큘럼` 등은 현재 파이프라인 v1의 직접 매핑 대상에 포함하지 않는다.
 - `이메일 주소 (2)`와 `연락처2`는 구조화 연락처 필드로 승격하지 않고, Notion 원문 `메모` 블록에 라벨을 붙여 보존한다.
 - 현재 Notion 타입 정보는 구현 편의를 위한 문서 계약이다. 실제 수집기는 `property.type`을 런타임에 확인해야 하며, 문서와 live 타입이 다르면 경고 또는 실패로 처리한다.
 - 직접 프로퍼티가 없는 논리 필드는 Notion 원문, 다른 소스, 후속 구조화 단계 중 채울 수 있는 근거가 있을 때만 반영하고, 없으면 `NULL` 또는 빈 값으로 둔다.
@@ -364,10 +365,12 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 
 #### 5-8-1. 운영 메모 실제 소스 매핑
 
-운영 메모 `memo_raw`는 Notion에서 직접 읽지 않고, 아래 원천을 수집해 합성한다.
+운영 메모 `memo_raw`는 아래 원천을 수집해 합성한다.
 
 | 논리 필드 | 내부 필드 | 실제 소스 | 상태 | 수집 규칙 |
 |---|---|---|---|---|
+| 운영 메모 | `memo_raw` 후보 | Notion `메모` | 확정 | rich_text 원문을 line 단위로 읽고 운영 메모 필터 규칙을 적용해 후보에 포함한다. |
+| 운영 메모 | `memo_raw` 후보 | Notion page body text / open comments | 확정 | 저장형 상세 조회 경로에서 page id 기준으로 본문 text와 open comments를 읽어 후보에 포함하고 `memo_raw`에 비파괴 병합한다. |
 | 운영 메모 | `memo_raw` 후보 | `data/ops-notes-hardcoded.json` | 확정 | 수동 확정 메모를 강사명 기준으로 읽어 후보에 포함한다. |
 | 운영 메모 | `memo_raw` 후보 | 계약시트 `special_notes` (`기타-계약관련 특이사항 기재`) | 확정 | 3자 초과 항목만 수집하고 중복 제거 후 후보에 포함한다. |
 | 운영 메모 | `memo_raw` 후보 | `incremental_merge.py`의 Gmail 운영 사실 삽입 로직 | 보류 | legacy reference로만 유지한다. direct API v1에서는 운영 사실 문장 추출 규칙이 정리되기 전까지 재구현하지 않는다. |
@@ -473,7 +476,8 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 - `contact_phone`은 `연락처`만 사용한다. `연락처2`는 Notion 원문 `메모` 블록에 `보조 연락처:`로만 남긴다.
 - `profile_summary`는 직접 Notion 프로퍼티가 없으므로, 다른 소스 또는 원문 기반 파생 규칙이 있을 때만 채우고 없으면 `NULL`로 둔다.
 - `specialties`는 현재 Notion DB에서 수집하지 않는다.
-- `memo_raw`는 `data/ops-notes-hardcoded.json`, 계약시트 `special_notes`, `incremental_merge.py`의 Gmail 운영 사실, 세일즈맵 딜 변동 문장을 합성해 채운다.
+- `memo_raw`는 Notion `메모`, Notion page body text/open comments, `data/ops-notes-hardcoded.json`, 계약시트 `special_notes`, `incremental_merge.py`의 Gmail 운영 사실, 세일즈맵 딜 변동 문장을 합성해 채운다.
+- Notion page body text와 open comments는 `source_links.external_key = notion page id`를 이용해 상세 조회 시 저장형으로 병합한다.
 - 계약시트, 세일즈맵, 지메일, 슬랙은 보조 소스로만 사용한다.
 - Slack/Gmail direct API는 `activity_import_items`에 raw source를 저장한 뒤 `activity_review_registries`로 자동 취합한다.
 - `activity_review_registries`의 `auto_accepted` 또는 `approved` 상태만 `instructors.slack_activity_count`, `email_activity_count`, `ops_report_activity_count`, `dispatch_request_activity_count`, `last_activity_at`에 반영한다.
@@ -536,10 +540,10 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 ### 8-3. Notion 단일 소스 파일럿 upsert 규칙
 - Notion 단일 소스 파일럿의 `instructors` upsert는 `name` exact match 기준으로 수행한다.
 - 기존 row가 있으면 `update`, 없으면 `create`한다.
-- 이번 파일럿에서 Notion 소유 필드는 `display_name`, `affiliation`, `categories`, `specialties`, `profile_summary`, `contact_email`, `contact_phone`, `base_fee_hourly`, `fee_note`다.
+- 이번 파일럿에서 Notion 소유 필드는 `display_name`, `affiliation`, `categories`, `specialties`, `profile_summary`, `contact_email`, `contact_phone`, `base_fee_hourly`, `fee_note`, `memo_raw`다.
 - 위 Notion 소유 필드는 snapshot 방식으로 갱신하며, Notion 원문이 빈값이면 기존 값을 유지하지 않고 `NULL` 또는 빈 배열로 반영한다.
-- Notion 비소유 필드 `is_fulltime`, `is_practice_coach`, `flag`, `satisfaction_*`, `total_courses`, `recent_courses_6mo`, `last_activity_at`, `score`, `score_breakdown`, `rank`, `score_policy_version`, `score_calculated_at`, `memo_raw`는 update 대상에서 제외하고 DB의 기존 값을 보존한다.
-- 보조 연락처 라벨 보존이 필요하면 기존 `memo_raw`를 삭제하지 않는 비파괴 방식으로만 추가할 수 있다.
+- 단, `memo_raw`는 snapshot overwrite가 아니라 기존 값 위에 Notion `메모`와 보조 연락처 appendix를 line 단위로 비파괴 병합한다.
+- Notion 비소유 필드 `is_fulltime`, `is_practice_coach`, `flag`, `satisfaction_*`, `total_courses`, `recent_courses_6mo`, `last_activity_at`, `score`, `score_breakdown`, `rank`, `score_policy_version`, `score_calculated_at`는 update 대상에서 제외하고 DB의 기존 값을 보존한다.
 
 ## 9. 소스 우선순위 및 충돌 처리
 

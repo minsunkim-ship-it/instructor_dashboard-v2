@@ -5,7 +5,8 @@
  * 이 파일럿에서는 Notion 소스만 대상으로 한다.
  */
 
-import type { RawNotionInstructor } from "./notion-collector";
+import type { RawNotionInstructor } from "@/lib/pipeline/notion-collector";
+import { acceptOpsMemo } from "@/lib/pipeline/ops-notes-loader";
 
 // instructors 테이블에 저장할 정규화 결과 — 03_data_model.md 4-1절
 export interface NormalizedInstructor {
@@ -20,7 +21,8 @@ export interface NormalizedInstructor {
   baseFeeHourly: number | null;
   feeNote: string | null;
   notionPageId: string; // source tracking용
-  memoAppendix: string | null; // 보조 연락처 보존용 메모 블록
+  memoRawCandidate: string | null; // Notion 메모 + 보조 연락처 appendix
+  notionRawProperties: Record<string, unknown>;
 }
 
 /**
@@ -94,6 +96,39 @@ function buildMemoAppendix(
   return parts.length > 0 ? parts.join("\n") : null;
 }
 
+function splitMemoLines(value: string | null | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Notion 메모도 memo_raw 후보로 사용하되, 운영 메모 canonical 필터 규칙을 그대로 적용한다.
+ */
+function buildMemoRawCandidate(
+  memo: string | null,
+  email2: string | null,
+  phone2: string | null
+): string | null {
+  const appendix = buildMemoAppendix(email2, phone2);
+  const lines = [...splitMemoLines(memo), ...splitMemoLines(appendix)];
+  if (lines.length === 0) return null;
+
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+
+  for (const line of lines) {
+    if (!acceptOpsMemo(line)) continue;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    deduped.push(line);
+  }
+
+  return deduped.length > 0 ? deduped.join("\n") : null;
+}
+
 /**
  * RawNotionInstructor 배열을 정규화한다.
  * 이름이 없는 레코드는 제외한다.
@@ -120,7 +155,12 @@ export function normalizeNotionData(
       baseFeeHourly: normalizeFee(raw.baseFeeHourly),
       feeNote: emptyToNull(raw.feeNote),
       notionPageId: raw.notionPageId,
-      memoAppendix: buildMemoAppendix(raw.contactEmail2, raw.contactPhone2),
+      memoRawCandidate: buildMemoRawCandidate(
+        emptyToNull(raw.memo),
+        emptyToNull(raw.contactEmail2),
+        emptyToNull(raw.contactPhone2)
+      ),
+      notionRawProperties: raw.rawProperties,
     });
   }
 

@@ -43,6 +43,7 @@ model Instructor {
   salesmapDealCount    Int       @default(0) @map("salesmap_deal_count")
   salesmapLastDealAt   DateTime? @map("salesmap_last_deal_at") @db.Timestamptz
   memoRaw              String?   @map("memo_raw")
+  notionRawProperties  Json      @default("{}") @map("notion_raw_properties")
   createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 

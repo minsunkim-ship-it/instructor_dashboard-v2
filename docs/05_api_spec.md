@@ -247,6 +247,18 @@
     "specialties": ["ChatGPT", "업무자동화"],
     "profile_summary": "강사 소개",
     "memo": "운영 메모 원문",
+    "notion_memo_diagnostics": {
+      "source_linked": true,
+      "notion_page_id": "notion-page-id",
+      "enrichment_attempted": true,
+      "enrichment_updated": false,
+      "comment_capability": "enabled",
+      "page_comment_count": 2,
+      "block_comment_count": 1,
+      "block_text_count": 4,
+      "incoming_line_count": 5,
+      "error_message": null
+    },
     "is_fulltime": false,
     "is_practice_coach": false,
     "total_courses": 28,
@@ -271,7 +283,20 @@
     "recommended_for": ["임원 대상", "워크숍"],
     "avoid_for": ["초급 실습 위주"],
     "risk_notes": ["현장 이동시간 고려 필요"],
-    "ops_check_note": "사전 장비 체크 필요",
+    "raw_operational_notes": [],
+    "classified_notes": [],
+    "human_followups": [],
+    "behavioral_intelligence": {
+      "teaching_style": null,
+      "curriculum_compliance": null,
+      "attitude": null,
+      "risk_patterns": ["delivery_quality 반복 근거 2건"],
+      "strength_patterns": ["출강 이력 20건 이상"],
+      "recommendation": null,
+      "data_richness": "moderate",
+      "confidence": "low",
+      "key_question_for_humans": "2건 확인 필요: 현장 장비 재확인 필요 / 강의 속도 피드백 확인 필요"
+    },
     "fee_history": [],
     "teaching_history": [],
     "teaching_history_remaining_count": 0
@@ -291,7 +316,9 @@
 - `total_paid`는 `deal_fee_hourly`와 `total_hours`가 모두 유효한 `teaching_history` 행만 대상으로 `SUM(deal_fee_hourly * total_hours)`로 계산한다.
 - `fee_extra`는 `total_paid` 계산에 포함하지 않는다.
 - 계산 가능한 `teaching_history` 행이 하나도 없으면 `total_paid = null`로 반환한다.
-- 추천/지양/리스크/운영 확인 필요 사항은 저장된 `instructor_intelligence` 기준으로 반환한다.
+- 추천/지양/리스크 정보는 저장된 `instructor_intelligence` 기준으로 반환한다.
+- `raw_operational_notes`, `classified_notes`, `human_followups`, `behavioral_intelligence`는 `docs/15_operational_intelligence_classification_spec.md` Phase 1 최소 shape 기준으로 반환한다.
+- `notion_memo_diagnostics`는 Notion page body/open comments 기반 메모 영속화의 진단 값을 반환한다.
 - 상세 조회 시점에 운영 인텔리전스를 새로 생성하지 않는다.
 - 점수 구성 요소가 있으면 `score_breakdown`에 포함하며, 내부 키는 `courses`, `satisfaction`, `slack`, `recency`, `salesmap`, `email`, `ops_channel`을 사용한다.
 - 만족도 결측 중앙값 대체 시 `satisfaction.is_imputed = true`로 반환한다.

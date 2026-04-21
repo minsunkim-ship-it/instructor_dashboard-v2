@@ -1,11 +1,10 @@
 "use client";
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useState, useCallback, useRef } from "react";
 import type {
   InstructorDetailResponse,
   InstructorDetailData,
-  SatisfactionCreateResponse,
 } from "@/types/api";
 import {
   parseContractSchedule,
@@ -29,30 +28,6 @@ async function fetchInstructorDetail(
   });
   const res = await fetch(`/api/instructors/${id}?${searchParams.toString()}`);
   if (!res.ok) throw new Error("상세 조회 실패");
-  return res.json();
-}
-
-async function postSatisfaction(
-  instructorId: string,
-  body: {
-    score: number;
-    comment?: string;
-    company_name?: string;
-    course_name?: string;
-    response_date?: string;
-  }
-): Promise<SatisfactionCreateResponse> {
-  const res = await fetch(`/api/instructors/${instructorId}/satisfaction`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    throw new Error(
-      err?.errors?.[0]?.message ?? "만족도 저장에 실패했습니다."
-    );
-  }
   return res.json();
 }
 
@@ -86,10 +61,6 @@ function formatHours(hours: number): string {
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "-";
   return dateStr.replace(/-/g, ".");
-}
-
-function getTodayDateInputValue(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function formatDateRange(
@@ -159,7 +130,7 @@ function buildRecentSatisfactionEntries(
 }
 
 function buildHeaderTags(data: InstructorDetailData) {
-  return [
+  const tags = [
     ...data.categories.map((item) => ({
       key: `category-${item}`,
       label: item,
@@ -176,6 +147,14 @@ function buildHeaderTags(data: InstructorDetailData) {
       className: "bg-sky-50 text-sky-700",
     })),
   ];
+
+  const seen = new Set<string>();
+  return tags.filter((tag) => {
+    const key = tag.label.replace(/\s+/g, "").trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function normalizeComparableText(value: string): string {
@@ -360,7 +339,7 @@ function InlineTooltip({
 }
 
 type FeeChangeDirection = "initial" | "up" | "down";
-const COLLAPSED_TEACHING_HISTORY_COUNT = 15;
+const COLLAPSED_TEACHING_HISTORY_COUNT = 5;
 
 interface CollapsedFeeHistoryItem {
   amount: number;
@@ -486,10 +465,10 @@ const SCORE_LABELS: Record<
     softClass: "bg-blue-100",
   },
   satisfaction: {
-    label: "최근 6개월 만족도 조사 결과",
+    label: "만족도",
     max: 15,
     tooltip:
-      "최근 6개월 만족도 조사 결과 평균을 15점 만점으로 환산한 값, 데이터가 없으면 전체 강사의 보통 수준 점수를 사용",
+      "최근 6개월 만족도 평균을 15점 만점으로 환산한 값, 데이터가 없으면 전체 강사의 보통 수준 점수를 사용",
     colorClass: "bg-amber-500",
     softClass: "bg-amber-100",
   },
@@ -764,6 +743,7 @@ function compactFeeContext(
   }
 
   return `${displayText.slice(0, 100).trim()}...`;
+}
 
 interface FeeHistoryTimelineDetail {
   item: CollapsedFeeHistoryItem;
@@ -1145,7 +1125,7 @@ export default function InstructorDetail({
       <div className="max-w-4xl mx-auto px-6 py-6 space-y-6">
         <HeaderSection data={inst} />
         <MetricsSection data={inst} />
-        <ScoreSatisfactionSection data={inst} instructorId={instructorId} />
+        <ScoreSatisfactionSection data={inst} />
         <OpsIntelligenceSection data={inst} />
         <TeachingHistorySection
           key={instructorId}
@@ -1288,10 +1268,8 @@ function MetricsSection({ data }: { data: InstructorDetailData }) {
 
 function ScoreSatisfactionSection({
   data,
-  instructorId,
 }: {
   data: InstructorDetailData;
-  instructorId: string;
 }) {
   const breakdown = data.score_breakdown ?? {};
   const recentSatisfactionEntries = buildRecentSatisfactionEntries(data);
@@ -1362,23 +1340,18 @@ function ScoreSatisfactionSection({
 
       {/* Right: Satisfaction */}
       <div className="bg-white border border-gray-200 rounded-lg px-5 py-4">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <div className="text-xs text-gray-500">최근 6개월 만족도 조사 결과</div>
-          </div>
-          <SatisfactionWriteSection instructorId={instructorId} compact />
-        </div>
+        <div className="mb-3 text-xs text-gray-500">최근 6개월 만족도 조사 결과</div>
         <div className="flex items-baseline gap-2 mb-2">
           <span className="text-3xl font-bold text-gray-900">
-            {data.satisfaction.avg !== null
-              ? data.satisfaction.avg.toFixed(1)
+            {data.recent_satisfaction_summary.avg !== null
+              ? data.recent_satisfaction_summary.avg.toFixed(1)
               : "-"}
           </span>
           <span className="text-sm text-gray-400">/ 5.0</span>
         </div>
         <div className="space-y-1 text-sm text-gray-600">
-          <div>응답 {data.satisfaction.count}건</div>
-          {data.satisfaction.is_imputed && (
+          <div>응답 {data.recent_satisfaction_summary.count}건</div>
+          {data.recent_satisfaction_summary.is_imputed && (
             <div className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-50 text-yellow-700">
               추정값
             </div>
@@ -1417,273 +1390,7 @@ function ScoreSatisfactionSection({
     </section>
   );
 }
-
-// --- D. Satisfaction Write Form ---
-
-function SatisfactionWriteSection({
-  instructorId,
-  compact = false,
-}: {
-  instructorId: string;
-  compact?: boolean;
-}) {
-  const queryClient = useQueryClient();
-  const [isOpen, setIsOpen] = useState(false);
-  const [score, setScore] = useState<number>(3.0);
-  const [companyName, setCompanyName] = useState("");
-  const [courseName, setCourseName] = useState("");
-  const [comment, setComment] = useState("");
-  const [responseDate, setResponseDate] = useState(getTodayDateInputValue);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
-
-  const resetForm = useCallback(() => {
-    setScore(3.0);
-    setCompanyName("");
-    setCourseName("");
-    setComment("");
-    setResponseDate(getTodayDateInputValue());
-  }, []);
-
-  const openForm = useCallback(() => {
-    resetForm();
-    setSuccessMsg(null);
-    setIsOpen(true);
-  }, [resetForm]);
-
-  const closeForm = useCallback(() => {
-    setIsOpen(false);
-  }, []);
-
-  const mutation = useMutation({
-    mutationFn: (body: {
-      score: number;
-      comment?: string;
-      company_name?: string;
-      course_name?: string;
-      response_date?: string;
-    }) => postSatisfaction(instructorId, body),
-    onSuccess: () => {
-      closeForm();
-      setSuccessMsg("만족도가 저장되었습니다.");
-      resetForm();
-      // Invalidate detail query to refetch
-      queryClient.invalidateQueries({ queryKey: ["instructor", instructorId] });
-      // Also invalidate list to reflect updated scores
-      queryClient.invalidateQueries({ queryKey: ["instructors"] });
-      // Clear success message after 3s
-      setTimeout(() => setSuccessMsg(null), 3000);
-    },
-  });
-
-  const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-      setSuccessMsg(null);
-      const body: {
-        score: number;
-        comment?: string;
-        company_name?: string;
-        course_name?: string;
-        response_date?: string;
-      } = { score };
-      if (comment.trim()) body.comment = comment.trim();
-      if (companyName.trim()) body.company_name = companyName.trim();
-      if (courseName.trim()) body.course_name = courseName.trim();
-      if (responseDate) body.response_date = responseDate;
-      mutation.mutate(body);
-    },
-    [score, comment, companyName, courseName, responseDate, mutation]
-  );
-
-  return (
-    <>
-      {compact ? (
-        <div className="flex flex-col items-end gap-2">
-          <button
-            type="button"
-            onClick={openForm}
-            className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
-          >
-            <svg
-              viewBox="0 0 20 20"
-              aria-hidden="true"
-              className="h-3.5 w-3.5 fill-current"
-            >
-              <path d="M13.6 2.2a2 2 0 0 1 2.8 2.8l-8.1 8.1-3.6.8.8-3.6 8.1-8.1Zm1.4 1.4a.5.5 0 0 0-.7 0l-1 1 1.7 1.7 1-1a.5.5 0 0 0 0-.7l-1-1Zm-2.7 2-6.1 6.1-.4 1.8 1.8-.4 6.1-6.1-1.4-1.4Z" />
-            </svg>
-            <span>작성</span>
-          </button>
-          {successMsg && (
-            <div className="rounded-md border border-green-200 bg-green-50 px-2.5 py-1.5 text-[11px] text-green-700">
-              {successMsg}
-            </div>
-          )}
-        </div>
-      ) : (
-        <section className="space-y-2">
-          <div className="rounded-lg border border-gray-200 bg-white px-5 py-4">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm font-semibold text-gray-900">
-                  만족도 작성
-                </div>
-                <div className="mt-1 text-xs text-gray-500">
-                  강사 만족도 기록을 팝업에서 바로 남길 수 있습니다.
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={openForm}
-                className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
-              >
-                만족도 입력
-              </button>
-            </div>
-          </div>
-
-          {successMsg && (
-            <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-              {successMsg}
-            </div>
-          )}
-        </section>
-      )}
-      {isOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/45 px-4"
-          onClick={() => !mutation.isPending && closeForm()}
-        >
-          <div
-            className="w-full max-w-lg rounded-xl bg-white shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-5 py-4">
-              <div>
-                <div className="text-base font-semibold text-gray-900">
-                  만족도 작성
-                </div>
-                <div className="mt-1 text-sm text-gray-500">
-                  점수와 선택 메모를 저장합니다.
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={closeForm}
-                disabled={mutation.isPending}
-                className="rounded-md px-2 py-1 text-sm text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                닫기
-              </button>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4 px-5 py-5">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  점수 <span className="text-red-500">*</span>
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range"
-                    min={1}
-                    max={5}
-                    step={0.5}
-                    value={score}
-                    onChange={(e) => setScore(Number(e.target.value))}
-                    className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                  />
-                  <span className="w-10 text-center text-lg font-semibold text-gray-900">
-                    {score.toFixed(1)}
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  기업명
-                </label>
-                <input
-                  type="text"
-                  value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
-                  placeholder="기업명 (선택)"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  과정명
-                </label>
-                <input
-                  type="text"
-                  value={courseName}
-                  onChange={(e) => setCourseName(e.target.value)}
-                  placeholder="과정명 (선택)"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  코멘트
-                </label>
-                <textarea
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                  placeholder="코멘트 (선택)"
-                  rows={3}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 resize-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  응답일
-                </label>
-                <input
-                  type="date"
-                  value={responseDate}
-                  onChange={(e) => setResponseDate(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-3 pt-2">
-                {mutation.isError ? (
-                  <span className="text-sm text-red-600">
-                    {(mutation.error as Error)?.message ??
-                      "저장에 실패했습니다."}
-                  </span>
-                ) : (
-                  <span className="text-sm text-gray-400"> </span>
-                )}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={closeForm}
-                    disabled={mutation.isPending}
-                    className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    취소
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={mutation.isPending}
-                    className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {mutation.isPending ? "저장 중..." : "저장"}
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-// --- E. Operations Intelligence Section ---
+// --- D. Operations Intelligence Section ---
 
 function OpsIntelligenceSection({ data }: { data: InstructorDetailData }) {
   const behavioral = data.behavioral_intelligence;
@@ -2097,7 +1804,7 @@ function FeeHistorySection({
                                     : formatFeeSource(item.source_type);
                                 const contextLine = [
                                   sourceDisplay,
-                                  compactFeeContext(item.context, item.effective_label),
+                                  compactFeeContext(item.context),
                                 ]
                                   .filter(Boolean)
                                   .join(" · ");
@@ -2210,7 +1917,7 @@ function FeeHistorySection({
                                   : formatFeeSource(item.source_type);
                               const contextLine = [
                                 sourceDisplay,
-                                compactFeeContext(item.context),
+                                compactFeeContext(item.context, item.effective_label),
                               ]
                                 .filter(Boolean)
                                 .join(" · ");
@@ -2290,58 +1997,25 @@ function FeeHistorySection({
 // --- H. Operations Memo Section ---
 
 function MemoSection({ data }: { data: InstructorDetailData }) {
-  const diagnostics = data.notion_memo_diagnostics ?? {
-    source_linked: false,
-    notion_page_id: null,
-    enrichment_attempted: false,
-    enrichment_updated: false,
-    comment_capability: "unknown" as const,
-    page_comment_count: 0,
-    block_comment_count: 0,
-    block_text_count: 0,
-    incoming_line_count: 0,
-    error_message: null,
-  };
-  const showDiagnostics =
-    diagnostics.source_linked ||
-    diagnostics.enrichment_attempted ||
-    diagnostics.error_message !== null;
+  const visibleMemo = (data.memo ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.startsWith("[Notion comment ·"))
+    .filter(
+      (line) =>
+        !/(서류|계약서|사업자등록증|통장사본|법인\s*계약)/i.test(line)
+    )
+    .join("\n");
 
-  if (!data.memo && !showDiagnostics) return null;
+  if (!visibleMemo) return null;
 
   return (
     <section className="space-y-3">
       <h3 className="text-sm font-semibold text-gray-900">운영 메모</h3>
-      {showDiagnostics && (
-        <div className="rounded-lg border border-gray-200 bg-white px-4 py-3">
-          <div className="mb-2 text-[11px] font-medium text-gray-600">
-            Notion 메모 진단
-          </div>
-          <div className="grid gap-2 text-[11px] text-gray-600 sm:grid-cols-2 lg:grid-cols-3">
-            <div>source link {diagnostics.source_linked ? "연결됨" : "없음"}</div>
-            <div>enrichment {diagnostics.enrichment_attempted ? "시도함" : "미시도"}</div>
-            <div>updated {diagnostics.enrichment_updated ? "예" : "아니오"}</div>
-            <div>comment capability {diagnostics.comment_capability}</div>
-            <div>page comments {diagnostics.page_comment_count}건</div>
-            <div>block comments {diagnostics.block_comment_count}건</div>
-            <div>page body lines {diagnostics.block_text_count}건</div>
-            <div>incoming lines {diagnostics.incoming_line_count}건</div>
-            <div className="sm:col-span-2 lg:col-span-3">
-              notion page id {diagnostics.notion_page_id ?? "-"}
-            </div>
-          </div>
-          {diagnostics.error_message && (
-            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              {diagnostics.error_message}
-            </div>
-          )}
-        </div>
-      )}
-      {data.memo && (
-        <div className="px-4 py-3 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap leading-relaxed">
-          {data.memo}
-        </div>
-      )}
+      <div className="px-4 py-3 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap leading-relaxed">
+        {visibleMemo}
+      </div>
     </section>
   );
 }

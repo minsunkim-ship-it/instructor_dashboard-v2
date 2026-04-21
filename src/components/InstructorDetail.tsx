@@ -126,21 +126,14 @@ function getOperationalNoteDate(
   );
 }
 
-function formatOperationalSourceLabel(sourceType: string): string {
-  switch (sourceType) {
-    case "teaching_feedback_qualitative":
-      return "정성 피드백";
-    case "teaching_feedback_ops":
-      return "운영 피드백";
-    case "notion_comment":
-      return "노션 comment";
-    case "slack_highlight":
-      return "슬랙";
-    case "curated_ops":
-      return "Curated Ops";
-    default:
-      return sourceType;
-  }
+function getNotionCommentBundleKey(
+  note: InstructorDetailData["raw_operational_notes"][number]
+): string {
+  const sourceRef = note.source_ref ?? {};
+  const author =
+    typeof sourceRef.author === "string" ? sourceRef.author.trim() : "";
+  const observedAt = getOperationalNoteDate(note) ?? "";
+  return `${note.source_type}:notion_comment:${author}:${observedAt}`;
 }
 
 type RecentSatisfactionEntry = {
@@ -243,6 +236,45 @@ function collapseOperationalNoteGroups(
   )
     .map(([, group]) => group)
     .sort((a, b) => (b.observedAt ?? "").localeCompare(a.observedAt ?? ""));
+}
+
+function OperationalMemoCard({
+  sourceLabel,
+  observedAt,
+  text,
+}: {
+  sourceLabel: string;
+  observedAt: string | null;
+  text: string;
+}) {
+  return (
+    <article className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="font-semibold text-gray-800">{sourceLabel}</span>
+        <span className="text-gray-300">·</span>
+        <span className="font-medium text-gray-600">
+          작성일 {formatDate(observedAt)}
+        </span>
+      </div>
+      <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-800">
+        {text}
+      </p>
+    </article>
+  );
+}
+
+function sanitizeOperationalMemoText(text: string): string {
+  const shouldHideSegment = (segment: string): boolean =>
+    /(?:https?:\/\/)?(?:drive|docs)\.google\.com\//i.test(segment) ||
+    /(서류|계약서|사업자등록증|통장사본|법인\s*계약)/i.test(segment);
+
+  const segments = text
+    .split(/\n+|\s\/\s/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .filter((segment) => !shouldHideSegment(segment));
+
+  return segments.join("\n");
 }
 
 function extractDateRangeFromLabel(
@@ -1655,14 +1687,13 @@ function SatisfactionWriteSection({
 
 function OpsIntelligenceSection({ data }: { data: InstructorDetailData }) {
   const behavioral = data.behavioral_intelligence;
-  const intelligenceMeta = data.operational_intelligence_meta ?? {
-    generated_at: null,
-    generated_by: null,
-    generation_model: null,
-  };
   const getOperationalNoteBundleKey = (
     note: InstructorDetailData["raw_operational_notes"][number]
   ): string => {
+    if (note.source_type === "notion_comment") {
+      return getNotionCommentBundleKey(note);
+    }
+
     const sourceRef = note.source_ref ?? {};
     const satisfactionImportItemId =
       typeof sourceRef.satisfaction_import_item_id === "string"
@@ -1716,98 +1747,6 @@ function OpsIntelligenceSection({ data }: { data: InstructorDetailData }) {
   const collapsedOperationalNotes = collapseOperationalNoteGroups(
     groupedOperationalNotes
   );
-  const operationalNoteCount = collapsedOperationalNotes.length;
-  const evidenceSourceCount = new Set(
-    collapsedOperationalNotes.map((item) => item.sourceType)
-  ).size;
-  const observedDates = Array.from(
-    new Set(
-      collapsedOperationalNotes
-        .map((item) => item.observedAt)
-        .filter((value): value is string => Boolean(value))
-    )
-  ).sort((a, b) => b.localeCompare(a));
-  const rawOperationalNoteById = new Map(
-    data.raw_operational_notes.map((item) => [item.id, item] as const)
-  );
-  const followupRawNoteIds = new Set(data.human_followups.map((item) => item.raw_note_id));
-  const followupBundleKeys = new Set(
-    collapsedOperationalNotes
-      .filter((group) => group.ids.some((id) => followupRawNoteIds.has(id)))
-      .map((group) => group.key)
-  );
-  const followupCount = followupBundleKeys.size;
-  const followupDates = Array.from(
-    new Set(
-      data.human_followups
-        .map((item) => {
-          const rawNote = rawOperationalNoteById.get(item.raw_note_id);
-          return rawNote ? getOperationalNoteDate(rawNote) : null;
-        })
-        .filter((value): value is string => Boolean(value))
-    )
-  ).sort((a, b) => b.localeCompare(a));
-  const visibleOperationalNotes = collapsedOperationalNotes.filter(
-    (group) => !followupBundleKeys.has(group.key)
-  );
-  const operationalNoteCountsBySource = Array.from(
-    visibleOperationalNotes.reduce((map, item) => {
-      map.set(item.sourceType, (map.get(item.sourceType) ?? 0) + 1);
-      return map;
-    }, new Map<string, number>())
-  ).sort((a, b) => b[1] - a[1]);
-  const operationalNotesBySource = operationalNoteCountsBySource.map(
-    ([sourceType]) => [
-      sourceType,
-      visibleOperationalNotes.filter((item) => item.sourceType === sourceType),
-    ] as const
-  );
-  const filteredEvidenceSnapshots = data.operational_evidence_snapshots.filter(
-    (snapshot) =>
-      snapshot.matched_feedback_item_count > 0 ||
-      snapshot.examples.length > 0 ||
-      (snapshot.source === "curated_ops" && snapshot.matched_item_count > 0)
-  );
-  const formatPatternLabel = (pattern: string): string | null => {
-    const match = pattern.match(/^([a-z_]+) 반복 근거 (\d+)건$/);
-    if (match) {
-      const [, family, count] = match;
-      const familyLabel =
-        family === "delivery_quality"
-          ? "전달력/진행 관련 우려"
-          : family === "curriculum_compliance"
-            ? "커리큘럼/진행 적합성 우려"
-            : family === "material_delivery"
-              ? "자료/교안 전달 우려"
-              : family === "responsiveness_or_schedule"
-                ? "응답/일정 조율 우려"
-                : family === "environment_issue"
-                  ? "운영 환경 이슈"
-                  : family === "positive_signal"
-                    ? "긍정 평가 반복"
-                    : null;
-      return familyLabel ? `${familyLabel} ${count}건` : pattern;
-    }
-
-    if (pattern.startsWith("positive_signal positive 근거")) {
-      return null;
-    }
-    if (
-      pattern.includes("만족도 평균") ||
-      pattern.includes("출강 이력") ||
-      pattern.includes("최근 6개월 출강")
-    ) {
-      return null;
-    }
-
-    return pattern;
-  };
-  const visibleStrengthPatterns = behavioral.strength_patterns
-    .map(formatPatternLabel)
-    .filter((pattern): pattern is string => Boolean(pattern));
-  const visibleRiskNotes = data.risk_notes
-    .map(formatPatternLabel)
-    .filter((pattern): pattern is string => Boolean(pattern));
   const behavioralSummaryCards = [
     {
       label: "강의 스타일",
@@ -1829,400 +1768,78 @@ function OpsIntelligenceSection({ data }: { data: InstructorDetailData }) {
       value: string;
     } => Boolean(item.value)
   );
-  const generatedByLabel =
-    intelligenceMeta.generated_by === "mixed"
-      ? "LLM + 규칙"
-      : intelligenceMeta.generated_by === "rule_based"
-        ? "규칙 기반"
-        : intelligenceMeta.generated_by ?? null;
-  const generatedAtLabel = intelligenceMeta.generated_at
-    ? formatDate(intelligenceMeta.generated_at.slice(0, 10))
-    : null;
-  const hasDecisionCard =
-    data.recommended_for.length > 0 ||
-    data.avoid_for.length > 0 ||
-    visibleRiskNotes.length > 0 ||
-    visibleStrengthPatterns.length > 0 ||
-    behavioralSummaryCards.length > 0 ||
-    behavioral.recommendation !== null ||
-    behavioral.key_question_for_humans !== null;
-  const hasAuditData =
-    filteredEvidenceSnapshots.length > 0 ||
-    operationalNoteCount > 0 ||
-    generatedByLabel !== null ||
-    generatedAtLabel !== null ||
-    behavioral.data_richness_reason !== null ||
-    behavioral.confidence_reason !== null;
+  const notionCommentCards = collapsedOperationalNotes
+    .filter((note) => note.sourceType === "notion_comment")
+    .map((note) => ({
+      key: `notion-${note.key}`,
+      sourceLabel: "노션 comment",
+      observedAt: note.observedAt,
+      text: sanitizeOperationalMemoText(note.texts.join("\n")),
+    }))
+    .filter((note) => note.text.length > 0)
+    .sort((a, b) => (b.observedAt ?? "").localeCompare(a.observedAt ?? ""));
+  const hasNotionComments = notionCommentCards.length > 0;
+  const hasStructuredSummary =
+    behavioral.recommendation !== null || behavioralSummaryCards.length > 0;
 
-  if (!hasDecisionCard && !hasAuditData) return null;
+  if (!hasStructuredSummary && !hasNotionComments) return null;
 
   return (
-    <section className="space-y-3">
-      <h3 className="text-sm font-semibold text-gray-900">운영 인텔리전스</h3>
+    <section>
+      <div className="space-y-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-100 px-5 py-4 shadow-sm">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">
+            운영 인텔리전스
+          </h3>
+        </div>
 
-      <div className="flex flex-wrap gap-2 text-[11px] text-gray-600">
-        <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-1">
-          근거 밀도 {behavioral.data_richness}
-        </span>
-        <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-1">
-          confidence {behavioral.confidence}
-        </span>
-        {generatedByLabel && (
-          <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-1">
-            생성 {generatedByLabel}
-          </span>
+        {behavioral.recommendation && (
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+            <p className="text-[11px] font-semibold tracking-wide text-gray-500">
+              운영 판단 요약
+            </p>
+            <p className="mt-2 text-sm leading-6 text-gray-700">
+              {behavioral.recommendation}
+            </p>
+          </div>
         )}
-        {generatedAtLabel && (
-          <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-1">
-            업데이트 {generatedAtLabel}
-          </span>
+
+        {behavioralSummaryCards.length > 0 && (
+          <div className="grid gap-2 sm:grid-cols-3">
+            {behavioralSummaryCards.map((item) => (
+              <div
+                key={item.label}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
+              >
+                <p className="text-[11px] font-semibold tracking-wide text-gray-500">
+                  {item.label}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-gray-700">
+                  {item.value}
+                </p>
+              </div>
+            ))}
+          </div>
         )}
-        {followupCount > 0 && (
-          <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-1 text-amber-800">
-            확인 필요 {followupCount}건
-          </span>
+
+        {hasNotionComments && (
+          <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 shadow-sm">
+            <p className="text-[11px] font-semibold tracking-wide text-gray-700">
+              협업 경험
+            </p>
+            <div className="mt-4 space-y-3">
+              {notionCommentCards.map((card) => (
+                <OperationalMemoCard
+                  key={card.key}
+                  sourceLabel={card.sourceLabel}
+                  observedAt={card.observedAt}
+                  text={card.text}
+                />
+              ))}
+            </div>
+          </div>
         )}
       </div>
-
-      {behavioral.recommendation && (
-        <div className="rounded-lg border border-gray-200 bg-white px-4 py-3">
-          <p className="text-[11px] font-medium text-gray-700">운영 판단 요약</p>
-          <p className="mt-1 text-sm leading-6 text-gray-700">
-            {behavioral.recommendation}
-          </p>
-        </div>
-      )}
-
-      {behavioral.key_question_for_humans && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
-          <p className="text-[11px] font-medium text-amber-900">
-            확인 필요 사항
-          </p>
-          {followupDates.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-amber-900">
-              <span className="font-medium">작성일</span>
-                      {followupDates.slice(0, 6).map((date) => (
-                        <span
-                          key={date}
-                          className="inline-flex items-center rounded-full bg-white/70 px-2 py-1"
-                        >
-                          {formatDate(date)}
-                        </span>
-                      ))}
-              {followupDates.length > 6 && (
-                <span className="inline-flex items-center rounded-full bg-white/70 px-2 py-1">
-                  +{followupDates.length - 6}일
-                </span>
-              )}
-            </div>
-          )}
-          <p className="mt-1 text-xs leading-5 text-amber-900">
-            {behavioral.key_question_for_humans}
-          </p>
-          {data.human_followups.length > 0 && (
-            <details className="mt-2">
-              <summary className="cursor-pointer text-xs font-medium text-amber-900">
-                원문 예시 {data.human_followups.length}건 보기
-              </summary>
-              <div className="mt-2 space-y-1">
-                {data.human_followups.map((item, index) => {
-                  const rawNote = rawOperationalNoteById.get(item.raw_note_id);
-                  const noteDate = rawNote ? getOperationalNoteDate(rawNote) : null;
-
-                  return (
-                  <div
-                    key={`${item.raw_note_id}-${index}`}
-                    className="rounded bg-white/80 px-2 py-1.5 text-[11px] text-amber-950"
-                  >
-                    <div className="mb-0.5 flex flex-wrap items-center gap-2 text-[10px] font-medium text-amber-800">
-                      <span>{formatOperationalSourceLabel(item.source_type)}</span>
-                      {item.review_priority ? <span>· {item.review_priority}</span> : null}
-                      <span>· 작성일 {formatDate(noteDate)}</span>
-                    </div>
-                    <div>{item.raw_text}</div>
-                  </div>
-                  );
-                })}
-              </div>
-            </details>
-          )}
-        </div>
-      )}
-
-      {data.recommended_for.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-medium text-gray-700">추천 대상</p>
-          <div className="flex flex-wrap gap-1.5">
-            {data.recommended_for.map((tag) => (
-              <span
-                key={tag}
-                className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-green-50 text-green-700"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {data.avoid_for.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-medium text-gray-700">지양 대상</p>
-          <div className="flex flex-wrap gap-1.5">
-            {data.avoid_for.map((tag) => (
-              <span
-                key={tag}
-                className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-orange-50 text-orange-700"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {visibleStrengthPatterns.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-[11px] font-medium text-gray-700">긍정 패턴</p>
-          <div className="flex flex-wrap gap-1.5">
-            {visibleStrengthPatterns.map((pattern) => (
-              <span
-                key={pattern}
-                className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700"
-              >
-                {pattern}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {visibleRiskNotes.length > 0 && (
-        <div className="space-y-2">
-          {visibleRiskNotes.map((note, i) => (
-            <div
-              key={i}
-              className="px-3 py-2 text-sm bg-yellow-50 text-yellow-800 border border-yellow-200 rounded-md"
-            >
-              {note}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {behavioralSummaryCards.length > 0 && (
-        <div className="grid gap-2 sm:grid-cols-3">
-          {behavioralSummaryCards.map((item) => (
-            <div
-              key={item.label}
-              className="rounded-md border border-gray-200 bg-white px-3 py-2"
-            >
-              <p className="text-[11px] font-medium text-gray-700">
-                {item.label}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-gray-600">
-                {item.value}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {hasAuditData && (
-        <details className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-          <summary className="cursor-pointer text-[11px] font-medium text-gray-700">
-            검수용 근거 보기
-          </summary>
-          <div className="mt-3 space-y-3">
-            {(behavioral.data_richness_reason || behavioral.confidence_reason) && (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {behavioral.data_richness_reason && (
-                  <div className="rounded-md border border-gray-200 bg-white px-3 py-2">
-                    <p className="text-[11px] font-medium text-gray-700">
-                      근거 밀도 판단 이유
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-gray-600">
-                      {behavioral.data_richness_reason}
-                    </p>
-                  </div>
-                )}
-
-                {behavioral.confidence_reason && (
-                  <div className="rounded-md border border-gray-200 bg-white px-3 py-2">
-                    <p className="text-[11px] font-medium text-gray-700">
-                      confidence 판단 이유
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-gray-600">
-                      {behavioral.confidence_reason}
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {operationalNoteCount > 0 && (
-              <div className="space-y-2">
-                <div className="flex flex-wrap gap-2 text-[11px] text-gray-600">
-                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1">
-                    작성일 {observedDates.length}일
-                  </span>
-                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1">
-                    근거 source {evidenceSourceCount}개
-                  </span>
-                </div>
-
-                {operationalNoteCountsBySource.length > 0 && (
-                  <div className="rounded-md border border-gray-200 bg-white px-3 py-2">
-                    <div className="mb-2 text-[11px] font-medium text-gray-700">
-                      source별 운영 note
-                    </div>
-                    {followupCount > 0 && (
-                      <div className="mb-2 text-[11px] text-gray-500">
-                        확인 필요 사항에 이미 포함된 항목은 여기서 제외했습니다.
-                      </div>
-                    )}
-                    <div className="flex flex-wrap gap-2 text-[11px] text-gray-600">
-                      {operationalNoteCountsBySource.map(([sourceType, count]) => (
-                        <span
-                          key={sourceType}
-                          className="inline-flex items-center rounded-full bg-gray-100 px-2 py-1"
-                        >
-                          {formatOperationalSourceLabel(sourceType)} {count}건
-                        </span>
-                      ))}
-                    </div>
-                    <div className="mt-3 space-y-2">
-                      {operationalNotesBySource.map(([sourceType, notes]) => (
-                        <details
-                          key={sourceType}
-                          className="rounded border border-gray-100 bg-gray-50 px-3 py-2"
-                        >
-                          {(() => {
-                            const sourceDates = Array.from(
-                              new Set(
-                                notes
-                                  .flatMap((note) => note.observedDates)
-                                  .filter((value): value is string => Boolean(value))
-                              )
-                            ).sort((a, b) => b.localeCompare(a));
-                            const formattedSourceDates = sourceDates.map((date) =>
-                              formatDate(date)
-                            );
-                            const sourceDateLabel =
-                              formattedSourceDates.length === 0
-                                ? "날짜 없음"
-                                : formattedSourceDates.length <= 2
-                                  ? formattedSourceDates.join(", ")
-                                  : `${formattedSourceDates.slice(0, 2).join(", ")} 외 ${formattedSourceDates.length - 2}일`;
-                            return (
-                              <summary className="cursor-pointer text-[11px] font-medium text-gray-700">
-                                {formatOperationalSourceLabel(sourceType)} · 작성일 {sourceDateLabel} · 원문 {notes.length}묶음 보기
-                              </summary>
-                            );
-                          })()}
-                          <div className="mt-2 space-y-1">
-                            {notes.map((note) => (
-                              <div
-                                key={note.key}
-                                className="rounded bg-white px-2 py-1.5 text-[11px] text-gray-600"
-                              >
-                                <div className="mb-0.5 flex flex-wrap items-center gap-2 text-[10px] font-medium text-gray-500">
-                                  <span>{formatOperationalSourceLabel(note.sourceType)}</span>
-                                  <span className="text-gray-300">|</span>
-                                  <span>작성일 {formatDate(note.observedAt)}</span>
-                                  {note.duplicateCount > 1 && (
-                                    <>
-                                      <span className="text-gray-300">|</span>
-                                      <span>반복 {note.duplicateCount}회</span>
-                                    </>
-                                  )}
-                                </div>
-                                <div>{note.texts.join(" / ")}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {filteredEvidenceSnapshots.length > 0 && (
-              <div className="space-y-2">
-                <p className="text-[11px] font-medium text-gray-700">
-                  근거 수집 데이터
-                </p>
-                <div className="overflow-hidden rounded-md border border-gray-200 bg-white">
-                  <div className="grid grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,0.8fr))] gap-3 border-b border-gray-100 px-3 py-2 text-[11px] font-medium text-gray-500">
-                    <div>source</div>
-                    <div>전체 row</div>
-                    <div>매핑 row</div>
-                    <div>매핑 피드백</div>
-                    <div>미매핑 피드백</div>
-                  </div>
-                  <div className="divide-y divide-gray-100">
-                    {filteredEvidenceSnapshots.map((snapshot) => (
-                      <div key={snapshot.source} className="px-3 py-2.5">
-                        <div className="grid grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,0.8fr))] gap-3 items-start">
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-gray-800 truncate">
-                              {snapshot.title}
-                            </p>
-                            {snapshot.note && (
-                              <p className="mt-0.5 text-[11px] leading-5 text-gray-500 line-clamp-1">
-                                {snapshot.note}
-                              </p>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-gray-700">
-                            {snapshot.total_item_count}건
-                          </div>
-                          <div className="text-[11px] text-gray-700">
-                            {snapshot.matched_item_count}건
-                          </div>
-                          <div className="text-[11px] text-gray-700">
-                            {snapshot.matched_feedback_item_count}건
-                          </div>
-                          <div className="text-[11px] text-gray-700">
-                            {snapshot.unmapped_feedback_item_count}건
-                          </div>
-                        </div>
-                        {snapshot.examples.length > 0 && (
-                          <details className="mt-2">
-                            <summary className="cursor-pointer text-xs font-medium text-gray-600">
-                              예시 {snapshot.examples.length}건 보기
-                            </summary>
-                            <div className="mt-2 space-y-1">
-                              {snapshot.examples.map((example, index) => (
-                                <div
-                                  key={`${snapshot.source}-${example.kind}-${index}`}
-                                  className="rounded bg-gray-50 px-2 py-1.5 text-[11px] text-gray-600"
-                                >
-                                  <div className="mb-0.5 text-[10px] font-medium text-gray-500">
-                                    {example.kind === "matched_feedback"
-                                      ? "매핑된 피드백"
-                                      : example.kind === "unmapped_feedback"
-                                        ? "미매핑 추정 피드백"
-                                        : "curated note"}
-                                    {example.source_type ? ` · ${example.source_type}` : ""}
-                                  </div>
-                                  <div>{example.text}</div>
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </details>
-      )}
     </section>
   );
 }

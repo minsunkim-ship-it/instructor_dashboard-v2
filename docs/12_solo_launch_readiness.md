@@ -24,7 +24,8 @@
 
 #### G1. 인증은 문서상 완료지만 실제 구현 여부를 별도 확인해야 한다
 - 2026-04-17 기준으로 Google 로그인 + `@day1company.co.kr` 도메인 제한 + API `401/403` proxy 가드는 구현됐다
-- 다만 Railway 등 실제 배포 환경에서 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET`이 적용돼 있어야 한다
+- 다만 Railway 등 실제 배포 환경에서 `AUTH_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `SESSION_SECRET`이 적용돼 있어야 한다
+- 로컬 HTTPS 프록시를 `https://localhost:8080`으로 쓰면 `AUTH_URL=https://localhost:8080`으로 고정하고, Google OAuth redirect URI에도 `https://localhost:8080/api/auth/callback/google`를 등록해야 한다
 - 따라서 현재 상태를 "내부 서비스 운영 준비 완료"로 판단하려면 코드뿐 아니라 배포 환경의 인증 설정까지 함께 확인해야 한다
 
 #### G2. fallback UI는 있지만 실제 fallback 데이터 경로는 아직 없다

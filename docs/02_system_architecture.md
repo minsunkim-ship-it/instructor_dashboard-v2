@@ -229,6 +229,7 @@ flowchart LR
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `SESSION_SECRET`
+- `AUTH_URL`
 - `DATABASE_URL`
 - `NOTION_API_KEY`
 - `NOTION_DATABASE_ID`
@@ -242,6 +243,8 @@ flowchart LR
 - `GMAIL_ACCOUNT_EMAIL`
 - `GMAIL_TARGET_ADDRESSES`
 - `GOOGLE_CONTRACTS_SPREADSHEET_ID`
+- Google OAuth redirect URI는 실제 앱 origin과 정확히 일치해야 한다.
+- 예: 로컬 HTTPS 프록시가 `https://localhost:8080`이면 redirect URI는 `https://localhost:8080/api/auth/callback/google`
 
 현재 버전의 canonical 환경변수 이름은 위 목록을 사용한다.
 - Notion 수집기는 `NOTION_API_KEY`, `NOTION_DATABASE_ID`를 필수로 사용한다.

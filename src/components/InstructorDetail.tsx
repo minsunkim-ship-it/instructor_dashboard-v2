@@ -682,7 +682,17 @@ function formatFeeSegmentPeriod(
   return `${item.start_label} ~ ${item.end_label}`;
 }
 
-function compactFeeContext(context: string | null): string | null {
+function looksLikeDescriptiveFeeLabel(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /(문항개발비|출장비|개발비|제작비|콘텐츠|자료개발|원고|감수|녹화본 제공비|멘토링|특강|프로젝트|시급|지급)/iu.test(
+    value
+  );
+}
+
+function compactFeeContext(
+  context: string | null,
+  fallbackLabel?: string | null
+): string | null {
   if (!context) return null;
 
   const normalized = context.replace(/\s+/g, " ").trim();
@@ -692,10 +702,36 @@ function compactFeeContext(context: string | null): string | null {
     /\s+\d{4}[./-]\d{1,2}[./-]\d{1,2}.*$/,
     ""
   );
-  const bracketMatch = withoutSchedule.match(/\[[^\]]+\]/);
+  const withoutTrailingAmount = withoutSchedule.replace(
+    /\s*[·•]\s*\d{2,3}(?:,?\d{3})+(?:\s*(?:원|만원))?\s*$/u,
+    ""
+  );
+  const withoutMetaTags = withoutTrailingAmount
+    .replace(
+      /\s*(?:\[(?:부가세\s*별도|부가세별도|vat(?:\s*별도)?|b2b)\]|\((?:부가세\s*별도|부가세별도|vat(?:\s*별도)?|b2b)\))\s*/giu,
+      " "
+    )
+    .replace(/\s+/g, " ")
+    .replace(/\s*\/\s*/g, " / ")
+    .trim();
+  const compacted = withoutMetaTags || withoutTrailingAmount.trim();
+  const contextSegments = compacted
+    .split(/[·•]/u)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const preferredSegment = contextSegments.find((segment) =>
+    looksLikeDescriptiveFeeLabel(segment)
+  );
+  const fallbackSegment = looksLikeDescriptiveFeeLabel(fallbackLabel)
+    ? fallbackLabel!.trim()
+    : null;
+  const displayText = preferredSegment ?? fallbackSegment ?? compacted;
 
-  return (bracketMatch ? withoutSchedule.slice(0, bracketMatch.index! + bracketMatch[0].length) : withoutSchedule).trim();
-}
+  if (displayText.length <= 100) {
+    return displayText;
+  }
+
+  return `${displayText.slice(0, 100).trim()}...`;
 
 interface FeeHistoryTimelineDetail {
   item: CollapsedFeeHistoryItem;
@@ -812,7 +848,7 @@ function findLatestFeeHistoryCardId(
 
     group.referenceItems.forEach((referenceItem, index) => {
       const searchBlob = normalizeFeeLinkText(
-        compactFeeContext(referenceItem.context)
+        compactFeeContext(referenceItem.context, referenceItem.effective_label)
       );
       if (matchKeys.some((key) => searchBlob.includes(key))) {
         matchedId = getFeeHistoryCardId(group.sortKey, "reference", index);
@@ -2444,7 +2480,7 @@ function FeeHistorySection({
                                     : formatFeeSource(item.source_type);
                                 const contextLine = [
                                   sourceDisplay,
-                                  compactFeeContext(item.context),
+                                  compactFeeContext(item.context, item.effective_label),
                                 ]
                                   .filter(Boolean)
                                   .join(" · ");

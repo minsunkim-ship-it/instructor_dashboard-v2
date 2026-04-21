@@ -28,6 +28,12 @@ const SPECIAL_AMOUNT_KEYWORDS = [
   "감수",
 ];
 
+const SPECIAL_CONTEXT_HINT_PATTERNS = [
+  /[^\n.!?]*(문항개발비|출장비|개발비|제작비|콘텐츠\s*개발|자료개발|원고|감수|녹화본\s*제공비|멘토링|특강|프로젝트)[^\n.!?]*/iu,
+  /[^\n.!?]*(강사료\s*외\s*\d+(?:[.,]\d+)?\s*(?:만\s*원?|원)?[^\n.!?]*)/iu,
+  /[^\n.!?]*(시급\s*\d+(?:[.,]\d+)?\s*(?:만\s*원?|원)?[^\n.!?]*)/iu,
+];
+
 export interface FeeHistoryStoreResult {
   totalRecords: number;
   instructorsProcessed: number;
@@ -214,6 +220,54 @@ function buildTeachingHistoryContext(
   }
 
   return parts.length > 0 ? parts.join(" / ") : null;
+}
+
+function normalizeContextSnippet(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized || null;
+}
+
+function extractSpecialContextHint(value: string | null | undefined): string | null {
+  const normalized = normalizeContextSnippet(value);
+  if (!normalized) return null;
+
+  for (const pattern of SPECIAL_CONTEXT_HINT_PATTERNS) {
+    const matched = normalized.match(pattern)?.[0]?.trim();
+    if (matched) {
+      return matched;
+    }
+  }
+
+  return null;
+}
+
+function buildSpecialFeeContext(
+  history: {
+    companyName: string | null;
+    courseName: string | null;
+    courseId: string | null;
+    detailType: string | null;
+    dateLabel: string | null;
+    feeExtra: string | null;
+    specialNotes: string | null;
+  }
+): string | null {
+  const baseContext = buildTeachingHistoryContext(history);
+  const specialHint =
+    extractSpecialContextHint(history.specialNotes) ??
+    extractSpecialContextHint(history.feeExtra) ??
+    normalizeContextSnippet(history.detailType);
+
+  if (!specialHint) {
+    return baseContext;
+  }
+
+  if (baseContext && specialHint && !baseContext.includes(specialHint)) {
+    return `${baseContext} · ${specialHint}`;
+  }
+
+  return specialHint;
 }
 
 /**
@@ -410,6 +464,7 @@ export async function buildFeeHistoryEntries(): Promise<{
     const histories = historiesByInstructor.get(inst.id) ?? [];
     for (const h of histories) {
       const context = buildTeachingHistoryContext(h);
+      const specialContext = buildSpecialFeeContext(h);
 
       // 실습코치 계약 행은 일반 단가 추이에서 제외해야 하므로 reference 전용으로 분리한다.
       // 그 외 dealFeeHourly는 docs/01 §8의 3x outlier 규칙만으로 특수 금액 판정한다.
@@ -437,7 +492,7 @@ export async function buildFeeHistoryEntries(): Promise<{
           effectiveLabel: h.dateLabel ?? null,
           amount: h.dealFeeHourly,
           feeKind: isSpecial ? "special" : "hourly",
-          context,
+          context: isSpecial ? specialContext : context,
           sourceType: h.sourceType as "salesmap" | "contract_sheet",
           isCurrent: false,
           isSpecialAmount: isSpecial,
@@ -453,7 +508,13 @@ export async function buildFeeHistoryEntries(): Promise<{
           effectiveLabel: h.dateLabel ?? h.detailType ?? null,
           amount,
           feeKind: "special",
-          context: [context, h.feeExtra].filter(Boolean).join(" · ") || context,
+          context:
+            [
+              specialContext,
+              extractSpecialContextHint(h.feeExtra),
+            ]
+              .filter(Boolean)
+              .join(" · ") || specialContext,
           sourceType: h.sourceType as "salesmap" | "contract_sheet",
           isCurrent: false,
           isSpecialAmount: true,

@@ -1318,12 +1318,12 @@ export async function POST(request: Request) {
       ? [{ name: "satisfaction", fn: (ctx) => runSatisfaction(run.id, ctx), timeoutMs: 180_000 }]
       : [
           { name: "notion", fn: runNotion, timeoutMs: 180_000 },
+          { name: "fulltime", fn: async () => runFulltime(), timeoutMs: 15_000 },
+          { name: "ops_notes", fn: async () => runOpsNotes(), timeoutMs: 15_000 },
           { name: "salesmap", fn: async () => runSalesmap(), timeoutMs: 20_000 },
           { name: "slack", fn: (ctx) => runSlack(run.id, ctx), timeoutMs: 150_000 },
           { name: "gmail", fn: (ctx) => runGmail(run.id, ctx), timeoutMs: 150_000 },
           { name: "satisfaction", fn: (ctx) => runSatisfaction(run.id, ctx), timeoutMs: 180_000 },
-          { name: "fulltime", fn: async () => runFulltime(), timeoutMs: 15_000 },
-          { name: "ops_notes", fn: async () => runOpsNotes(), timeoutMs: 15_000 },
         ];
     const shouldRunPostStages = isPostprocessOnly;
     const totalStages = sources.length + (shouldRunPostStages ? 5 : 0);

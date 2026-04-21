@@ -1,13 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import type { InstructorListItem, InstructorListResponse } from "@/types/api";
-import { countGroupedTeachingHistories } from "@/lib/teaching-history-display";
+import { groupTeachingHistories } from "@/lib/teaching-history-display";
+import {
+  FALLBACK_LAST_UPDATED_AT,
+  getFallbackInstructorListItems,
+} from "@/lib/fallback-data";
+import { readStoredFallbackSnapshot } from "@/lib/fallback-snapshot";
+import { shouldIncludeInInstructorList } from "@/lib/instructor-list-visibility";
+import { extractNotionPropertyTextList } from "@/lib/notion-property-utils";
 
 // 05_api_spec.md 5-3절: 허용된 정렬 키
 const ALLOWED_SORTS = [
   "score_desc",
   "rank_asc",
   "courses_desc",
+  "hours_desc",
   "recent_desc",
   "fee_desc",
   "name_asc",
@@ -20,17 +28,17 @@ type SortKey = (typeof ALLOWED_SORTS)[number];
 
 export async function GET(request: NextRequest) {
   const requestId = `req_${crypto.randomUUID()}`;
+  const { searchParams } = request.nextUrl;
+
+  // --- 파라미터 파싱 ---
+  const query = (searchParams.get("query") ?? "").trim();
+  const category = searchParams.get("category") ?? "전체";
+  const sort = (searchParams.get("sort") ?? "score_desc") as string;
+  const limitRaw = searchParams.get("limit");
+  const limit = limitRaw !== null ? Number(limitRaw) : 100;
+  const sortedKey = sort as SortKey;
 
   try {
-    const { searchParams } = request.nextUrl;
-
-    // --- 파라미터 파싱 ---
-    const query = (searchParams.get("query") ?? "").trim();
-    const category = searchParams.get("category") ?? "전체";
-    const sort = (searchParams.get("sort") ?? "score_desc") as string;
-    const limitRaw = searchParams.get("limit");
-    const limit = limitRaw !== null ? Number(limitRaw) : 100;
-
     // --- 05_api_spec.md 5-8절: 유효성 검증 ---
 
     // INVALID_SORT: 허용되지 않은 정렬 키
@@ -81,7 +89,9 @@ export async function GET(request: NextRequest) {
     const where =
       category !== "전체" ? { categories: { has: category } } : {};
 
-    const instructors = await prisma.instructor.findMany({ where });
+    const instructors = (await prisma.instructor.findMany({ where })).filter((inst) =>
+      shouldIncludeInInstructorList(inst)
+    );
 
     // --- 06_implementation_spec.md Feature B: 검색 (JS 후처리) ---
     let filtered = instructors;
@@ -90,6 +100,10 @@ export async function GET(request: NextRequest) {
       const lowerQuery = query.toLowerCase();
 
       filtered = instructors.filter((inst) => {
+        const teachingInfo = extractNotionPropertyTextList(
+          inst.notionRawProperties,
+          "담당 강의 정보"
+        );
         // name
         if (inst.name.toLowerCase().includes(lowerQuery)) return true;
         // categories array elements
@@ -102,6 +116,10 @@ export async function GET(request: NextRequest) {
           inst.specialties.some((s) => s.toLowerCase().includes(lowerQuery))
         )
           return true;
+        // notion teaching info
+        if (teachingInfo.some((value) => value.toLowerCase().includes(lowerQuery))) {
+          return true;
+        }
         // affiliation
         if (
           inst.affiliation &&
@@ -172,20 +190,30 @@ export async function GET(request: NextRequest) {
       historiesByInstructor.set(row.instructorDbId, bucket);
     }
 
-    const enriched = filtered.map((inst) => ({
-      ...inst,
-      totalCourses: countGroupedTeachingHistories(
+    const enriched = filtered.map((inst) => {
+      const groupedTeaching = groupTeachingHistories(
         historiesByInstructor.get(inst.id) ?? [],
         {
           fromDate: "2025-01-01",
           untilDate: today,
         }
-      ),
-    }));
+      );
+
+      return {
+        ...inst,
+        totalCourses: groupedTeaching.length,
+        totalHours: groupedTeaching.reduce(
+          (sum, item) => sum + (item.total_hours ?? 0),
+          0
+        ),
+        teachingTitles: extractNotionPropertyTextList(
+          inst.notionRawProperties,
+          "담당 강의 정보"
+        ),
+      };
+    });
 
     // --- 06_implementation_spec.md Feature D: 정렬 ---
-    const sortedKey = sort as SortKey;
-
     enriched.sort((a, b) => {
       // 1차 정렬
       const primary = compareBySortKey(a, b, sortedKey);
@@ -208,10 +236,12 @@ export async function GET(request: NextRequest) {
       name: inst.name,
       affiliation: inst.affiliation,
       categories: inst.categories,
+      teaching_titles: inst.teachingTitles,
       specialties: inst.specialties,
       rank: inst.rank,
       score: inst.score !== null ? Number(inst.score) : null,
       total_courses: inst.totalCourses,
+      total_hours: inst.totalHours,
       // 05_api_spec.md 5-5절: 전임강사는 base_fee_hourly 항상 null
       base_fee_hourly: inst.isFulltime ? null : inst.baseFeeHourly,
       is_fulltime: inst.isFulltime,
@@ -240,25 +270,113 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(response);
   } catch {
-    // 05_api_spec.md 5-7절: 500 LIST_FETCH_FAILED
-    return NextResponse.json(
-      {
-        status: "error",
-        meta: {
-          request_id: requestId,
-          data_mode: "live",
-          is_fallback: false,
-          last_updated_at: null,
+    const snapshot = await readStoredFallbackSnapshot();
+    const fallbackItems = (
+      snapshot
+        ? snapshot.list_items.map((item) => ({
+            ...item,
+            lastActivityAt: item.last_activity_at
+              ? new Date(item.last_activity_at)
+              : null,
+          }))
+        : getFallbackInstructorListItems()
+    ).filter((item) => shouldIncludeInInstructorList(item));
+    let filtered = fallbackItems;
+
+    if (query !== "") {
+      const lowerQuery = query.toLowerCase();
+      filtered = filtered.filter((inst) => {
+        if (inst.name.toLowerCase().includes(lowerQuery)) return true;
+        if (inst.categories.some((c) => c.toLowerCase().includes(lowerQuery))) {
+          return true;
+        }
+        if (
+          (inst.teaching_titles ?? []).some((title) =>
+            title.toLowerCase().includes(lowerQuery)
+          )
+        ) {
+          return true;
+        }
+        if (inst.specialties.some((s) => s.toLowerCase().includes(lowerQuery))) {
+          return true;
+        }
+        if (inst.affiliation?.toLowerCase().includes(lowerQuery)) return true;
+        return false;
+      });
+    }
+
+    if (category !== "전체") {
+      filtered = filtered.filter((inst) => inst.categories.includes(category));
+    }
+
+    filtered.sort((a, b) => {
+      const primary = compareBySortKey(
+        {
+          score: a.score,
+          rank: a.rank,
+          totalCourses: a.total_courses,
+          totalHours: a.total_hours ?? 0,
+          lastActivityAt: a.lastActivityAt,
+          baseFeeHourly: a.base_fee_hourly,
+          name: a.name,
         },
-        errors: [
-          {
-            code: "LIST_FETCH_FAILED",
-            message: "강사 목록 조회에 실패했습니다.",
-          },
-        ],
+        {
+          score: b.score,
+          rank: b.rank,
+          totalCourses: b.total_courses,
+          totalHours: b.total_hours ?? 0,
+          lastActivityAt: b.lastActivityAt,
+          baseFeeHourly: b.base_fee_hourly,
+          name: b.name,
+        },
+        sortedKey
+      );
+      if (primary !== 0) return primary;
+      const rankCmp = compareNullsLast(a.rank, b.rank, "asc");
+      if (rankCmp !== 0) return rankCmp;
+      return a.name.localeCompare(b.name, "ko");
+    });
+
+    const totalCount = filtered.length;
+    const items = filtered.slice(0, limit).map<InstructorListItem>((item) => ({
+      id: item.id,
+      name: item.name,
+      affiliation: item.affiliation,
+      categories: item.categories,
+      teaching_titles: item.teaching_titles ?? [],
+      specialties: item.specialties,
+      rank: item.rank,
+      score: item.score,
+      total_courses: item.total_courses,
+      total_hours: item.total_hours ?? 0,
+      base_fee_hourly: item.base_fee_hourly,
+      is_fulltime: item.is_fulltime,
+      flag: item.flag,
+    }));
+    const status = items.length === 0 ? "empty" : "success";
+
+    return NextResponse.json({
+      status,
+      meta: {
+        request_id: requestId,
+        data_mode: snapshot ? "stored" : "fallback",
+        is_fallback: true,
+        last_updated_at: snapshot?.generated_at ?? FALLBACK_LAST_UPDATED_AT,
+        total_count: totalCount,
+        query,
+        category,
+        sort: sortedKey,
       },
-      { status: 500 }
-    );
+      data: { items },
+      errors: [
+        {
+          code: snapshot ? "LIST_STORED_FALLBACK" : "LIST_FALLBACK",
+          message: snapshot
+            ? "목록 조회 실패로 마지막 정상 스냅샷 데이터를 표시합니다."
+            : "목록 조회 실패로 정적 fallback 데이터를 표시합니다.",
+        },
+      ],
+    });
   }
 }
 
@@ -300,8 +418,24 @@ function compareDatesNullsLast(
 
 /** 정렬 키에 따른 1차 비교 */
 function compareBySortKey(
-  a: { score: unknown; rank: number | null; totalCourses: number; lastActivityAt: Date | null; baseFeeHourly: number | null; name: string },
-  b: { score: unknown; rank: number | null; totalCourses: number; lastActivityAt: Date | null; baseFeeHourly: number | null; name: string },
+  a: {
+    score: unknown;
+    rank: number | null;
+    totalCourses: number;
+    totalHours: number;
+    lastActivityAt: Date | null;
+    baseFeeHourly: number | null;
+    name: string;
+  },
+  b: {
+    score: unknown;
+    rank: number | null;
+    totalCourses: number;
+    totalHours: number;
+    lastActivityAt: Date | null;
+    baseFeeHourly: number | null;
+    name: string;
+  },
   key: SortKey
 ): number {
   switch (key) {
@@ -315,6 +449,8 @@ function compareBySortKey(
       return compareNullsLast(a.rank, b.rank, "asc");
     case "courses_desc":
       return compareNullsLast(a.totalCourses, b.totalCourses, "desc");
+    case "hours_desc":
+      return compareNullsLast(a.totalHours, b.totalHours, "desc");
     case "recent_desc":
       return compareDatesNullsLast(a.lastActivityAt, b.lastActivityAt, "desc");
     case "fee_desc":

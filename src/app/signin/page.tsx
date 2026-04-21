@@ -1,4 +1,4 @@
-import { signIn } from "@/auth";
+import GoogleSignInButton from "@/components/GoogleSignInButton";
 
 interface SignInPageProps {
   searchParams: Promise<{
@@ -58,21 +58,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
                 </div>
               )}
 
-              <form
-                action={async () => {
-                  "use server";
-                  await signIn("google", {
-                    redirectTo: callbackUrl || "/",
-                  });
-                }}
-              >
-                <button
-                  type="submit"
-                  className="flex w-full items-center justify-center rounded-2xl bg-gray-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-gray-700"
-                >
-                  Google로 로그인
-                </button>
-              </form>
+              <GoogleSignInButton callbackUrl={callbackUrl} />
 
               <p className="text-xs leading-5 text-gray-400">
                 로그인 후 허용 도메인이 아닌 계정은 접근이 차단됩니다.

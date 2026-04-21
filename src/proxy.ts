@@ -40,7 +40,7 @@ export default auth((req: AuthProxyRequest) => {
 
   const isLocalDevRefresh =
     process.env.NODE_ENV !== "production" &&
-    pathname === "/api/refresh" &&
+    (pathname === "/api/refresh" || pathname.startsWith("/api/pipeline/")) &&
     (hostname === "localhost" || hostname === "127.0.0.1");
 
   if (isLocalDevRefresh) {

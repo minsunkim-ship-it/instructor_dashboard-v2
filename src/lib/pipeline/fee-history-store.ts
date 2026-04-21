@@ -101,6 +101,7 @@ function extractExplicitTotalAmounts(text: string): number[] {
     /=\s*(?:총\s*)?(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)?/g,
     /(?:총액|총\s*비용|최종\s*비용)\s*[:=]?\s*(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)?/g,
     /총\s*(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)/g,
+    /(?:·|•)\s*(\d+(?:[.,]\d+)*)\s*(만\s*원?|원)?(?=\s*(?:인증|평가|문항|채점|프로젝트|출장|강사비|콘텐츠|개발|제작|커스터마이징))/g,
   ];
 
   for (const pattern of patterns) {
@@ -332,7 +333,24 @@ export async function buildFeeHistoryEntries(): Promise<{
     medianByInstructor.set(id, computeMedianLocal(fees));
   }
 
+  const relevantInstructorIds = new Set<string>();
+  for (const history of teachingHistories) {
+    relevantInstructorIds.add(history.instructorDbId);
+  }
+  for (const instructor of instructors) {
+    if (instructor.feeNote) {
+      relevantInstructorIds.add(instructor.id);
+    }
+    if (fixByDbId.has(instructor.id) || fixByName.has(instructor.name)) {
+      relevantInstructorIds.add(instructor.id);
+    }
+  }
+
   for (const inst of instructors) {
+    if (!relevantInstructorIds.has(inst.id)) {
+      continue;
+    }
+
     const entries: FeeHistoryEntry[] = [];
     const median = medianByInstructor.get(inst.id) ?? null;
 
@@ -562,9 +580,6 @@ export async function storeFeeHistories(): Promise<FeeHistoryStoreResult> {
     specialAmountRecords: 0,
   };
 
-  // 1. Clear existing fee_histories (full rebuild)
-  await prisma.feeHistory.deleteMany({});
-
   // 2. Compute entries in memory
   const built = await buildFeeHistoryEntries();
   const allEntries = built.entries;
@@ -578,6 +593,55 @@ export async function storeFeeHistories(): Promise<FeeHistoryStoreResult> {
     seen.add(signature);
     dedupedEntries.push(entry);
   }
+
+  const existingRows = await prisma.feeHistory.findMany({
+    select: {
+      instructorDbId: true,
+      effectiveDate: true,
+      effectiveLabel: true,
+      amount: true,
+      feeKind: true,
+      context: true,
+      sourceType: true,
+      isCurrent: true,
+      isSpecialAmount: true,
+    },
+  });
+  const existingSignatures = new Set(
+    existingRows.map((row) =>
+      buildFeeHistorySignature({
+        instructorDbId: row.instructorDbId,
+        effectiveDate: row.effectiveDate,
+        effectiveLabel: row.effectiveLabel,
+        amount: row.amount,
+        feeKind: row.feeKind,
+        context: row.context,
+        sourceType: row.sourceType,
+        isCurrent: row.isCurrent,
+        isSpecialAmount: row.isSpecialAmount,
+      })
+    )
+  );
+  const nextSignatures = new Set(
+    dedupedEntries.map((entry) => buildFeeHistorySignature(entry))
+  );
+
+  const unchanged =
+    existingSignatures.size === nextSignatures.size &&
+    Array.from(nextSignatures).every((signature) =>
+      existingSignatures.has(signature)
+    );
+
+  if (unchanged) {
+    result.totalRecords = dedupedEntries.length;
+    result.specialAmountRecords = dedupedEntries.filter(
+      (e) => e.isSpecialAmount
+    ).length;
+    return result;
+  }
+
+  // 3. Clear existing fee_histories only when rebuild is actually needed
+  await prisma.feeHistory.deleteMany({});
 
   // 4. Batch insert for performance
   const BATCH_SIZE = 500;

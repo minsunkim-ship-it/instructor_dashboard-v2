@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import type { SatisfactionImportItemInput } from "@/lib/pipeline/satisfaction-applier";
+import { normalizeFeedbackNotesInImportItems } from "@/lib/pipeline/feedback-note-llm";
 import type {
   SatisfactionSheetCollectResult,
   SatisfactionSheetSourceDefinition,
@@ -19,6 +21,18 @@ interface DraftSatisfactionItem {
   scoreNormalized?: number | null;
   respondentCount?: number | null;
   responseDate?: Date | string | null;
+}
+
+type FeedbackNoteType =
+  | "teaching_feedback_qualitative"
+  | "teaching_feedback_ops";
+
+interface DraftFeedbackNote {
+  note_type: FeedbackNoteType;
+  text: string;
+  header: string;
+  row_index: number;
+  column_index: number;
 }
 
 export interface SatisfactionSourceSummary {
@@ -84,14 +98,93 @@ function buildSatisfactionRegistryKey(args: {
   sessionOrDate: string;
   instructorName?: string | null;
 }): string {
-  const instructorPart = args.instructorName ? `:${encodeKeyPart(args.instructorName)}` : ":";
-  return [
+  const normalized = [
     "satisfaction",
     encodeKeyPart(args.sourceFamily),
     encodeKeyPart(args.companyName),
     encodeKeyPart(args.courseName),
     encodeKeyPart(args.sessionOrDate),
-  ].join(":") + instructorPart;
+    encodeKeyPart(args.instructorName ?? ""),
+  ].join(":");
+
+  return `satisfaction:${encodeKeyPart(args.sourceFamily)}:${createHash("sha1")
+    .update(normalized)
+    .digest("hex")}`;
+}
+
+function classifyFeedbackHeader(header: string): FeedbackNoteType | null {
+  if (!header) return null;
+  if (/(운영진 의견|운영 의견|운영\/관리 이슈사항|운영\/관리 이슈|이슈 사항)/i.test(header)) {
+    return "teaching_feedback_ops";
+  }
+  if (
+    /(좋았던 점|아쉬운 점|개선 요청|개선이 필요한 점|주관식 주요 의견|가장 기억에 남는 학습 내용|강사님께 전달|수강생 의견|교육생 의견|피드백)/i.test(
+      header
+    )
+  ) {
+    return "teaching_feedback_qualitative";
+  }
+  return null;
+}
+
+function isSkippableFeedbackValue(value: string): boolean {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (normalized.length < 4) return true;
+  if (/^(없음|없습니다|해당 없음|해당없음|없어요|n\/a|na|x|-)$/.test(normalized)) {
+    return true;
+  }
+  if (/^[0-9./:()\s,-]+$/.test(normalized)) return true;
+  return false;
+}
+
+function dedupeFeedbackNotes(
+  notes: DraftFeedbackNote[],
+  maxNotes: number = 40
+): DraftFeedbackNote[] {
+  const seen = new Set<string>();
+  const deduped: DraftFeedbackNote[] = [];
+
+  for (const note of notes) {
+    const key = `${note.note_type}::${note.text.trim().toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(note);
+    if (deduped.length >= maxNotes) break;
+  }
+
+  return deduped;
+}
+
+function extractRowFeedbackNotes(args: {
+  headerRow: string[];
+  row: string[];
+  rowIndex: number;
+  columnStart?: number;
+  columnEndExclusive?: number;
+}): DraftFeedbackNote[] {
+  const columnStart = args.columnStart ?? 0;
+  const columnEndExclusive =
+    args.columnEndExclusive ?? Math.max(args.headerRow.length, args.row.length);
+  const notes: DraftFeedbackNote[] = [];
+
+  for (let column = columnStart; column < columnEndExclusive; column += 1) {
+    const header = getCell(args.headerRow, column);
+    const noteType = classifyFeedbackHeader(header);
+    if (!noteType) continue;
+
+    const text = getCell(args.row, column);
+    if (isSkippableFeedbackValue(text)) continue;
+
+    notes.push({
+      note_type: noteType,
+      text,
+      header,
+      row_index: args.rowIndex,
+      column_index: column + 1,
+    });
+  }
+
+  return notes;
 }
 
 function buildKtDraftItems(result: SatisfactionSheetCollectResult): DraftSatisfactionItem[] {
@@ -173,6 +266,15 @@ function buildKtDraftItems(result: SatisfactionSheetCollectResult): DraftSatisfa
         columnIndexes.respondentCount !== -1
           ? getCell(row, columnIndexes.respondentCount)
           : "";
+      const feedbackNotes = dedupeFeedbackNotes(
+        extractRowFeedbackNotes({
+          headerRow,
+          row,
+          rowIndex: rowIndex + 1,
+          columnStart: blockStart,
+          columnEndExclusive: blockEndExclusive,
+        })
+      );
 
       if (!sessionLabel && !responseDateRaw && !instructorName && !scoreRaw) {
         continue;
@@ -210,6 +312,7 @@ function buildKtDraftItems(result: SatisfactionSheetCollectResult): DraftSatisfa
           score_raw: scoreRaw,
           respondent_count_raw: respondentCountRaw,
           course_name_raw: courseName,
+          feedback_notes: feedbackNotes,
         },
         normalizedPayload: {
           registry_key: registryKey,
@@ -256,6 +359,13 @@ function buildWooriDraftItems(result: SatisfactionSheetCollectResult): DraftSati
     const row = rows[rowIndex] ?? [];
     const timestampRaw = getCell(row, timestampIndex);
     const scoreRaw = getCell(row, scoreIndex);
+    const feedbackNotes = dedupeFeedbackNotes(
+      extractRowFeedbackNotes({
+        headerRow,
+        row,
+        rowIndex: rowIndex + 1,
+      })
+    );
 
     if (!timestampRaw && !scoreRaw) continue;
 
@@ -283,6 +393,7 @@ function buildWooriDraftItems(result: SatisfactionSheetCollectResult): DraftSati
       rawPayload: {
         timestamp_raw: timestampRaw,
         score_raw: scoreRaw,
+        feedback_notes: feedbackNotes,
       },
       normalizedPayload: {
         registry_key: registryKey,
@@ -433,6 +544,15 @@ function buildHyundaiFormsDraftItems(
     (sum, row) => sum + (parseNumber(getCell(row, scoreIndex)) ?? 0),
     0
   );
+  const feedbackNotes = dedupeFeedbackNotes(
+    respondentRows.flatMap((row, index) =>
+      extractRowFeedbackNotes({
+        headerRow,
+        row,
+        rowIndex: index + 2,
+      })
+    )
+  );
   const scoreNormalized = scoreTotal / respondentRows.length;
   const responseDate = parseDateValue(getCell(respondentRows[0], timestampIndex));
   const sessionLabel = getHyundaiSessionLabel(result.definition.key);
@@ -459,6 +579,7 @@ function buildHyundaiFormsDraftItems(
         title: result.definition.title,
         score_column: getCell(headerRow, scoreIndex),
         respondent_rows: respondentRows.length,
+        feedback_notes: feedbackNotes,
       },
       normalizedPayload: {
         registry_key: registryKey,
@@ -569,6 +690,21 @@ export async function normalizeSatisfactionSheetResults(
   const sourceSummaries: SatisfactionSourceSummary[] = [];
 
   for (const result of results) {
+    if (result.error) {
+      sourceSummaries.push({
+        sourceKey: result.definition.key,
+        sourceType: result.definition.sourceType,
+        fetchedRows: 0,
+        importedItems: 0,
+        skippedRows: 0,
+        autoAcceptedCandidates: 0,
+        pendingCandidates: 0,
+        status: "partial",
+        note: result.error,
+      });
+      continue;
+    }
+
     if (result.definition.key === "kt_ai_campus") {
       const items = buildKtDraftItems(result);
       draftItems.push(...items);
@@ -696,6 +832,8 @@ export async function normalizeSatisfactionSheetResults(
       );
     }
   }
+
+  await normalizeFeedbackNotesInImportItems(items);
 
   return { items, sourceSummaries };
 }

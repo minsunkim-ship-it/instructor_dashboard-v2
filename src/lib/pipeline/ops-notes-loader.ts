@@ -26,9 +26,18 @@ export interface OpsNotesJson {
   notes: OpsNoteJsonEntry[];
 }
 
+export interface AcceptedOpsNoteEntry {
+  entryIndex: number;
+  name: string;
+  memo: string;
+  sourceRef: Record<string, unknown>;
+}
+
 export interface OpsNotesLoadResult {
   /** 강사명 → 필터링된 memo 후보 라인 배열 (exact match 키) */
   notesByName: Map<string, string[]>;
+  /** 필터 통과 note의 원문 엔트리 목록 */
+  acceptedEntries: AcceptedOpsNoteEntry[];
   /** 원문 엔트리 개수 (파일 내) */
   totalEntries: number;
   /** 필터 통과 엔트리 개수 */
@@ -100,10 +109,11 @@ export function loadOpsNotesJson(
   }
 
   const notesByName = new Map<string, string[]>();
+  const acceptedEntries: AcceptedOpsNoteEntry[] = [];
   let acceptedCount = 0;
   let filteredOutCount = 0;
 
-  for (const entry of parsed.notes) {
+  for (const [entryIndex, entry] of parsed.notes.entries()) {
     if (typeof entry.name !== "string" || typeof entry.memo !== "string") {
       filteredOutCount++;
       continue;
@@ -126,11 +136,23 @@ export function loadOpsNotesJson(
       list.push(memo);
     }
     notesByName.set(name, list);
+    acceptedEntries.push({
+      entryIndex,
+      name,
+      memo,
+      sourceRef:
+        entry.source_ref &&
+        typeof entry.source_ref === "object" &&
+        !Array.isArray(entry.source_ref)
+          ? entry.source_ref
+          : {},
+    });
     acceptedCount++;
   }
 
   return {
     notesByName,
+    acceptedEntries,
     totalEntries: parsed.notes.length,
     acceptedCount,
     filteredOutCount,

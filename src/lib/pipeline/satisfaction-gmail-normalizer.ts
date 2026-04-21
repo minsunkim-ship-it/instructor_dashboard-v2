@@ -1,15 +1,62 @@
+import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import {
-  exchangeGoogleUserAccessToken,
-  googleApiGet,
-} from "@/lib/google-user-oauth";
+import { exchangeGoogleUserAccessToken, googleApiGet } from "@/lib/google-user-oauth";
 import type { SatisfactionImportItemInput } from "@/lib/pipeline/satisfaction-applier";
+import { normalizeFeedbackNotesInImportItems } from "@/lib/pipeline/feedback-note-llm";
 import type { SatisfactionGmailCollectResult, SatisfactionGmailThread } from "@/lib/pipeline/satisfaction-gmail-collector";
 import type { SatisfactionSourceSummary } from "@/lib/pipeline/satisfaction-sheets-normalizer";
 
 const DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
 const SHEETS_API_BASE = "https://sheets.googleapis.com/v4";
+const DRIVE_API_TIMEOUT_MS = 5_000;
+const SHEETS_API_TIMEOUT_MS = 5_000;
+const GMAIL_SATISFACTION_NORMALIZE_CONCURRENCY = 4;
 const driveResolutionCache = new Map<string, InstructorResolutionResult | null>();
+const driveEvidenceCache = new Map<string, DriveSheetResolutionResult>();
+const DRIVE_FEEDBACK_QUERY_TERMS = [
+  "좋았던 점",
+  "아쉬운 점",
+  "운영진 의견",
+  "운영 의견",
+  "주관식 주요 의견",
+  "개선 요청",
+] as const;
+
+const DRIVE_SHEET_EVIDENCE_SIGNAL_KEYWORDS = [
+  "좋",
+  "아쉽",
+  "유익",
+  "도움",
+  "어려",
+  "빠르",
+  "느리",
+  "개선",
+  "요청",
+  "필요",
+  "문제",
+  "이슈",
+  "지연",
+  "불편",
+  "만족",
+  "확인",
+  "변경",
+  "완료",
+  "계정",
+  "운영",
+  "수강생",
+  "강사",
+  "실습",
+  "적용",
+  "인사이트",
+  "피드백",
+  "트러블",
+  "결석",
+  "지각",
+  "출석",
+  "불참",
+  "긍정",
+  "부정",
+] as const;
 
 interface InstructorLookupMaps {
   byName: Map<string, { id: string; name: string; contactEmail: string | null }>;
@@ -41,12 +88,35 @@ interface GmailInferenceContext {
   companyHint: string | null;
   suggestedInstructorId: string | null;
   resolutionBasis: string | null;
+  driveSheetNotes?: DriveSheetEvidenceNote[];
+}
+
+interface DriveSheetEvidenceNote {
+  tab: string;
+  row_index: number;
+  note_type: "teaching_feedback_qualitative" | "teaching_feedback_ops";
+  text: string;
 }
 
 interface InstructorResolutionResult {
   instructorHint: string;
   suggestedInstructorId: string;
   resolutionBasis: string;
+  driveSheetNotes?: DriveSheetEvidenceNote[];
+}
+
+interface DriveSheetResolutionResult {
+  resolved: InstructorResolutionResult | null;
+  driveSheetNotes: DriveSheetEvidenceNote[];
+}
+
+export interface SkippedGmailThreadSample {
+  threadId: string;
+  subject: string | null;
+  sentAt: string | null;
+  reason: string;
+  snippet: string | null;
+  bodyExcerpt: string | null;
 }
 
 function cleanText(value: string | null | undefined): string {
@@ -59,26 +129,218 @@ function cleanText(value: string | null | undefined): string {
     .trim();
 }
 
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  await Promise.all(
+    Array.from({ length: limit }, async () => {
+      while (true) {
+        const current = nextIndex++;
+        if (current >= items.length) return;
+        results[current] = await worker(items[current], current);
+      }
+    })
+  );
+
+  return results;
+}
+
+function isDriveSheetSkippableLine(value: string): boolean {
+  const cleaned = cleanText(value);
+  if (cleaned.length < 4) return true;
+  if (
+    /^(강의관리|강의요약|과정 정리|교육 개요|운영|캘린더|교육 운영\/방식 관련|교육 내용 관련|좋았던 점|아쉬운 점|운영진 의견|운영 의견|주관식 주요 의견)$/i.test(
+      cleaned
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(과정명|교육 형태|교육 일정|교육 장소|교육 대상|관련 자료|과정 폴더|강의교안|커리큘럼|강의사진|만족도 조사|기업 담당자|FC 담당자|강사님|연락처|이메일|교육 과정 개요|과정 개요|운영 캘린더|강의 캘린더|마감일 캘린더|집합교육 안내|온라인 입과|고용보험 환급 서류)/.test(
+      cleaned
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(^|\/ )(?:(회차|날짜|강의 요약|교육일정|과정정보|수료기준|강의 정보|강의장 세팅|체크리스트))(\/|$)/.test(
+      cleaned
+    )
+  ) {
+    return true;
+  }
+  if (/\d{1,2}:\d{2}\s*~\s*\d{1,2}:\d{2}/.test(cleaned)) return true;
+  if ((cleaned.match(/\//g) ?? []).length >= 8) return true;
+  if (/^[0-9./:()\s|-]+$/.test(cleaned)) return true;
+  return false;
+}
+
+function isDriveSheetMetaBreakLine(value: string): boolean {
+  const cleaned = cleanText(value);
+  return (
+    /(^|\/ )(?:(회차|날짜|강의 요약|교육일정|과정정보|수료기준|No|Time|타임라인))(\/|$)/.test(
+      cleaned
+    ) ||
+    cleaned.includes("강의관리시트") ||
+    cleaned.includes("강의관리 시트") ||
+    /^(20\d{2}\s*[가-힣A-Za-z]+(?:\s*\/\s*20\d{2}\s*[가-힣A-Za-z]+)*)$/.test(cleaned) ||
+    /^(Phase\d|OT\b|\d+\s*\/\s*\d{2}:\d{2})/.test(cleaned)
+  );
+}
+
+const DRIVE_SHEET_SECTION_LABELS = [
+  "운영진 의견",
+  "운영 의견",
+  "이슈 내용",
+  "좋았던 점",
+  "아쉬운 점",
+  "개선 요청",
+  "개선이 필요한 점",
+  "주관식 주요 의견",
+  "가장 기억에 남는 학습 내용",
+  "강사님께 전달",
+  "수강생 의견",
+  "교육생 의견",
+  "피드백",
+] as const;
+
+function isDriveSheetSectionLabel(value: string): boolean {
+  return DRIVE_SHEET_SECTION_LABELS.some((label) => value.includes(label));
+}
+
+function sanitizeDriveSheetEvidenceText(text: string): string | null {
+  const cleaned = cleanText(text)
+    .replace(/^[/|-]+\s*/, "")
+    .replace(/\s*[/|-]+\s*$/, "")
+    .trim();
+  if (!cleaned) return null;
+  if (isDriveSheetSkippableLine(cleaned)) return null;
+  if (
+    /^(회차|날짜|강의 요약|교육일정|과정정보|수료기준|No|Time|타임라인)(?:$|\s|\/)/.test(
+      cleaned
+    )
+  ) {
+    return null;
+  }
+  if (/(?:^|\/ )(?:TRUE|FALSE)(?:$|\/ )/.test(cleaned)) return null;
+  if (/강사는 .*[\?？]\s*\/\s*(?:TRUE|FALSE)/.test(cleaned)) return null;
+  if (/출석 사항에 특이 사항이 있나요\?/.test(cleaned)) return null;
+  if ((cleaned.match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/g) ?? []).length >= 2) {
+    return null;
+  }
+  if (/^(20\d{2}\s*[가-힣A-Za-z]+)/.test(cleaned) && cleaned.length < 20) {
+    return null;
+  }
+  if (cleaned.length < 8) {
+    return null;
+  }
+  const hasSignalKeyword = DRIVE_SHEET_EVIDENCE_SIGNAL_KEYWORDS.some((keyword) =>
+    cleaned.includes(keyword)
+  );
+  const looksLikeSentence =
+    /[.!?]/.test(cleaned) ||
+    /(습니다|했습니다|였습|좋았|아쉬|됩니다|보입니다|느껴|같습니다|확인되었습니다|부탁드립니다|했습니다|드렸습니다|있었습니다)/.test(
+      cleaned
+    );
+  if (!hasSignalKeyword && !looksLikeSentence) {
+    return null;
+  }
+  return cleaned;
+}
+
+function extractDriveSheetEvidenceNotes(args: {
+  tab: string;
+  rows: string[][];
+}): DriveSheetEvidenceNote[] {
+  const notes: DriveSheetEvidenceNote[] = [];
+  let section: "teaching_feedback_qualitative" | "teaching_feedback_ops" | null =
+    null;
+
+  for (let index = 0; index < args.rows.length; index += 1) {
+    const row = args.rows[index] ?? [];
+    const cells = row
+      .map((cell) => cleanText(cell))
+      .filter((cell) => cell.length > 0);
+    const rowText = cleanText(cells.join(" / "));
+    if (!rowText) continue;
+
+    if (isDriveSheetMetaBreakLine(rowText)) {
+      section = null;
+      continue;
+    }
+
+    const headingIndex = cells.findIndex((cell) => isDriveSheetSectionLabel(cell));
+    if (headingIndex !== -1) {
+      const heading = cells[headingIndex]!;
+      if (/(운영진 의견|운영 의견|이슈 내용)/i.test(heading)) {
+        section = "teaching_feedback_ops";
+      } else {
+        section = "teaching_feedback_qualitative";
+      }
+
+      const payload = sanitizeDriveSheetEvidenceText(
+        cells.slice(headingIndex + 1).join(" / ")
+      );
+      if (payload) {
+        notes.push({
+          tab: args.tab,
+          row_index: index + 1,
+          note_type: section,
+          text: payload,
+        });
+      }
+      continue;
+    }
+
+    if (isDriveSheetSkippableLine(rowText)) continue;
+    if (!section) continue;
+
+    const payload = sanitizeDriveSheetEvidenceText(rowText);
+    if (!payload) continue;
+
+    notes.push({
+      tab: args.tab,
+      row_index: index + 1,
+      note_type: section,
+      text: payload,
+    });
+  }
+
+  return notes;
+}
+
 function encodeKeyPart(value: string | null | undefined): string {
   if (!value) return "";
   return encodeURIComponent(value.trim().toLowerCase());
 }
 
-function buildGmailRegistryKey(args: {
+export function buildGmailRegistryKey(args: {
   sourceFamily: string;
   companyName?: string | null;
   courseName: string;
   sessionOrDate: string;
   instructorName?: string | null;
 }): string {
-  const instructorPart = args.instructorName ? `:${encodeKeyPart(args.instructorName)}` : ":";
-  return [
+  const normalized = [
     "satisfaction",
     encodeKeyPart(args.sourceFamily),
     encodeKeyPart(args.companyName ?? ""),
     encodeKeyPart(args.courseName),
     encodeKeyPart(args.sessionOrDate),
-  ].join(":") + instructorPart;
+    encodeKeyPart(args.instructorName ?? ""),
+  ].join(":");
+
+  return `satisfaction:${encodeKeyPart(args.sourceFamily)}:${createHash("sha1")
+    .update(normalized)
+    .digest("hex")}`;
 }
 
 function parseNumber(value: string | null | undefined): number | null {
@@ -167,6 +429,13 @@ function parseCompanyHintFromSubject(subject: string | null | undefined): string
 function parseCompanyHintFromCourseName(courseName: string | null | undefined): string | null {
   const cleaned = cleanText(courseName);
   if (!cleaned) return null;
+  if (
+    /(님께|요청드립니다|요청 드립니다|정산|안내|세금계산서|결과 전달|결과 공유|리마인드|발행 정보)/i.test(
+      cleaned
+    )
+  ) {
+    return null;
+  }
 
   const dashMatch = cleaned.match(/^([^-\n]{2,30}?)\s*-\s*/);
   if (dashMatch?.[1]) return dashMatch[1].trim();
@@ -191,37 +460,88 @@ function parseCompanyHintFromCourseName(courseName: string | null | undefined): 
 }
 
 function parseScoreFromText(text: string): number | null {
-  for (const line of text.split("\n").map((row) => row.trim()).filter(Boolean)) {
-    if (!line.includes("종합 평균 만족도") && !line.includes("전체 만족도")) {
-      continue;
-    }
-    const numbers = Array.from(line.matchAll(/(\d+(?:\.\d+)?)/g))
-      .map((match) => parseNumber(match[1]))
-      .filter((value): value is number => value !== null);
-    if (numbers.length > 0) {
-      return numbers[numbers.length - 1];
+  const linePatterns = [
+    /강의\s*만족도(?:\s*평가)?[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+    /전반적인\s*강사\s*만족도[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+    /강사\s*만족도[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+    /강의내용\s*만족도[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+    /총\s*만족도[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+    /전체\s*만족도[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+    /만족도\s*결과[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+    /(?:종합\s*평균\s*만족도|평균\s*만족도|만족도\s*평균|평균\s*점수|종합\s*만족도)[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+    /\[만족도\][^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
+  ];
+
+  const candidateLines = text
+    .split("\n")
+    .map((row) => row.trim())
+    .filter(Boolean);
+
+  for (const line of candidateLines) {
+    for (const pattern of linePatterns) {
+      const match = line.match(pattern);
+      if (!match?.[1]) continue;
+      const parsed = parseNumber(match[1]);
+      if (parsed !== null && parsed >= 1 && parsed <= 5) return parsed;
     }
   }
 
   const fallbackPatterns = [
     /전체 만족도(?:는)?[^\d]*(\d+(?:\.\d+)?)/,
+    /총\s*만족도(?:는)?[^\d]*(\d+(?:\.\d+)?)/,
+    /만족도\s*결과(?:는)?[^\d]*(\d+(?:\.\d+)?)/,
     /\[만족도\][^\d]*(\d+(?:\.\d+)?)/,
+    /(?:종합\s*평균\s*만족도|평균\s*만족도|만족도\s*평균|평균\s*점수|종합\s*만족도)[\s:：\n-]*([1-5](?:\.\d+)?)/i,
+    /([1-5](?:\.\d+)?)\s*\/\s*5(?:\.0)?(?=[^\n]{0,20}(?:만족도|평균))/i,
+    /(?:객관식|설문\s*결과)[\s\S]{0,120}강의\s*만족도(?:\s*평가)?[^\d]{0,20}([1-5](?:\.\d+)?)/i,
+    /(?:객관식|설문\s*결과)[\s\S]{0,120}강사\s*만족도[^\d]{0,20}([1-5](?:\.\d+)?)/i,
   ];
   for (const pattern of fallbackPatterns) {
     const match = text.match(pattern);
     if (match?.[1]) {
       const parsed = parseNumber(match[1]);
-      if (parsed !== null) return parsed;
+      if (parsed !== null && parsed >= 1 && parsed <= 5) return parsed;
     }
   }
   return null;
 }
 
+function explainSkippedThread(thread: SatisfactionGmailThread): string {
+  const bodyText = cleanText(thread.bodyText);
+  const sectionHeaderRegex = /(?:^|\n)\s*\d+[.)]?\s*([^\n]+?)(?:\s+결과)?\s*\((\d{1,2}\s*\/\s*\d{1,2})\)/g;
+  const hasSectionHeaders = sectionHeaderRegex.test(bodyText);
+  const score = parseScoreFromText(bodyText);
+  const courseFromBody = parseSingleCourseName(bodyText);
+  const courseFromSubject = parseCourseNameFromSubject(thread.subject);
+
+  if (hasSectionHeaders && score === null) {
+    return "section headers detected but score parsing failed";
+  }
+  if (hasSectionHeaders && score !== null) {
+    return "section headers detected but course extraction failed";
+  }
+  if (score === null && !courseFromBody && !courseFromSubject) {
+    return "no score and no course name pattern matched";
+  }
+  if (score === null) {
+    return "course name found but score parsing failed";
+  }
+  if (!courseFromBody && !courseFromSubject) {
+    return "score found but course name parsing failed";
+  }
+  return "no gmail satisfaction event extracted";
+}
+
 function parseRespondentCountFromText(text: string): number | null {
   const patterns = [
     /응답인원[^\d]*(\d+)명/,
+    /설문\s*참여인원[^\d]*(\d+)명?/i,
+    /응답\s*수[^\d]*(\d+)명?/i,
+    /만족도\s*인원[^\d]*(\d+)명?/i,
+    /응답자\s*수[^\d]*(\d+)명?/i,
     /응답 평균\s*\(n\s*=\s*(\d+)\)/i,
     /\(n\s*=\s*(\d+)\)[^\n]{0,80}종합 평균 만족도/i,
+    /n\s*=\s*(\d+)/i,
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -234,9 +554,60 @@ function parseRespondentCountFromText(text: string): number | null {
 }
 
 function parseSingleCourseName(bodyText: string): string | null {
-  const match = bodyText.match(/과정명\s*:\s*(.+)/);
-  if (!match?.[1]) return null;
-  return match[1].split("\n")[0]?.trim() ?? null;
+  const cleanCourseLine = (value: string | null | undefined): string | null => {
+    if (!value) return null;
+    const line = cleanText(value)
+      .split("\n")[0]
+      .replace(/\s*>{3,}\s*/g, " ")
+      .replace(
+        /\s*-\s*(?:과정일시|강의일시|교육일시|응답인원|객관식|설문 결과|문항 내용|운영진 의견).*$/i,
+        ""
+      )
+      .replace(/\s+(?:객관식|설문 결과|문항 내용|운영진 의견).*$/i, "")
+      .trim();
+    const cleanedCourse = cleanCourseName(line);
+    if (
+      cleanedCourse &&
+      /^(금일|오늘|이번|금번|당일|아래|결과|만족도\s*조사|\d+\s*(?:차수|일차))$/i.test(
+        cleanedCourse
+      )
+    ) {
+      return null;
+    }
+    return cleanedCourse;
+  };
+
+  const introPatterns = [
+    /(?:유선으로\s*요청주셨던|유선으로\s*요청주신|요청주셨던|요청주신|이번|금번|아래)\s+(.+?)\s*만족도\s*조사\s*결과\s*(?:전달|공유|보내)/i,
+    /(?:유선으로\s*요청주셨던|유선으로\s*요청주신|요청주셨던|요청주신|이번|금번|아래)\s+(.+?)\s*만족도\s*결과\s*(?:전달|공유|보내)/i,
+    /(.+?)\s*만족도\s*조사\s*결과\s*(?:전달|공유|보내)/i,
+    /(.+?)\s*만족도\s*결과\s*(?:전달|공유|보내)/i,
+  ];
+
+  for (const line of bodyText.split("\n").map((row) => row.trim()).filter(Boolean)) {
+    for (const pattern of introPatterns) {
+      const match = line.match(pattern);
+      if (!match?.[1]) continue;
+      const lineValue = cleanCourseLine(match[1]);
+      if (lineValue) return lineValue;
+    }
+  }
+
+  const patterns = [
+    /과정명\s*[:：]\s*(.+)/i,
+    /교육명\s*[:：]\s*(.+)/i,
+    /강의명\s*[:：]\s*(.+)/i,
+    /과정\s*[:：]\s*(.+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = bodyText.match(pattern);
+    if (!match?.[1]) continue;
+    const line = cleanCourseLine(match[1]);
+    if (line) return line;
+  }
+
+  return null;
 }
 
 function parseInstructorHintFromBody(bodyText: string | null | undefined): string | null {
@@ -339,17 +710,29 @@ interface DriveFile {
   mimeType?: string;
 }
 
-async function resolveInstructorFromDriveSheet(args: {
+export interface DriveSheetSearchInput {
   companyName: string | null;
   courseName: string | null;
-  lookups: InstructorLookupMaps;
-  accessToken: string;
-}): Promise<InstructorResolutionResult | null> {
-  if (!args.companyName || !args.courseName) return null;
-  const cacheKey = `${args.companyName}::${args.courseName}`;
-  if (driveResolutionCache.has(cacheKey)) {
-    return driveResolutionCache.get(cacheKey) ?? null;
-  }
+  courseTokens: string[];
+}
+
+export interface DriveSheetCandidateQuery {
+  label: "broad" | "feedback_narrow";
+  query: string;
+}
+
+export interface DriveSheetCandidateFile {
+  id: string;
+  name: string | null;
+  mimeType: string | null;
+  sheetTitles: string[];
+}
+
+export function buildDriveSheetCandidateQueries(args: {
+  companyName: string | null;
+  courseName: string | null;
+}): DriveSheetCandidateQuery[] {
+  if (!args.companyName || !args.courseName) return [];
 
   const courseTokens = tokenizeCourseName(args.courseName).slice(0, 4);
   const queryParts = [
@@ -357,33 +740,185 @@ async function resolveInstructorFromDriveSheet(args: {
     `(name contains "강의관리" or name contains "싱크업")`,
   ];
   if (courseTokens[0]) {
-    queryParts.splice(1, 0, `fullText contains "${courseTokens[0].replace(/"/g, '\\"')}"`);
+    queryParts.splice(
+      1,
+      0,
+      `fullText contains "${courseTokens[0].replace(/"/g, '\\"')}"`
+    );
   }
-  let data: { files?: DriveFile[] };
-  try {
-    data = await googleApiGet<{ files?: DriveFile[] }>(args.accessToken, DRIVE_API_BASE, "/files", {
-      q: `${queryParts.join(" and ")} and trashed=false`,
-      pageSize: "3",
-      fields: "files(id,name,mimeType)",
-      corpora: "allDrives",
-      includeItemsFromAllDrives: "true",
-      supportsAllDrives: "true",
-    });
-  } catch {
-    driveResolutionCache.set(cacheKey, null);
-    return null;
+  const feedbackClause = `(${DRIVE_FEEDBACK_QUERY_TERMS.map(
+    (term) => `fullText contains "${term}"`
+  ).join(" or ")})`;
+
+  return [
+    {
+      label: "broad",
+      query: `${queryParts.join(" and ")} and trashed=false`,
+    },
+    {
+      label: "feedback_narrow",
+      query: `${queryParts.join(" and ")} and ${feedbackClause} and trashed=false`,
+    },
+  ];
+}
+
+export function deriveDriveSheetSearchInputFromThread(
+  thread: SatisfactionGmailThread
+): DriveSheetSearchInput {
+  const courseName =
+    parseSingleCourseName(cleanText(thread.bodyText)) ??
+    parseCourseNameFromSubject(thread.subject);
+  const normalizedCourseName = cleanCourseName(courseName);
+  const companyName =
+    parseCompanyHintFromSubject(thread.subject) ??
+    parseCompanyHintFromCourseName(normalizedCourseName);
+
+  return {
+    companyName,
+    courseName: normalizedCourseName,
+    courseTokens: tokenizeCourseName(normalizedCourseName).slice(0, 4),
+  };
+}
+
+export async function searchDriveSheetCandidateFiles(args: {
+  accessToken: string;
+  companyName: string | null;
+  courseName: string | null;
+  pageSize?: number;
+  includeSheetTitles?: boolean;
+}): Promise<{
+  input: DriveSheetSearchInput;
+  queries: DriveSheetCandidateQuery[];
+  files: DriveSheetCandidateFile[];
+}> {
+  const input = {
+    companyName: args.companyName,
+    courseName: args.courseName,
+    courseTokens: tokenizeCourseName(args.courseName).slice(0, 4),
+  };
+  const queries = buildDriveSheetCandidateQueries(input);
+  const filesById = new Map<string, DriveFile>();
+  const pageSize = String(Math.max(1, Math.min(args.pageSize ?? 8, 20)));
+
+  for (const query of queries) {
+    try {
+      const data = await googleApiGet<{ files?: DriveFile[] }>(
+        args.accessToken,
+        DRIVE_API_BASE,
+        "/files",
+        {
+          q: query.query,
+          pageSize,
+          fields: "files(id,name,mimeType)",
+          corpora: "allDrives",
+          includeItemsFromAllDrives: "true",
+          supportsAllDrives: "true",
+        },
+        { timeoutMs: DRIVE_API_TIMEOUT_MS }
+      );
+
+      for (const file of data.files ?? []) {
+        if (file.id) {
+          filesById.set(file.id, file);
+        }
+      }
+    } catch {
+      // Diagnostics should keep broader results even if one query fails.
+    }
   }
 
-  const files = (data.files ?? []).filter(
+  const files: DriveSheetCandidateFile[] = [];
+  for (const file of filesById.values()) {
+    let sheetTitles: string[] = [];
+
+    if (
+      args.includeSheetTitles &&
+      file.mimeType === "application/vnd.google-apps.spreadsheet"
+    ) {
+      try {
+        const meta = await googleApiGet<{
+          sheets?: Array<{ properties?: { title?: string } }>;
+        }>(args.accessToken, SHEETS_API_BASE, `/spreadsheets/${file.id}`, {
+          fields: "sheets.properties.title",
+        });
+        sheetTitles = (meta.sheets ?? [])
+          .map((sheet) => sheet.properties?.title?.trim() ?? "")
+          .filter(Boolean);
+      } catch {
+        sheetTitles = [];
+      }
+    }
+
+    files.push({
+      id: file.id,
+      name: file.name?.trim() ?? null,
+      mimeType: file.mimeType?.trim() ?? null,
+      sheetTitles,
+    });
+  }
+
+  return { input, queries, files };
+}
+
+async function loadDriveSheetResolution(args: {
+  companyName: string | null;
+  courseName: string | null;
+  lookups: InstructorLookupMaps;
+  accessToken: string;
+}): Promise<DriveSheetResolutionResult> {
+  if (!args.companyName || !args.courseName) {
+    return { resolved: null, driveSheetNotes: [] };
+  }
+  const cacheKey = `${args.companyName}::${args.courseName}`;
+  if (driveEvidenceCache.has(cacheKey)) {
+    return driveEvidenceCache.get(cacheKey)!;
+  }
+
+  const courseTokens = tokenizeCourseName(args.courseName).slice(0, 4);
+  const candidateQueries = buildDriveSheetCandidateQueries({
+    companyName: args.companyName,
+    courseName: args.courseName,
+  });
+  const filesById = new Map<string, DriveFile>();
+
+  for (const query of candidateQueries) {
+    try {
+      const data = await googleApiGet<{ files?: DriveFile[] }>(
+        args.accessToken,
+        DRIVE_API_BASE,
+        "/files",
+        {
+          q: query.query,
+          pageSize: "8",
+          fields: "files(id,name,mimeType)",
+          corpora: "allDrives",
+          includeItemsFromAllDrives: "true",
+          supportsAllDrives: "true",
+        }
+      );
+      for (const file of data.files ?? []) {
+        if (file.id) {
+          filesById.set(file.id, file);
+        }
+      }
+    } catch {
+      // Keep the broader query results if a narrower query fails.
+    }
+  }
+
+  const files = [...filesById.values()].filter(
     (file) => file.mimeType === "application/vnd.google-apps.spreadsheet"
   );
   if (files.length === 0) {
+    const result = { resolved: null, driveSheetNotes: [] };
     driveResolutionCache.set(cacheKey, null);
-    return null;
+    driveEvidenceCache.set(cacheKey, result);
+    return result;
   }
 
   const instructorNames = [...args.lookups.byName.keys()];
   const matches = new Map<string, { id: string; name: string }>();
+  const driveSheetNotes: DriveSheetEvidenceNote[] = [];
 
   for (const file of files.slice(0, 2)) {
     for (const name of instructorNames) {
@@ -401,27 +936,40 @@ async function resolveInstructorFromDriveSheet(args: {
         sheets?: Array<{ properties?: { title?: string } }>;
       }>(args.accessToken, SHEETS_API_BASE, `/spreadsheets/${file.id}`, {
         fields: "sheets.properties.title",
-      });
+      }, { timeoutMs: SHEETS_API_TIMEOUT_MS });
     } catch {
       continue;
     }
-    const tabs = (meta.sheets ?? [])
+    const allTabs = (meta.sheets ?? [])
       .map((sheet) => sheet.properties?.title)
-      .filter((title): title is string => Boolean(title))
+      .filter((title): title is string => Boolean(title));
+    const matchingTabs = allTabs
       .filter((title) =>
-        ["강의관리", "과정 정리", "교육 개요", "운영", "캘린더"].some((keyword) =>
+        ["강의관리", "강의요약", "과정 정리", "교육 개요", "운영", "캘린더"].some((keyword) =>
           title.includes(keyword)
         )
       )
       .slice(0, 3);
+    const evidenceTabs = allTabs
+      .filter(
+        (title) =>
+          (title.includes("강의관리") ||
+            title.includes("강의요약") ||
+            title.includes("운영")) &&
+          !title.includes("캘린더") &&
+          !title.includes("인수인계")
+      )
+      .slice(0, 2);
 
-    for (const tab of tabs) {
+    for (const tab of matchingTabs) {
       let values: { values?: string[][] };
       try {
         values = await googleApiGet<{ values?: string[][] }>(
           args.accessToken,
           SHEETS_API_BASE,
-          `/spreadsheets/${file.id}/values/${encodeURIComponent(`${tab}!A1:Z40`)}`
+          `/spreadsheets/${file.id}/values/${encodeURIComponent(`${tab}!A1:AZ120`)}`,
+          {},
+          { timeoutMs: SHEETS_API_TIMEOUT_MS }
         );
       } catch {
         continue;
@@ -450,20 +998,67 @@ async function resolveInstructorFromDriveSheet(args: {
         }
       }
     }
+
+    for (const tab of evidenceTabs) {
+      let values: { values?: string[][] };
+      try {
+        values = await googleApiGet<{ values?: string[][] }>(
+          args.accessToken,
+          SHEETS_API_BASE,
+          `/spreadsheets/${file.id}/values/${encodeURIComponent(`${tab}!A1:AZ400`)}`,
+          {},
+          { timeoutMs: SHEETS_API_TIMEOUT_MS }
+        );
+      } catch {
+        continue;
+      }
+      const rows = values.values ?? [];
+      const extractedNotes = extractDriveSheetEvidenceNotes({
+        tab,
+        rows,
+      });
+      for (const note of extractedNotes) {
+        if (
+          !driveSheetNotes.some(
+            (existing) =>
+              existing.tab === note.tab &&
+              existing.row_index === note.row_index &&
+              existing.text === note.text
+          )
+        ) {
+          driveSheetNotes.push(note);
+        }
+      }
+    }
   }
 
   if (matches.size !== 1) {
+    const result = { resolved: null, driveSheetNotes };
     driveResolutionCache.set(cacheKey, null);
-    return null;
+    driveEvidenceCache.set(cacheKey, result);
+    return result;
   }
   const only = [...matches.values()][0];
   const resolved = {
     instructorHint: only.name,
     suggestedInstructorId: only.id,
     resolutionBasis: "drive_sheet_single_instructor",
+    driveSheetNotes,
   };
   driveResolutionCache.set(cacheKey, resolved);
-  return resolved;
+  const result = { resolved, driveSheetNotes };
+  driveEvidenceCache.set(cacheKey, result);
+  return result;
+}
+
+async function resolveInstructorFromDriveSheet(args: {
+  companyName: string | null;
+  courseName: string | null;
+  lookups: InstructorLookupMaps;
+  accessToken: string;
+}): Promise<InstructorResolutionResult | null> {
+  const result = await loadDriveSheetResolution(args);
+  return result.resolved;
 }
 
 async function resolveSuggestedInstructorFallback(args: {
@@ -475,6 +1070,10 @@ async function resolveSuggestedInstructorFallback(args: {
   lookups: InstructorLookupMaps;
   accessToken: string;
 }): Promise<InstructorResolutionResult | null> {
+  if (process.env.GMAIL_SATISFACTION_ENABLE_FALLBACK_RESOLUTION !== "true") {
+    return null;
+  }
+
   if (args.companyName && args.courseName) {
     const sameCourse = await prisma.satisfactionReviewRegistry.findMany({
       where: {
@@ -565,7 +1164,11 @@ function buildEventKey(args: {
 function parseResponseDateFromBody(bodyText: string, sentAt: string | null): Date | null {
   const fromCourseDate = parseDateOnly(
     bodyText.match(/과정일시\s*:\s*([0-9.\-/ ]+\([^)]+\)?)/)?.[1] ??
+      bodyText.match(/강의일시\s*:\s*([0-9.\-/ ]+\([^)]+\)?)/)?.[1] ??
+      bodyText.match(/교육일시\s*:\s*([0-9.\-/ ]+\([^)]+\)?)/)?.[1] ??
       bodyText.match(/과정일시\s*:\s*([0-9.\-/ ]+)/)?.[1] ??
+      bodyText.match(/강의일시\s*:\s*([0-9.\-/ ]+)/)?.[1] ??
+      bodyText.match(/교육일시\s*:\s*([0-9.\-/ ]+)/)?.[1] ??
       null
   );
   if (fromCourseDate) return fromCourseDate;
@@ -573,6 +1176,90 @@ function parseResponseDateFromBody(bodyText: string, sentAt: string | null): Dat
   const sentDate = sentAt ? new Date(sentAt) : null;
   return sentDate && !Number.isNaN(sentDate.getTime()) ? sentDate : null;
 }
+
+function cleanCourseName(value: string | null | undefined): string | null {
+  const cleaned = cleanText(value)
+    .replace(/^re:\s*/i, "")
+    .replace(/^fw:\s*/i, "")
+    .replace(/^fwd:\s*/i, "")
+    .replace(/^\[[^\]]+\]\s*/, "")
+    .replace(
+      /^[가-힣A-Za-z0-9._()\-\s]+(?:님|과장님|차장님|매니저님|책임님|대표님|선임님)께\s*-\s*/i,
+      ""
+    )
+    .replace(/^작일\s*\([^)]+\)\s*진행된\s*\[?/i, "")
+    .replace(/^\d{1,2}월\s*\d{1,2}일\s*진행되었던,?\s*/i, "")
+    .replace(/^이번에\s*진행된\s*/i, "")
+    .replace(/^지난주에\s*종료된\s*/i, "")
+    .replace(/\s*(?:만족도\s*)?(?:결과\s*공유|결과\s*전달|조사\s*결과|설문\s*결과|만족도\s*결과)\s*$/i, "")
+    .replace(/\s*(?:만족도\s*)?(?:결과\s*공유드립니다|결과\s*전달드립니다|조사\s*결과\s*전달드립니다|조사\s*결과\s*공유드립니다|설문\s*결과\s*공유드립니다|만족도\s*설문\s*결과\s*공유드립니다|만족도\s*설문\s*결과\s*전달드립니다|최종\s*만족도\s*결과\s*공유드립니다|전체\s*만족도\s*송부\s*드립니다|결과\s*보고드립니다|확정\s*일자\s*전달드립니다)\.?\s*$/i, "")
+    .replace(/\s*만족도\s*및\s*과제\s*제출(?:결과)?\s*전달드립니다?\.?\s*$/i, "")
+    .replace(/\s*설문평가\s*결과\s*$/i, "")
+    .replace(/\s*만족도\s*조사\s*초안(?:\([^)]*\))?\s*$/i, "")
+    .replace(/\s*만족도\s*설문\s*결과\s*$/i, "")
+    .replace(/\s*만족도\s*조사\s*결과\s*$/i, "")
+    .replace(/\s*강의\s*안내\s*메일\s*드립니다\.?\s*$/i, "")
+    .replace(/\s*출강\s*문의\s*드립니다\.?\s*$/i, "")
+    .replace(/\s*출강문의드립니다\.?\s*$/i, "")
+    .replace(/\s*운영\s*제반사항\s*회신의\s*건\s*$/i, "")
+    .replace(/\s*회신의\s*건\s*$/i, "")
+    .replace(/\s*요청의\s*건\s*$/i, "")
+    .replace(/\]?\s*과정의\s*$/i, "")
+    .replace(/\s*-\s*$/, "")
+    .trim();
+  return cleaned || null;
+}
+
+function parseCourseNameFromSubject(
+  subject: string | null | undefined
+): string | null {
+  const cleaned = cleanText(subject)
+    .replace(/^re:\s*/i, "")
+    .replace(/^fw:\s*/i, "")
+    .replace(/^\[[^\]]+\]\s*/, "")
+    .trim();
+
+  const patterns = [
+    /강사님께\s*-\s*(.+)/i,
+    /^\[[^\]]+\]\s*(.+)$/i,
+    /결과\s*공유\s*-\s*(.+)/i,
+    /결과\s*전달\s*-\s*(.+)/i,
+    /만족도\s*결과\s*-\s*(.+)/i,
+    /설문\s*결과\s*-\s*(.+)/i,
+    /(.+?)\s*설문평가\s*결과$/i,
+    /(.+?)\s*(?:사전|사후|사전\/사후)\s*설문(?:\s*Raw\s*Data|\s*raw\s*data)?(?:\s*공유)?$/i,
+    /-\s*(.+?)(?:\s*(?:만족도\s*)?(?:결과\s*공유|결과\s*전달|조사\s*결과|설문\s*결과|만족도\s*결과))$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    const courseName = cleanCourseName(match?.[1] ?? null);
+    if (courseName) return courseName;
+  }
+
+  const genericSubjectCourse = cleanCourseName(
+    cleaned
+      .replace(/^\[[^\]]+\]\s*/, "")
+      .replace(/\s*운영\s*제반사항\s*회신의\s*건\s*$/i, "")
+      .replace(/\s*회신의\s*건\s*$/i, "")
+      .replace(/\s*요청의\s*건\s*$/i, "")
+  );
+  if (genericSubjectCourse && /교육|과정|리더십|리터러시|Copilot|Agent/i.test(genericSubjectCourse)) {
+    return genericSubjectCourse;
+  }
+
+  return null;
+}
+
+export const __test__ = {
+  parseScoreFromText,
+  parseSingleCourseName,
+  parseCourseNameFromSubject,
+  cleanCourseName,
+  extractSectionEvents,
+  extractSingleEvent,
+  extractEvidenceOnlyEvent,
+};
 
 function extractSectionEvents(
   thread: SatisfactionGmailThread,
@@ -582,7 +1269,7 @@ function extractSectionEvents(
   const sentDate = thread.sentAt ? new Date(thread.sentAt) : null;
   const sentYear =
     sentDate && !Number.isNaN(sentDate.getTime()) ? sentDate.getUTCFullYear() : new Date().getUTCFullYear();
-  const headerRegex = /(?:^|\n)\s*\d+\.\s*([^\n]+?)\s+결과\s*\((\d{1,2}\s*\/\s*\d{1,2})\)/g;
+  const headerRegex = /(?:^|\n)\s*\d+[.)]?\s*([^\n]+?)(?:\s+결과)?\s*\((\d{1,2}\s*\/\s*\d{1,2})\)/g;
   const matches = Array.from(bodyText.matchAll(headerRegex));
   if (matches.length === 0) {
     return [];
@@ -607,7 +1294,9 @@ function extractSectionEvents(
       parseResponseDateFromBody(sectionText, thread.sentAt);
     const sessionLabel = parseSessionLabel(sectionTitle);
     const courseName =
-      sectionTitle.replace(/\s+\d+(?:일차|차수)\s*$/, "").trim() || sectionTitle;
+      cleanCourseName(
+        sectionTitle.replace(/\s+\d+(?:일차|차수)\s*$/, "").trim() || sectionTitle
+      ) ?? sectionTitle;
     const companyName = context.companyHint ?? parseCompanyHintFromCourseName(courseName);
     const registryKey = buildGmailRegistryKey({
       sourceFamily: "gmail_satisfaction",
@@ -677,7 +1366,9 @@ function extractSingleEvent(
   context: GmailInferenceContext
 ): DraftGmailSatisfactionEvent | null {
   const bodyText = cleanText(thread.bodyText);
-  const courseName = parseSingleCourseName(bodyText);
+  const courseName =
+    parseSingleCourseName(bodyText) ??
+    parseCourseNameFromSubject(thread.subject);
   const score = parseScoreFromText(bodyText);
   if (!courseName || score === null) {
     return null;
@@ -689,16 +1380,18 @@ function extractSingleEvent(
     parseSessionLabel(cleanText(thread.subject)) ??
     null;
   const respondentCount = parseRespondentCountFromText(bodyText) ?? 1;
-  const companyName = context.companyHint ?? parseCompanyHintFromCourseName(courseName);
+  const cleanedCourseName = cleanCourseName(courseName) ?? courseName;
+  const companyName =
+    context.companyHint ?? parseCompanyHintFromCourseName(cleanedCourseName);
   const registryKey = buildGmailRegistryKey({
     sourceFamily: "gmail_satisfaction",
     companyName,
-    courseName,
+    courseName: cleanedCourseName,
     sessionOrDate: sessionLabel ?? toDateOnlyString(responseDate) ?? `thread:${thread.threadId}`,
   });
   const eventKey = buildEventKey({
     companyName,
-    courseName,
+    courseName: cleanedCourseName,
     sessionLabel,
     responseDate,
     score,
@@ -722,11 +1415,11 @@ function extractSingleEvent(
       body_excerpt: bodyText.slice(0, 1200),
     },
     normalizedPayload: {
-      registry_key: registryKey,
-      company_name: companyName,
-      company_name_for_key: companyName ?? "",
-      course_name: courseName,
-      event_key: eventKey,
+        registry_key: registryKey,
+        company_name: companyName,
+        company_name_for_key: companyName ?? "",
+        course_name: cleanedCourseName,
+        event_key: eventKey,
       session_label: sessionLabel,
       response_date: toDateOnlyString(responseDate),
       instructor_name: context.instructorHint,
@@ -741,10 +1434,97 @@ function extractSingleEvent(
     },
     candidateName: context.instructorHint,
     candidateCompanyName: companyName,
-    candidateCourseName: courseName,
+    candidateCourseName: cleanedCourseName,
     scoreRaw: String(score),
     scoreNormalized: score,
     respondentCount,
+    responseDate,
+  };
+}
+
+function hasEvidenceOnlySignal(thread: SatisfactionGmailThread): boolean {
+  const text = cleanText([thread.subject, thread.snippet, thread.bodyText]
+    .filter(Boolean)
+    .join("\n"));
+  return /(사전\s*설문|사후\s*설문|사전\/사후\s*설문|설문\s*raw\s*data|raw\s*data|rawdata|설문\s*결과|만족도\s*조사)/i.test(
+    text
+  );
+}
+
+function extractEvidenceOnlyEvent(
+  thread: SatisfactionGmailThread,
+  context: GmailInferenceContext
+): DraftGmailSatisfactionEvent | null {
+  if (!hasEvidenceOnlySignal(thread)) {
+    return null;
+  }
+
+  const bodyText = cleanText(thread.bodyText);
+  const courseName =
+    parseSingleCourseName(bodyText) ??
+    parseCourseNameFromSubject(thread.subject);
+  if (!courseName) {
+    return null;
+  }
+
+  const responseDate = parseResponseDateFromBody(bodyText, thread.sentAt);
+  const sessionLabel =
+    parseSessionLabel(bodyText) ??
+    parseSessionLabel(cleanText(thread.subject)) ??
+    null;
+  const cleanedCourseName = cleanCourseName(courseName) ?? courseName;
+  const companyName =
+    context.companyHint ?? parseCompanyHintFromCourseName(cleanedCourseName);
+  const registryKey = buildGmailRegistryKey({
+    sourceFamily: "gmail_satisfaction",
+    companyName,
+    courseName: cleanedCourseName,
+    sessionOrDate: sessionLabel ?? toDateOnlyString(responseDate) ?? `thread:${thread.threadId}`,
+  });
+
+  return {
+    sourceRefKey: `gmail_satisfaction:${thread.threadId}:evidence`,
+    sourceRef: {
+      account_email: context.accountEmail,
+      thread_id: thread.threadId,
+      message_id: thread.messageId,
+      section_index: 1,
+      evidence_only: true,
+    },
+    rawPayload: {
+      subject: thread.subject,
+      from: thread.from,
+      to: thread.to,
+      cc: thread.cc,
+      sent_at: thread.sentAt,
+      body_excerpt: bodyText.slice(0, 1200),
+      evidence_only: true,
+    },
+    normalizedPayload: {
+      registry_key: registryKey,
+      company_name: companyName,
+      company_name_for_key: companyName ?? "",
+      course_name: cleanedCourseName,
+      event_key: `evidence:${thread.threadId}`,
+      session_label: sessionLabel,
+      response_date: toDateOnlyString(responseDate),
+      instructor_name: context.instructorHint,
+      respondent_count: 1,
+      source_family: "gmail_satisfaction",
+      evidence_only: true,
+      ...(context.suggestedInstructorId
+        ? {
+            suggested_instructor_id: context.suggestedInstructorId,
+            resolution_basis: context.resolutionBasis ?? "gmail_subject_or_email_exact",
+          }
+        : {}),
+    },
+    candidateName: context.instructorHint,
+    candidateCompanyName: companyName,
+    candidateCourseName: cleanedCourseName,
+    scoreRaw: null,
+    scoreNormalized: null,
+    respondentCount: 1,
     responseDate,
   };
 }
@@ -866,15 +1646,26 @@ export async function normalizeSatisfactionGmailResults(
 ): Promise<{
   items: SatisfactionImportItemInput[];
   sourceSummary: SatisfactionSourceSummary;
+  skippedSamples: SkippedGmailThreadSample[];
 }> {
   const lookups = await loadInstructorMaps();
-  const accessToken = await exchangeGoogleUserAccessToken();
   const items: SatisfactionImportItemInput[] = [];
+  const skippedSamples: SkippedGmailThreadSample[] = [];
   let skippedThreads = 0;
   let autoAcceptedCandidates = 0;
   let pendingCandidates = 0;
+  let accessTokenPromise: Promise<string> | null = null;
+  const getAccessToken = () => {
+    if (!accessTokenPromise) {
+      accessTokenPromise = exchangeGoogleUserAccessToken();
+    }
+    return accessTokenPromise;
+  };
 
-  for (const thread of result.threads) {
+  const threadResults = await mapWithConcurrency(
+    result.threads,
+    GMAIL_SATISFACTION_NORMALIZE_CONCURRENCY,
+    async (thread) => {
     const companyHint = parseCompanyHintFromSubject(thread.subject);
     const { instructorHint, suggestedInstructorId, resolutionBasis } = resolveSuggestedInstructor(
       thread,
@@ -894,14 +1685,30 @@ export async function normalizeSatisfactionGmailResults(
         ? multiSectionItems
         : (() => {
             const single = extractSingleEvent(thread, context);
-            return single ? [single] : [];
+            if (single) return [single];
+            const evidenceOnly = extractEvidenceOnlyEvent(thread, context);
+            return evidenceOnly ? [evidenceOnly] : [];
           })();
 
     if (draftItems.length === 0) {
-      skippedThreads += 1;
-      continue;
+      return {
+        items: [] as SatisfactionImportItemInput[],
+        skipped: {
+          threadId: thread.threadId,
+          subject: thread.subject,
+          sentAt: thread.sentAt,
+          reason: explainSkippedThread(thread),
+          snippet: thread.snippet,
+          bodyExcerpt: cleanText(thread.bodyText).slice(0, 800) || null,
+        } as SkippedGmailThreadSample,
+        autoAcceptedCandidates: 0,
+        pendingCandidates: 0,
+      };
     }
 
+    const producedItems: SatisfactionImportItemInput[] = [];
+    let threadAutoAccepted = 0;
+    let threadPending = 0;
     for (const item of draftItems) {
       const normalizedPayload = item.normalizedPayload as Record<string, unknown>;
       if (!item.candidateCompanyName && item.candidateCourseName) {
@@ -954,6 +1761,17 @@ export async function normalizeSatisfactionGmailResults(
           }
         }
       }
+      if (item.candidateCompanyName && item.candidateCourseName) {
+        const driveSheet = await loadDriveSheetResolution({
+          companyName: item.candidateCompanyName,
+          courseName: item.candidateCourseName,
+          lookups,
+          accessToken: await getAccessToken(),
+        });
+        if (driveSheet.driveSheetNotes.length > 0) {
+          item.rawPayload.drive_sheet_notes = driveSheet.driveSheetNotes;
+        }
+      }
       if (
         (!normalizedPayload.suggested_instructor_id ||
           typeof normalizedPayload.suggested_instructor_id !== "string") &&
@@ -969,24 +1787,27 @@ export async function normalizeSatisfactionGmailResults(
           courseName: item.candidateCourseName ?? null,
           responseDate: item.responseDate ?? null,
           lookups,
-          accessToken,
+          accessToken: await getAccessToken(),
         });
         if (fallback) {
           item.candidateName = fallback.instructorHint;
           normalizedPayload.instructor_name = fallback.instructorHint;
           normalizedPayload.suggested_instructor_id = fallback.suggestedInstructorId;
           normalizedPayload.resolution_basis = fallback.resolutionBasis;
+          if ((fallback.driveSheetNotes?.length ?? 0) > 0) {
+            item.rawPayload.drive_sheet_notes = fallback.driveSheetNotes;
+          }
         }
       }
       if (
         typeof normalizedPayload.suggested_instructor_id === "string" &&
         normalizedPayload.suggested_instructor_id.length > 0
       ) {
-        autoAcceptedCandidates += 1;
+        threadAutoAccepted += 1;
       } else {
-        pendingCandidates += 1;
+        threadPending += 1;
       }
-      items.push({
+      producedItems.push({
         sourceType: "gmail_summary",
         sourceRefKey: item.sourceRefKey,
         sourceRef: item.sourceRef,
@@ -1001,7 +1822,27 @@ export async function normalizeSatisfactionGmailResults(
         responseDate: item.responseDate ?? null,
       });
     }
+    return {
+      items: producedItems,
+      skipped: null as SkippedGmailThreadSample | null,
+      autoAcceptedCandidates: threadAutoAccepted,
+      pendingCandidates: threadPending,
+    };
+  });
+
+  for (const threadResult of threadResults) {
+    if (threadResult.skipped) {
+      skippedThreads += 1;
+      if (skippedSamples.length < 5) {
+        skippedSamples.push(threadResult.skipped);
+      }
+    }
+    items.push(...threadResult.items);
+    autoAcceptedCandidates += threadResult.autoAcceptedCandidates;
+    pendingCandidates += threadResult.pendingCandidates;
   }
+
+  await normalizeFeedbackNotesInImportItems(items);
 
   const sourceSummary: SatisfactionSourceSummary = {
     sourceKey: result.sourceKey,
@@ -1020,5 +1861,5 @@ export async function normalizeSatisfactionGmailResults(
           : undefined,
   };
 
-  return { items, sourceSummary };
+  return { items, sourceSummary, skippedSamples };
 }

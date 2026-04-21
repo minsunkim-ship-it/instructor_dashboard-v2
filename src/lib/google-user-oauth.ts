@@ -1,4 +1,6 @@
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_TOKEN_REQUEST_TIMEOUT_MS = 15_000;
+const GOOGLE_API_DEFAULT_TIMEOUT_MS = 15_000;
 
 export interface GoogleApiRequestOptions {
   signal?: AbortSignal;
@@ -93,22 +95,35 @@ export async function exchangeGoogleUserAccessToken(
     grant_type: "refresh_token",
   });
 
-  const res = await fetch(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+  const { signal, cleanup } = buildAbortSignal({
+    timeoutMs: GOOGLE_TOKEN_REQUEST_TIMEOUT_MS,
   });
 
-  if (!res.ok) {
-    throw new Error(`Google OAuth token refresh 실패 HTTP ${res.status}: ${await res.text()}`);
-  }
+  try {
+    const res = await fetch(GOOGLE_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+      signal,
+    });
 
-  const json = (await res.json()) as { access_token?: string; error?: string };
-  if (!json.access_token) {
-    throw new Error(`Google OAuth access_token 미수신: ${json.error ?? "unknown"}`);
-  }
+    if (!res.ok) {
+      throw new Error(
+        `Google OAuth token refresh 실패 HTTP ${res.status}: ${await res.text()}`
+      );
+    }
 
-  return json.access_token;
+    const json = (await res.json()) as { access_token?: string; error?: string };
+    if (!json.access_token) {
+      throw new Error(
+        `Google OAuth access_token 미수신: ${json.error ?? "unknown"}`
+      );
+    }
+
+    return json.access_token;
+  } finally {
+    cleanup();
+  }
 }
 
 export async function googleApiGet<T>(
@@ -120,7 +135,10 @@ export async function googleApiGet<T>(
 ): Promise<T> {
   const qs = new URLSearchParams(params).toString();
   const url = qs ? `${baseUrl}${path}?${qs}` : `${baseUrl}${path}`;
-  const { signal, cleanup } = buildAbortSignal(options);
+  const { signal, cleanup } = buildAbortSignal({
+    ...options,
+    timeoutMs: options.timeoutMs ?? GOOGLE_API_DEFAULT_TIMEOUT_MS,
+  });
 
   try {
     const res = await fetch(url, {

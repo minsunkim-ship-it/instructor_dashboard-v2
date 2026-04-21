@@ -21,6 +21,17 @@ interface ApplySatisfactionImportsInput {
   runId: string;
   items: SatisfactionImportItemInput[];
   recalculateScores?: boolean;
+  onProgress?: (
+    stage:
+      | "import_items"
+      | "load_items"
+      | "build_registries"
+      | "upsert_registries"
+      | "sync_canonical"
+      | "refresh_aggregates"
+      | "recalculate_scores",
+    detail?: Record<string, unknown>
+  ) => Promise<void> | void;
 }
 
 interface RegistryAggregate {
@@ -38,6 +49,12 @@ interface RegistryAggregate {
 }
 
 const ACCEPTED_REGISTRY_STATUSES = new Set(["auto_accepted", "approved"]);
+const SATISFACTION_WRITE_BATCH_SIZE = 5;
+const SATISFACTION_CREATE_BATCH_SIZE = 100;
+const REPLACEABLE_SATISFACTION_SOURCE_TYPES = new Set([
+  "sheet_summary",
+  "google_forms",
+]);
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -47,6 +64,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function toInputJsonObject(value: Record<string, unknown>): Prisma.InputJsonObject {
   return value as Prisma.InputJsonObject;
+}
+
+function jsonEquals(a: Prisma.JsonValue | Prisma.InputJsonValue, b: Prisma.JsonValue | Prisma.InputJsonValue): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function getString(value: unknown): string | null {
@@ -77,6 +98,64 @@ function toDate(value: Date | string | null | undefined): Date | null {
 function toDateOnlyString(value: Date | string | null | undefined): string | null {
   const date = toDate(value);
   return date ? date.toISOString().slice(0, 10) : null;
+}
+
+function sanitizeSatisfactionScore(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 1 || value > 5) return null;
+  return Math.round(value * 100) / 100;
+}
+
+async function processInBatches<T>(
+  items: T[],
+  batchSize: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  for (let index = 0; index < items.length; index += batchSize) {
+    const batch = items.slice(index, index + batchSize);
+    await Promise.all(batch.map((item) => worker(item)));
+  }
+}
+
+function isRetryablePrismaError(error: unknown): boolean {
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  return code === "P1001" || code === "P1002" || code === "P1017";
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withPrismaRetry<T>(
+  fn: () => Promise<T>,
+  retries = 3
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (!isRetryablePrismaError(error) || attempt === retries) {
+        throw error;
+      }
+      await prisma.$disconnect().catch(() => undefined);
+      await sleep(attempt * 1_000);
+    }
+  }
+
+  throw lastError;
+}
+
+function buildImportItemStorageKey(item: {
+  sourceType: string;
+  sourceRefKey?: string | null;
+}): string | null {
+  return item.sourceRefKey ? `${item.sourceType}::${item.sourceRefKey}` : null;
 }
 
 function buildRegistryKey(item: SatisfactionImportItem): string {
@@ -121,6 +200,59 @@ function buildRegistryKey(item: SatisfactionImportItem): string {
   }
 
   return `${item.sourceType}:invalid:${responseDate ?? "unknown"}:${item.id}`;
+}
+
+type PreparedSatisfactionImportItem = SatisfactionImportItemInput & {
+  sanitizedScore: number | null;
+  normalizedPayload: Record<string, unknown>;
+  responseDateValue: Date | null;
+  storageKey: string | null;
+};
+
+function buildRegistryKeyFromPreparedItem(
+  item: PreparedSatisfactionImportItem
+): string {
+  const sourceRef = asRecord(item.sourceRef);
+  const normalized = asRecord(item.normalizedPayload);
+  const explicitRegistryKey =
+    getString(normalized.registry_key) ?? getString(normalized.registryKey);
+  if (explicitRegistryKey) {
+    return explicitRegistryKey;
+  }
+  const requestId = getString(sourceRef.request_id);
+  if (item.sourceType === "manual" && requestId) {
+    return `manual:request:${requestId}`;
+  }
+
+  const suggestedInstructorId =
+    getString(normalized.suggested_instructor_id) ??
+    getString(normalized.suggestedInstructorId);
+  const candidateName =
+    item.candidateName ??
+    getString(normalized.candidate_name) ??
+    getString(normalized.candidateName);
+  const companyName =
+    item.candidateCompanyName ??
+    getString(normalized.company_name) ??
+    getString(normalized.companyName);
+  const courseName =
+    item.candidateCourseName ??
+    getString(normalized.course_name) ??
+    getString(normalized.courseName);
+  const responseDate =
+    toDateOnlyString(item.responseDateValue) ??
+    getString(normalized.response_date) ??
+    getString(normalized.responseDate);
+
+  if (suggestedInstructorId) {
+    return `${item.sourceType}:instructor:${suggestedInstructorId}:${companyName ?? ""}|${courseName ?? ""}|${responseDate ?? ""}`;
+  }
+
+  if (candidateName || companyName || courseName) {
+    return `${item.sourceType}:candidate:${candidateName ?? ""}|${companyName ?? ""}|${courseName ?? ""}|${responseDate ?? ""}`;
+  }
+
+  return `${item.sourceType}:invalid:${responseDate ?? "unknown"}:${item.sourceRefKey ?? "no-ref-key"}`;
 }
 
 function applyDecision(
@@ -192,9 +324,11 @@ function buildRegistryAggregates(items: SatisfactionImportItem[]): Map<string, R
     const normalized = asRecord(item.normalizedPayload);
     const sourceRef = asRecord(item.sourceRef);
     const scoreValue =
-      getNumber(item.scoreNormalized) ??
-      getNumber(normalized.score_normalized) ??
-      getNumber(normalized.scoreNormalized);
+      sanitizeSatisfactionScore(
+        getNumber(item.scoreNormalized) ??
+          getNumber(normalized.score_normalized) ??
+          getNumber(normalized.scoreNormalized)
+      );
     const respondentCount = Math.max(
       1,
       getNumber(normalized.respondent_count) ??
@@ -220,6 +354,105 @@ function buildRegistryAggregates(items: SatisfactionImportItem[]): Map<string, R
       getString(normalized.eventKey) ??
       getString(normalized.source_ref_key) ??
       item.id;
+
+    const existing = registries.get(registryKey);
+    if (existing) {
+      existing.sourceRefs.push(sourceRefEntry);
+      if (scoreValue !== null && !existing.seenEventKeys.has(eventKey)) {
+        existing.weightedScoreSum += scoreValue * respondentCount;
+        existing.responseCount += respondentCount;
+      }
+      if (!existing.candidateName) {
+        existing.candidateName =
+          item.candidateName ??
+          getString(normalized.candidate_name) ??
+          getString(normalized.candidateName);
+      }
+      if (!existing.companyName) {
+        existing.companyName =
+          item.candidateCompanyName ??
+          getString(normalized.company_name) ??
+          getString(normalized.companyName);
+      }
+      if (!existing.courseName) {
+        existing.courseName =
+          item.candidateCourseName ??
+          getString(normalized.course_name) ??
+          getString(normalized.courseName);
+      }
+      if (!existing.suggestedInstructorId && suggestedInstructorId) {
+        existing.suggestedInstructorId = suggestedInstructorId;
+      }
+      if (!existing.resolutionBasis && resolutionBasis) {
+        existing.resolutionBasis = resolutionBasis;
+      }
+      existing.seenEventKeys.add(eventKey);
+      continue;
+    }
+
+    registries.set(registryKey, {
+      registryKey,
+      sourceType: item.sourceType,
+      sourceRefs: [sourceRefEntry],
+      candidateName:
+        item.candidateName ??
+        getString(normalized.candidate_name) ??
+        getString(normalized.candidateName),
+      companyName:
+        item.candidateCompanyName ??
+        getString(normalized.company_name) ??
+        getString(normalized.companyName),
+      courseName:
+        item.candidateCourseName ??
+        getString(normalized.course_name) ??
+        getString(normalized.courseName),
+      weightedScoreSum: scoreValue !== null ? scoreValue * respondentCount : 0,
+      responseCount: respondentCount,
+      suggestedInstructorId,
+      resolutionBasis,
+      seenEventKeys: new Set([eventKey]),
+    });
+  }
+
+  return registries;
+}
+
+function buildRegistryAggregatesFromPreparedItems(
+  items: PreparedSatisfactionImportItem[]
+): Map<string, RegistryAggregate> {
+  const registries = new Map<string, RegistryAggregate>();
+
+  for (const item of items) {
+    const registryKey = buildRegistryKeyFromPreparedItem(item);
+    const normalized = asRecord(item.normalizedPayload);
+    const sourceRef = asRecord(item.sourceRef);
+    const scoreValue = sanitizeSatisfactionScore(item.sanitizedScore);
+    const respondentCount = Math.max(
+      1,
+      getNumber(normalized.respondent_count) ??
+        getNumber(normalized.respondentCount) ??
+        1
+    );
+    const suggestedInstructorId =
+      getString(normalized.suggested_instructor_id) ??
+      getString(normalized.suggestedInstructorId);
+    const resolutionBasis =
+      getString(normalized.resolution_basis) ??
+      getString(normalized.resolutionBasis);
+    const sourceRefEntry: Prisma.InputJsonObject = {
+      source_ref: toInputJsonObject(sourceRef),
+      response_date:
+        toDateOnlyString(item.responseDateValue) ??
+        getString(normalized.response_date) ??
+        getString(normalized.responseDate),
+      score_normalized: scoreValue,
+    };
+    const eventKey =
+      getString(normalized.event_key) ??
+      getString(normalized.eventKey) ??
+      getString(normalized.source_ref_key) ??
+      item.sourceRefKey ??
+      JSON.stringify(sourceRefEntry);
 
     const existing = registries.get(registryKey);
     if (existing) {
@@ -412,22 +645,37 @@ async function syncSatisfactionCanonical(
       id: true,
       instructorDbId: true,
       sourceType: true,
+      score: true,
+      companyName: true,
+      courseName: true,
+      responseDate: true,
+      respondentCount: true,
+      comment: true,
+      createdBy: true,
       sourceRef: true,
     },
   });
 
   const existingByRegistryKey = new Map<
     string,
-    { id: string; instructorDbId: string; sourceType: string }
+    {
+      id: string;
+      instructorDbId: string;
+      sourceType: string;
+      score: Prisma.Decimal;
+      companyName: string | null;
+      courseName: string | null;
+      responseDate: Date | null;
+      respondentCount: number | null;
+      comment: string | null;
+      createdBy: string | null;
+      sourceRef: Prisma.JsonValue;
+    }
   >();
   for (const record of existingRecords) {
     const registryKey = getRegistryKeyFromSourceRef(record.sourceRef);
     if (registryKey) {
-      existingByRegistryKey.set(registryKey, {
-        id: record.id,
-        instructorDbId: record.instructorDbId,
-        sourceType: record.sourceType,
-      });
+      existingByRegistryKey.set(registryKey, record);
     }
   }
 
@@ -441,46 +689,72 @@ async function syncSatisfactionCanonical(
   const acceptedKeys = new Set(acceptedRegistries.map((registry) => registry.registryKey));
   const touchedInstructorIds = new Set<string>();
   let canonicalRecordsUpserted = 0;
+  const recordIdsToDelete = existingRecords
+    .filter((record) => {
+      const registryKey = getRegistryKeyFromSourceRef(record.sourceRef);
+      return registryKey !== null && !acceptedKeys.has(registryKey);
+    })
+    .map((record) => {
+      touchedInstructorIds.add(record.instructorDbId);
+      return record.id;
+    });
 
-  for (const record of existingRecords) {
-    const registryKey = getRegistryKeyFromSourceRef(record.sourceRef);
-    if (!registryKey) continue;
-    if (acceptedKeys.has(registryKey)) continue;
-    touchedInstructorIds.add(record.instructorDbId);
-    await prisma.satisfactionRecord.delete({ where: { id: record.id } });
+  if (recordIdsToDelete.length > 0) {
+    await prisma.satisfactionRecord.deleteMany({
+      where: { id: { in: recordIdsToDelete } },
+    });
   }
 
-  for (const registry of acceptedRegistries) {
-    const existingRecord = existingByRegistryKey.get(registry.registryKey);
-    const data = {
-      instructorDbId: registry.resolvedInstructorId!,
-      score: registry.avgScore!,
-      companyName: registry.companyName,
-      courseName: registry.courseName,
-      responseDate: registry.responseDate ? new Date(registry.responseDate) : null,
-      respondentCount: registry.responseCount,
-      comment: null,
-      sourceType: registry.sourceType,
-      sourceRef: {
-        registry_key: registry.registryKey,
-        source_refs: registry.sourceRefs,
-      },
-      createdBy: "pipeline",
-    };
+  await processInBatches(
+    acceptedRegistries,
+    SATISFACTION_WRITE_BATCH_SIZE,
+    async (registry) => {
+      const existingRecord = existingByRegistryKey.get(registry.registryKey);
+      const data = {
+        instructorDbId: registry.resolvedInstructorId!,
+        score: registry.avgScore!,
+        companyName: registry.companyName,
+        courseName: registry.courseName,
+        responseDate: registry.responseDate ? new Date(registry.responseDate) : null,
+        respondentCount: registry.responseCount,
+        comment: null,
+        sourceType: registry.sourceType,
+        sourceRef: {
+          registry_key: registry.registryKey,
+          source_refs: registry.sourceRefs,
+        },
+        createdBy: "pipeline",
+      };
 
-    if (existingRecord) {
-      touchedInstructorIds.add(existingRecord.instructorDbId);
-      await prisma.satisfactionRecord.update({
-        where: { id: existingRecord.id },
-        data,
-      });
-    } else {
-      await prisma.satisfactionRecord.create({ data });
+      if (existingRecord) {
+        touchedInstructorIds.add(existingRecord.instructorDbId);
+        const isSame =
+          existingRecord.instructorDbId === data.instructorDbId &&
+          Number(existingRecord.score) === data.score &&
+          existingRecord.companyName === data.companyName &&
+          existingRecord.courseName === data.courseName &&
+          toDateOnlyString(existingRecord.responseDate) ===
+            toDateOnlyString(data.responseDate) &&
+          existingRecord.respondentCount === data.respondentCount &&
+          existingRecord.comment === data.comment &&
+          existingRecord.sourceType === data.sourceType &&
+          existingRecord.createdBy === data.createdBy &&
+          jsonEquals(existingRecord.sourceRef, data.sourceRef as Prisma.InputJsonValue);
+
+        if (!isSame) {
+          await prisma.satisfactionRecord.update({
+            where: { id: existingRecord.id },
+            data,
+          });
+        }
+      } else {
+        await prisma.satisfactionRecord.create({ data });
+      }
+
+      canonicalRecordsUpserted += 1;
+      touchedInstructorIds.add(registry.resolvedInstructorId!);
     }
-
-    canonicalRecordsUpserted += 1;
-    touchedInstructorIds.add(registry.resolvedInstructorId!);
-  }
+  );
 
   return {
     affectedInstructorIds: Array.from(touchedInstructorIds),
@@ -491,32 +765,45 @@ async function syncSatisfactionCanonical(
 async function refreshSatisfactionAggregates(instructorIds: string[]): Promise<void> {
   if (instructorIds.length === 0) return;
 
-  for (const instructorId of instructorIds) {
-    const records = await prisma.satisfactionRecord.findMany({
-      where: { instructorDbId: instructorId },
-      select: { score: true },
-    });
-    const count = records.length;
-    const avg =
-      count > 0
-        ? records.reduce((sum, record) => sum + Number(record.score), 0) / count
-        : null;
-
-    await prisma.instructor.update({
-      where: { id: instructorId },
-      data: {
-        satisfactionAvg: avg !== null ? Math.round(avg * 100) / 100 : null,
-        satisfactionCount: count,
-        satisfactionIsImputed: false,
-      },
-    });
-  }
+  const uniqueInstructorIds = Array.from(new Set(instructorIds));
+  const instructorIdSqlList = Prisma.join(
+    uniqueInstructorIds.map((id) => Prisma.sql`${id}::uuid`)
+  );
+  await prisma.$transaction([
+    prisma.$executeRaw`
+      UPDATE instructors
+      SET
+        satisfaction_avg = NULL,
+        satisfaction_count = 0,
+        satisfaction_is_imputed = FALSE
+      WHERE id IN (${instructorIdSqlList})
+    `,
+    prisma.$executeRaw`
+      WITH aggregated AS (
+        SELECT
+          instructor_db_id,
+          ROUND(AVG(score)::numeric, 2) AS avg_score,
+          COUNT(*)::int AS response_count
+        FROM satisfaction_records
+        WHERE instructor_db_id IN (${instructorIdSqlList})
+        GROUP BY instructor_db_id
+      )
+      UPDATE instructors AS i
+      SET
+        satisfaction_avg = aggregated.avg_score,
+        satisfaction_count = aggregated.response_count,
+        satisfaction_is_imputed = FALSE
+      FROM aggregated
+      WHERE i.id = aggregated.instructor_db_id
+    `,
+  ]);
 }
 
 export async function applySatisfactionImports({
   runId,
   items,
   recalculateScores = false,
+  onProgress,
 }: ApplySatisfactionImportsInput): Promise<{
   importItemsStored: number;
   registries: {
@@ -526,82 +813,202 @@ export async function applySatisfactionImports({
     rejectedCount: number;
     invalidCount: number;
   };
+  affectedInstructorIds: string[];
   affectedInstructors: number;
   canonicalRecordsUpserted: number;
 }> {
-  for (const item of items) {
+  await onProgress?.("import_items", { items: items.length });
+  const preparedItems = items.map((item) => {
+    const sanitizedScore = sanitizeSatisfactionScore(item.scoreNormalized ?? null);
     const normalizedPayload = {
       ...(item.normalizedPayload ?? {}),
       ...(typeof item.respondentCount === "number" && Number.isFinite(item.respondentCount)
         ? { respondent_count: item.respondentCount }
         : {}),
       ...(item.sourceRefKey ? { source_ref_key: item.sourceRefKey } : {}),
+      ...(sanitizedScore !== null
+        ? { score_normalized: sanitizedScore }
+        : {}),
     };
+    return {
+      ...item,
+      sanitizedScore,
+      normalizedPayload,
+      responseDateValue: toDate(item.responseDate),
+      storageKey: buildImportItemStorageKey(item),
+    };
+  });
 
-    if (item.sourceRefKey) {
-      await prisma.satisfactionImportItem.upsert({
-        where: {
-          sourceType_sourceRefKey: {
-            sourceType: item.sourceType,
-            sourceRefKey: item.sourceRefKey,
-          },
-        },
-        create: {
+  const itemSourceTypes = Array.from(
+    new Set(preparedItems.map((item) => item.sourceType))
+  );
+  const replaceableSourceTypes = itemSourceTypes.filter((sourceType) =>
+    REPLACEABLE_SATISFACTION_SOURCE_TYPES.has(sourceType)
+  );
+  const persistentSourceTypes = itemSourceTypes.filter(
+    (sourceType) => !REPLACEABLE_SATISFACTION_SOURCE_TYPES.has(sourceType)
+  );
+  const replaceableItems = preparedItems.filter((item) =>
+    replaceableSourceTypes.includes(item.sourceType)
+  );
+  const persistentItems = preparedItems.filter((item) =>
+    persistentSourceTypes.includes(item.sourceType)
+  );
+  const persistentSourceRefKeys = Array.from(
+    new Set(
+      persistentItems
+        .map((item) => item.sourceRefKey)
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+
+  if (replaceableSourceTypes.length > 0) {
+    await prisma.satisfactionImportItem.deleteMany({
+      where: {
+        sourceType: { in: replaceableSourceTypes },
+      },
+    });
+
+    for (let index = 0; index < replaceableItems.length; index += SATISFACTION_CREATE_BATCH_SIZE) {
+      const batch = replaceableItems.slice(index, index + SATISFACTION_CREATE_BATCH_SIZE);
+      await prisma.satisfactionImportItem.createMany({
+        data: batch.map((item) => ({
           runId,
           sourceType: item.sourceType,
-          sourceRefKey: item.sourceRefKey,
+          sourceRefKey: item.sourceRefKey ?? null,
           sourceRef: toInputJsonObject(item.sourceRef ?? {}),
           rawPayload: toInputJsonObject(item.rawPayload ?? {}),
-          normalizedPayload: toInputJsonObject(normalizedPayload),
+          normalizedPayload: toInputJsonObject(item.normalizedPayload),
           candidateName: item.candidateName ?? null,
           candidateCompanyName: item.candidateCompanyName ?? null,
           candidateCourseName: item.candidateCourseName ?? null,
           scoreRaw: item.scoreRaw ?? null,
-          scoreNormalized: item.scoreNormalized ?? null,
-          responseDate: toDate(item.responseDate),
-        },
-        update: {
+          scoreNormalized: item.sanitizedScore,
+          responseDate: item.responseDateValue,
+        })),
+        skipDuplicates: true,
+      });
+    }
+  }
+
+  if (persistentItems.length > 0) {
+    const existingImportItems =
+      persistentSourceRefKeys.length > 0
+        ? await prisma.satisfactionImportItem.findMany({
+            where: {
+              sourceType: { in: persistentSourceTypes },
+              sourceRefKey: { in: persistentSourceRefKeys },
+            },
+            select: {
+              id: true,
+              sourceType: true,
+              sourceRefKey: true,
+            },
+          })
+        : [];
+
+    const existingImportItemsByKey = new Map(
+      existingImportItems.map((item) => [
+        `${item.sourceType}::${item.sourceRefKey}`,
+        item.id,
+      ])
+    );
+
+    const createItems = persistentItems.filter(
+      (item) => !item.storageKey || !existingImportItemsByKey.has(item.storageKey)
+    );
+    const updateItems = persistentItems
+      .filter(
+        (item): item is typeof item & { storageKey: string } =>
+          Boolean(item.storageKey && existingImportItemsByKey.has(item.storageKey))
+      )
+      .map((item) => ({
+        id: existingImportItemsByKey.get(item.storageKey)!,
+        item,
+      }));
+
+    const keyedCreateItems = createItems.filter((item) => item.sourceRefKey);
+    const unkeyedCreateItems = createItems.filter((item) => !item.sourceRefKey);
+
+    for (let index = 0; index < keyedCreateItems.length; index += SATISFACTION_CREATE_BATCH_SIZE) {
+      const batch = keyedCreateItems.slice(index, index + SATISFACTION_CREATE_BATCH_SIZE);
+      await prisma.satisfactionImportItem.createMany({
+        data: batch.map((item) => ({
+          runId,
+          sourceType: item.sourceType,
+          sourceRefKey: item.sourceRefKey ?? null,
+          sourceRef: toInputJsonObject(item.sourceRef ?? {}),
+          rawPayload: toInputJsonObject(item.rawPayload ?? {}),
+          normalizedPayload: toInputJsonObject(item.normalizedPayload),
+          candidateName: item.candidateName ?? null,
+          candidateCompanyName: item.candidateCompanyName ?? null,
+          candidateCourseName: item.candidateCourseName ?? null,
+          scoreRaw: item.scoreRaw ?? null,
+          scoreNormalized: item.sanitizedScore,
+          responseDate: item.responseDateValue,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    for (let index = 0; index < unkeyedCreateItems.length; index += SATISFACTION_CREATE_BATCH_SIZE) {
+      const batch = unkeyedCreateItems.slice(index, index + SATISFACTION_CREATE_BATCH_SIZE);
+      await prisma.satisfactionImportItem.createMany({
+        data: batch.map((item) => ({
+          runId,
+          sourceType: item.sourceType,
+          sourceRef: toInputJsonObject(item.sourceRef ?? {}),
+          rawPayload: toInputJsonObject(item.rawPayload ?? {}),
+          normalizedPayload: toInputJsonObject(item.normalizedPayload),
+          candidateName: item.candidateName ?? null,
+          candidateCompanyName: item.candidateCompanyName ?? null,
+          candidateCourseName: item.candidateCourseName ?? null,
+          scoreRaw: item.scoreRaw ?? null,
+          scoreNormalized: item.sanitizedScore,
+          responseDate: item.responseDateValue,
+        })),
+      });
+    }
+
+    await processInBatches(updateItems, SATISFACTION_WRITE_BATCH_SIZE, async ({ id, item }) => {
+      await prisma.satisfactionImportItem.updateMany({
+        where: { id },
+        data: {
           runId,
           sourceRef: toInputJsonObject(item.sourceRef ?? {}),
           rawPayload: toInputJsonObject(item.rawPayload ?? {}),
-          normalizedPayload: toInputJsonObject(normalizedPayload),
+          normalizedPayload: toInputJsonObject(item.normalizedPayload),
           candidateName: item.candidateName ?? null,
           candidateCompanyName: item.candidateCompanyName ?? null,
           candidateCourseName: item.candidateCourseName ?? null,
           scoreRaw: item.scoreRaw ?? null,
-          scoreNormalized: item.scoreNormalized ?? null,
-          responseDate: toDate(item.responseDate),
+          scoreNormalized: item.sanitizedScore,
+          responseDate: item.responseDateValue,
         },
       });
-      continue;
-    }
-
-    await prisma.satisfactionImportItem.create({
-      data: {
-        runId,
-        sourceType: item.sourceType,
-        sourceRef: toInputJsonObject(item.sourceRef ?? {}),
-        rawPayload: toInputJsonObject(item.rawPayload ?? {}),
-        normalizedPayload: toInputJsonObject(normalizedPayload),
-        candidateName: item.candidateName ?? null,
-        candidateCompanyName: item.candidateCompanyName ?? null,
-        candidateCourseName: item.candidateCourseName ?? null,
-        scoreRaw: item.scoreRaw ?? null,
-        scoreNormalized: item.scoreNormalized ?? null,
-        responseDate: toDate(item.responseDate),
-      },
     });
   }
 
-  const allItems = await prisma.satisfactionImportItem.findMany({
+  await onProgress?.("load_items");
+  const registrySource = await prisma.satisfactionImportItem.findMany({
+    where: {
+      sourceType: { in: itemSourceTypes },
+    },
     orderBy: { createdAt: "asc" },
   });
 
+  await onProgress?.("build_registries", {
+    items: registrySource.length,
+  });
   const registryAggregates = resolveGmailSummarySiblingFallback(
-    Array.from(buildRegistryAggregates(allItems).values())
+    Array.from(
+      buildRegistryAggregates(registrySource as SatisfactionImportItem[]).values()
+    )
   );
   const registryKeys = registryAggregates.map((registry) => registry.registryKey);
-  const sourceTypes = Array.from(new Set(registryAggregates.map((registry) => registry.sourceType)));
+  const registrySourceTypes = Array.from(
+    new Set(registryAggregates.map((registry) => registry.sourceType))
+  );
   const decisions = await prisma.reviewDecision.findMany({
     where: {
       registryType: "satisfaction",
@@ -617,13 +1024,40 @@ export async function applySatisfactionImports({
     }
   }
 
+  const existingRegistries = registryKeys.length
+    ? await prisma.satisfactionReviewRegistry.findMany({
+        where: {
+          registryKey: { in: registryKeys },
+        },
+        select: {
+          registryKey: true,
+          sourceType: true,
+          sourceRefs: true,
+          candidateName: true,
+          companyName: true,
+          courseName: true,
+          avgScore: true,
+          responseCount: true,
+          matchStatus: true,
+          suggestedInstructorId: true,
+          resolvedInstructorId: true,
+          resolutionBasis: true,
+        },
+      })
+    : [];
+  const existingRegistriesByKey = new Map(
+    existingRegistries.map((registry) => [registry.registryKey, registry])
+  );
+
   if (registryKeys.length > 0) {
-    await prisma.satisfactionReviewRegistry.deleteMany({
-      where: {
-        sourceType: { in: sourceTypes },
-        registryKey: { notIn: registryKeys },
-      },
-    });
+    await withPrismaRetry(() =>
+      prisma.satisfactionReviewRegistry.deleteMany({
+        where: {
+          sourceType: { in: registrySourceTypes },
+          registryKey: { notIn: registryKeys },
+        },
+      })
+    );
   }
 
   let autoAcceptedCount = 0;
@@ -645,7 +1079,11 @@ export async function applySatisfactionImports({
     sourceRefs: Prisma.InputJsonValue[];
   }> = [];
 
-  for (const aggregate of registryAggregates) {
+  await onProgress?.("upsert_registries", { registries: registryAggregates.length });
+  await processInBatches(
+    registryAggregates,
+    SATISFACTION_WRITE_BATCH_SIZE,
+    async (aggregate) => {
     const avgScore = averageWeighted(
       aggregate.weightedScoreSum,
       aggregate.responseCount
@@ -664,15 +1102,13 @@ export async function applySatisfactionImports({
     const decision = latestDecisions.get(aggregate.registryKey);
     const resolved = applyDecision(baseStatus, aggregate, decision);
 
-    if (resolved.matchStatus === "auto_accepted") autoAcceptedCount += 1;
-    else if (resolved.matchStatus === "pending") pendingCount += 1;
-    else if (resolved.matchStatus === "approved") approvedCount += 1;
-    else if (resolved.matchStatus === "rejected") rejectedCount += 1;
-    else invalidCount += 1;
+      if (resolved.matchStatus === "auto_accepted") autoAcceptedCount += 1;
+      else if (resolved.matchStatus === "pending") pendingCount += 1;
+      else if (resolved.matchStatus === "approved") approvedCount += 1;
+      else if (resolved.matchStatus === "rejected") rejectedCount += 1;
+      else invalidCount += 1;
 
-    await prisma.satisfactionReviewRegistry.upsert({
-      where: { registryKey: aggregate.registryKey },
-      update: {
+      const registryData = {
         runId,
         sourceType: aggregate.sourceType,
         sourceRefs: aggregate.sourceRefs as Prisma.InputJsonValue,
@@ -685,43 +1121,67 @@ export async function applySatisfactionImports({
         suggestedInstructorId: aggregate.suggestedInstructorId,
         resolvedInstructorId: resolved.resolvedInstructorId,
         resolutionBasis: resolved.resolutionBasis,
-      },
-      create: {
-        runId,
+      };
+      const existingRegistry = existingRegistriesByKey.get(aggregate.registryKey);
+
+      if (!existingRegistry) {
+        await withPrismaRetry(() =>
+          prisma.satisfactionReviewRegistry.create({
+            data: {
+              registryKey: aggregate.registryKey,
+              ...registryData,
+            },
+          })
+        );
+      } else {
+        const isSame =
+          existingRegistry.sourceType === registryData.sourceType &&
+          jsonEquals(existingRegistry.sourceRefs, registryData.sourceRefs) &&
+          existingRegistry.candidateName === registryData.candidateName &&
+          existingRegistry.companyName === registryData.companyName &&
+          existingRegistry.courseName === registryData.courseName &&
+          Number(existingRegistry.avgScore ?? 0) === Number(registryData.avgScore ?? 0) &&
+          existingRegistry.responseCount === registryData.responseCount &&
+          existingRegistry.matchStatus === registryData.matchStatus &&
+          existingRegistry.suggestedInstructorId === registryData.suggestedInstructorId &&
+          existingRegistry.resolvedInstructorId === registryData.resolvedInstructorId &&
+          existingRegistry.resolutionBasis === registryData.resolutionBasis;
+
+        if (!isSame) {
+          await withPrismaRetry(() =>
+            prisma.satisfactionReviewRegistry.update({
+              where: { registryKey: aggregate.registryKey },
+              data: registryData,
+            })
+          );
+        }
+      }
+
+      persistedRegistries.push({
         registryKey: aggregate.registryKey,
         sourceType: aggregate.sourceType,
-        sourceRefs: aggregate.sourceRefs as Prisma.InputJsonValue,
-        candidateName: aggregate.candidateName,
+        matchStatus: resolved.matchStatus,
+        resolvedInstructorId: resolved.resolvedInstructorId,
         companyName: aggregate.companyName,
         courseName: aggregate.courseName,
         avgScore,
         responseCount: aggregate.responseCount,
-        matchStatus: resolved.matchStatus,
-        suggestedInstructorId: aggregate.suggestedInstructorId,
-        resolvedInstructorId: resolved.resolvedInstructorId,
-        resolutionBasis: resolved.resolutionBasis,
-      },
-    });
+        responseDate: firstResponseDate,
+        sourceRefs: aggregate.sourceRefs,
+      });
+    }
+  );
 
-    persistedRegistries.push({
-      registryKey: aggregate.registryKey,
-      sourceType: aggregate.sourceType,
-      matchStatus: resolved.matchStatus,
-      resolvedInstructorId: resolved.resolvedInstructorId,
-      companyName: aggregate.companyName,
-      courseName: aggregate.courseName,
-      avgScore,
-      responseCount: aggregate.responseCount,
-      responseDate: firstResponseDate,
-      sourceRefs: aggregate.sourceRefs,
-    });
-  }
-
+  await onProgress?.("sync_canonical", { registries: persistedRegistries.length });
   const { affectedInstructorIds, canonicalRecordsUpserted } =
     await syncSatisfactionCanonical(persistedRegistries);
+  await onProgress?.("refresh_aggregates", {
+    instructors: affectedInstructorIds.length,
+  });
   await refreshSatisfactionAggregates(affectedInstructorIds);
 
   if (recalculateScores) {
+    await onProgress?.("recalculate_scores", { runId });
     await recalculateAllScores({ runId });
   }
 
@@ -734,6 +1194,7 @@ export async function applySatisfactionImports({
       rejectedCount,
       invalidCount,
     },
+    affectedInstructorIds,
     affectedInstructors: affectedInstructorIds.length,
     canonicalRecordsUpserted,
   };

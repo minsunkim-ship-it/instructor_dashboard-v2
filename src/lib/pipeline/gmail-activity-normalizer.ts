@@ -32,7 +32,7 @@ export interface NormalizedGmailActivity {
     from: string | null;
     to: string | null;
     account_email: string;
-    target_addresses: string[];
+    mailbox_query: string;
   };
   candidateName: string | null;
   candidateEmail: string | null;
@@ -94,6 +94,55 @@ function isSelfEmail(email: string | null, accountEmail: string): boolean {
   return email === self;
 }
 
+function isDay1Email(email: string | null): boolean {
+  return Boolean(email?.endsWith("@day1company.co.kr"));
+}
+
+function extractInstructorNameFromSubject(
+  subject: string | null | undefined
+): string | null {
+  if (!subject) return null;
+  const matched = subject.match(/([가-힣A-Za-z0-9]+)\s*강사님께/);
+  if (!matched) return null;
+  const name = matched[1]?.trim();
+  return name || null;
+}
+
+function extractInstructorNameFromText(
+  text: string | null | undefined
+): string | null {
+  if (!text) return null;
+  const patterns = [
+    /([가-힣A-Za-z]{2,20})\s*강사님께/,
+    /([가-힣A-Za-z]{2,20})\s*강사님/,
+    /안녕하세요[,\s]*([가-힣A-Za-z]{2,20})\s*강사님/,
+    /([가-힣A-Za-z]{2,20})\s*(?:대표님|대표|실장님|실장|멘토님|멘토)\b/,
+  ];
+  for (const pattern of patterns) {
+    const matched = text.match(pattern);
+    const name = matched?.[1]?.trim();
+    if (name) return name;
+  }
+  return null;
+}
+
+function normalizePersonName(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const cleaned = value
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\b(강사님|강사|대표님|대표|파트너님|파트너|프로님|프로|팀장님|팀장|과장님|과장|매니저님|매니저|담당자님|담당자|책임님|책임|선임님|선임|실장님|실장)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || null;
+}
+
+function looksLikeInstructorActivity(subject: string | null, snippet: string | null): boolean {
+  const text = [subject ?? "", snippet ?? ""].join(" ");
+  return /(강사님께|강사님|대표님|멘토님|출강|실습코치|멘토링|강사 문의|출강 문의|과정 관련 안내|안내 메일 드립니다|미팅 일자 조율|일정 조율|교안|계약|프로필|견적서|제안서|운영을 맡게|과정 운영을 맡게|관련 안내 메일|관련 문의드립니다)/i.test(
+    text
+  );
+}
+
 /**
  * 단일 thread 를 정규화한다.
  * - candidate 는 From 또는 To 중 authenticated account 자신이 아닌 첫 주소에서 추출한다.
@@ -101,23 +150,37 @@ function isSelfEmail(email: string | null, accountEmail: string): boolean {
 function normalizeThread(t: RawGmailThread): NormalizedGmailActivity {
   const fromParsed = parseAddressHeader(t.from);
   const toParsed = parseAddressHeader(t.to);
+  const subjectInstructorName =
+    extractInstructorNameFromSubject(t.subject) ??
+    extractInstructorNameFromText([t.subject ?? "", t.snippet ?? ""].join(" "));
+  const outboundFromDay1 =
+    isSelfEmail(fromParsed.email, t.accountEmail) || isDay1Email(fromParsed.email);
+  const instructorActivity = looksLikeInstructorActivity(t.subject, t.snippet);
 
   let candidateName: string | null = null;
   let candidateEmail: string | null = null;
   let invalidReason: string | null = null;
 
-  // From 이 authenticated account 자신이면 To 후보 사용 (outbound), 아니면 From 후보 사용 (inbound)
-  if (isSelfEmail(fromParsed.email, t.accountEmail)) {
-    candidateName = toParsed.name;
-    candidateEmail = toParsed.email;
-  } else {
-    candidateName = fromParsed.name;
-    candidateEmail = fromParsed.email;
+  if (!instructorActivity) {
+    invalidReason = "gmail_subject_not_instructor";
   }
 
-  // From/To 모두 없으면 invalid
-  if (!fromParsed.email && !toParsed.email && !fromParsed.name && !toParsed.name) {
-    invalidReason = "gmail_missing_addresses";
+  if (subjectInstructorName) {
+    candidateName = subjectInstructorName;
+  } else if (outboundFromDay1) {
+    candidateName = normalizePersonName(toParsed.name);
+  } else {
+    candidateName = normalizePersonName(fromParsed.name);
+  }
+
+  if (outboundFromDay1) {
+    candidateEmail = toParsed.email;
+  } else if (!invalidReason) {
+    invalidReason = "gmail_non_day1_sender";
+  }
+
+  if (!candidateName && !candidateEmail && !invalidReason) {
+    invalidReason = "gmail_missing_instructor_candidate";
   }
 
   const activityAt = internalDateMsToDate(t.lastInternalDateMs);
@@ -139,7 +202,7 @@ function normalizeThread(t: RawGmailThread): NormalizedGmailActivity {
       from: t.from,
       to: t.to,
       account_email: t.accountEmail,
-      target_addresses: t.matchedTargetAddresses,
+      mailbox_query: t.mailboxQuery,
     },
     candidateName,
     candidateEmail,

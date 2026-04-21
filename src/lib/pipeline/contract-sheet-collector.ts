@@ -74,6 +74,34 @@ function normalizeHeader(value: unknown): string {
     .trim();
 }
 
+const NON_MEANINGFUL_FALSE_HEADERS = new Set([
+  "계약",
+  "계약 백오피스",
+  "계약서작성",
+  "최종완료",
+  "신규강사 여부",
+]);
+
+function isNonMeaningfulCell(header: string, value: string): boolean {
+  if (!value) return true;
+  if (/^#(?:REF|N\/A|VALUE|ERROR|NAME\?|DIV\/0)!/i.test(value)) {
+    return true;
+  }
+  if (
+    NON_MEANINGFUL_FALSE_HEADERS.has(header) &&
+    value.toLowerCase() === "false"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isPlaceholderContractRow(values: Record<string, string>): boolean {
+  const entries = Object.entries(values);
+  if (entries.length === 0) return true;
+  return entries.every(([header, value]) => isNonMeaningfulCell(header, value));
+}
+
 async function getSheetTitleByGid(
   accessToken: string,
   spreadsheetId: string,
@@ -171,6 +199,10 @@ async function fetchWorksheet(
       }
     }
 
+    if (isPlaceholderContractRow(values)) {
+      continue;
+    }
+
     dataRows.push({
       spreadsheetId,
       worksheetGid: gid,
@@ -203,39 +235,42 @@ export async function collectFromContractSheetsWithProgress(options?: {
   }
 
   const accessToken = await exchangeGoogleUserAccessToken();
-  const worksheets: WorksheetCollectResult[] = [];
-
-  for (const gid of PILOT_4_1_WORKSHEET_GIDS) {
-    await options?.onProgress?.({
-      gid,
-      stage: "collect_start",
-    });
-
-    try {
-      const rows = await fetchWorksheet(accessToken, spreadsheetId, gid);
-      worksheets.push({ gid, fetchedCount: rows.length, rows });
+  // worksheet fetch는 병렬로 실행된다. onProgress 이벤트는 worksheet 간에
+  // interleave될 수 있으며, gid별 진행 상태는 event.gid로 구분해야 한다.
+  // (정확성 영향 없음, 관찰성 트레이드오프)
+  const worksheets = await Promise.all(
+    PILOT_4_1_WORKSHEET_GIDS.map(async (gid): Promise<WorksheetCollectResult> => {
       await options?.onProgress?.({
         gid,
-        stage: "collect_complete",
-        fetchedCount: rows.length,
-        error: null,
+        stage: "collect_start",
       });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      worksheets.push({
-        gid,
-        fetchedCount: 0,
-        rows: [],
-        error: message,
-      });
-      await options?.onProgress?.({
-        gid,
-        stage: "collect_complete",
-        fetchedCount: 0,
-        error: message,
-      });
-    }
-  }
+
+      try {
+        const rows = await fetchWorksheet(accessToken, spreadsheetId, gid);
+        await options?.onProgress?.({
+          gid,
+          stage: "collect_complete",
+          fetchedCount: rows.length,
+          error: null,
+        });
+        return { gid, fetchedCount: rows.length, rows };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await options?.onProgress?.({
+          gid,
+          stage: "collect_complete",
+          fetchedCount: 0,
+          error: message,
+        });
+        return {
+          gid,
+          fetchedCount: 0,
+          rows: [],
+          error: message,
+        };
+      }
+    })
+  );
 
   return { spreadsheetId, worksheets };
 }

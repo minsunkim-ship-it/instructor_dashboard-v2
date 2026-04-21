@@ -1,10 +1,16 @@
 import {
   exchangeGoogleUserAccessToken,
+  type GoogleApiRequestOptions,
   getGoogleUserOAuthEnv,
   googleApiGet,
 } from "@/lib/google-user-oauth";
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1";
+const SATISFACTION_POSITIVE_SIGNAL_PATTERN =
+  /(종합 평균 만족도|전체 만족도|강의 만족도|강사 만족도|강의내용 만족도|설문평가 결과|학습자 종합 설문 결과|만족도 결과 전달|만족도 조사 결과|만족도 결과 공유|전체 만족도 송부|만족도 정리|응답 평균\s*\(n\s*=|사전\/사후 설문|사전 설문|사후 설문|설문 Raw Data|설문 raw data|rawdata|raw data)/i;
+const SATISFACTION_NEGATIVE_SUBJECT_PATTERN =
+  /(정산 안내|교안 전달|협의내용 공유|커리큘럼 공유|제안서|견적서|안내드립니다|안내 드립니다|커리큘럼 확인 요청|강의 안내드립니다|세금계산서|발행 정보 요청|리마인드|요청드립니다|요청 드립니다)/i;
+const SATISFACTION_MIN_SIGNAL_SCORE = 3;
 
 export const GMAIL_SATISFACTION_SOURCE_KEY = "gmail_satisfaction" as const;
 
@@ -24,13 +30,11 @@ export interface SatisfactionGmailCollectResult {
   sourceKey: typeof GMAIL_SATISFACTION_SOURCE_KEY;
   query: string;
   accountEmail: string;
-  targetAddresses: string[];
   threads: SatisfactionGmailThread[];
   incremental: boolean;
 }
 
-export interface SatisfactionGmailTargetCheckpoint {
-  targetAddress: string;
+export interface SatisfactionGmailCheckpoint {
   lastInternalDateMs: string | null;
 }
 
@@ -123,22 +127,88 @@ function extractBodyText(message: GmailMessage | undefined): string | null {
   return null;
 }
 
-function looksLikeSatisfactionMessage(message: GmailMessage | undefined): boolean {
+export function extractPrimaryBodyText(value: string | null | undefined): string {
+  const text = (value ?? "").replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").trim();
+  if (!text) return "";
+
+  const cutPatterns = [
+    /\n[-]{2,}\s*forwarded message\s*[-]{2,}/i,
+    /\n20\d{2}년 .*작성:/,
+    /\nOn .+wrote:/i,
+    /\n보낸사람:\s*/i,
+    /\nFrom:\s*/i,
+  ];
+
+  let next = text;
+  for (const pattern of cutPatterns) {
+    const match = next.match(pattern);
+    if (match?.index !== undefined) {
+      next = next.slice(0, match.index).trim();
+    }
+  }
+
+  const quotedBlockIndex = next.search(/\n>\s*/);
+  if (quotedBlockIndex >= 0) {
+    next = next.slice(0, quotedBlockIndex).trim();
+  }
+
+  return next;
+}
+
+function hasScoreSignal(text: string): boolean {
+  return (
+    /(종합 평균 만족도|전체 만족도|평균 만족도|만족도 평균|평균 점수|강의 만족도|강사 만족도|강의내용 만족도|\[강의 만족도 결과\]|\[객관식 분석\])/i.test(
+      text
+    ) ||
+    /([1-5](?:\.\d+)?)\s*\/\s*5(?:\.0)?/.test(text)
+  );
+}
+
+function hasPositiveSubjectSignal(subject: string): boolean {
+  return (
+    SATISFACTION_POSITIVE_SIGNAL_PATTERN.test(subject) ||
+    /(만족도|설문평가|설문 결과|조사 결과|학습자 종합 설문 결과|사전\s*설문|사후\s*설문|raw\s*data|rawdata)/i.test(
+      subject
+    )
+  );
+}
+
+function getSatisfactionSignalScore(message: GmailMessage | undefined): number {
   const headers = message?.payload?.headers;
   const subject = normalizeTextForMatch(findHeader(headers, "Subject"));
   const snippet = normalizeTextForMatch(message?.snippet ?? null);
-  const bodyText = normalizeTextForMatch(extractBodyText(message));
-  const combined = [subject, snippet, bodyText].filter(Boolean).join(" ");
+  const bodyText = extractBodyText(message);
+  const primaryBodyText = extractPrimaryBodyText(bodyText);
+  const combined = [subject, snippet, primaryBodyText].filter(Boolean).join(" ");
 
-  if (!combined.includes("만족도")) return false;
-  return /(결과 공유|결과 전달|조사 결과|설문 결과|만족도 조사)/.test(combined);
-}
+  if (
+    SATISFACTION_NEGATIVE_SUBJECT_PATTERN.test(subject) &&
+    !hasPositiveSubjectSignal(subject)
+  ) {
+    return 0;
+  }
 
-function getTargetAddresses(): string[] {
-  return (process.env.GMAIL_TARGET_ADDRESSES ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const hasSatisfactionKeyword =
+    combined.includes("만족도") ||
+    combined.includes("설문평가") ||
+    combined.includes("설문 결과") ||
+    combined.includes("조사 결과") ||
+    combined.includes("학습자 종합 설문 결과") ||
+    combined.includes("사전 설문") ||
+    combined.includes("사후 설문") ||
+    /raw\s*data|rawdata/i.test(combined);
+  if (!hasSatisfactionKeyword) return 0;
+
+  let score = 1;
+  if (hasScoreSignal(primaryBodyText)) score += 4;
+  if (/(과정명|교육명|강의명|과정 개요|응답인원|응답 수)/i.test(primaryBodyText)) {
+    score += 2;
+  }
+  if (/(강사님께|강사님|강의교안|사전\/사후 설문|사전 설문|사후 설문|raw\s*data|rawdata)/i.test(combined)) {
+    score += 1;
+  }
+  if (hasScoreSignal(subject) || hasScoreSignal(snippet)) score += 1;
+  return score;
 }
 
 function parseDateInput(value: string | null | undefined): Date | null {
@@ -187,86 +257,76 @@ function buildMonthlyWindows(startDate: Date, endDate: Date): Array<{ start: Dat
 async function gmailGet<T>(
   accessToken: string,
   path: string,
-  params: Record<string, string> = {}
+  params: Record<string, string> = {},
+  options: GoogleApiRequestOptions = {}
 ): Promise<T> {
-  return googleApiGet<T>(accessToken, GMAIL_API_BASE, path, params);
+  return googleApiGet<T>(accessToken, GMAIL_API_BASE, path, params, options);
 }
 
 export async function collectSatisfactionFromGmail(options?: {
   query?: string;
   maxPages?: number;
   pageSize?: number;
-  checkpoints?: SatisfactionGmailTargetCheckpoint[];
+  checkpoint?: SatisfactionGmailCheckpoint | null;
   startDate?: string;
   endDate?: string;
   detailConcurrency?: number;
+  listRequestTimeoutMs?: number;
+  detailRequestTimeoutMs?: number;
 }): Promise<SatisfactionGmailCollectResult> {
   const { accountEmail } = getGoogleUserOAuthEnv();
-  const targetAddresses = getTargetAddresses();
   const accessToken = await exchangeGoogleUserAccessToken();
 
-  const targetQuery =
-    targetAddresses.length > 0
-      ? `(${targetAddresses
-          .map(
-            (address) => `(to:${address} OR cc:${address} OR deliveredto:${address})`
-          )
-          .join(" OR ")})`
-      : "";
   const keywordQuery =
-    '("만족도 결과 공유" OR "만족도 조사 공유" OR "만족도조사 결과" OR "강의 만족도 결과" OR "설문 결과" OR "만족도 결과")';
-  const query =
     options?.query ??
-    `in:anywhere from:day1company.co.kr ${targetQuery} ${keywordQuery}`.trim();
+    '("종합 평균 만족도" OR "전체 만족도" OR "강의 만족도" OR "강사 만족도" OR "설문평가 결과" OR "학습자 종합 설문 결과" OR "만족도 결과 전달" OR "만족도 조사 결과" OR "만족도 결과 공유" OR "전체 만족도 송부" OR "만족도 정리" OR "사전 설문" OR "사후 설문" OR "사전/사후 설문" OR "Raw Data" OR "raw data")';
+  const query =
+    `in:anywhere from:day1company.co.kr ${keywordQuery}`.trim();
   const maxPages = options?.maxPages ?? 5;
   const pageSize = Math.min(options?.pageSize ?? 50, 100);
   const detailConcurrency = Math.max(1, Math.min(options?.detailConcurrency ?? 8, 20));
-  const checkpoints = options?.checkpoints ?? [];
-  const checkpointMap = new Map(checkpoints.map((cp) => [cp.targetAddress, cp]));
+  const listRequestTimeoutMs = options?.listRequestTimeoutMs ?? 10_000;
+  const detailRequestTimeoutMs = options?.detailRequestTimeoutMs ?? 15_000;
+  const checkpoint = options?.checkpoint ?? null;
   const startDate = parseDateInput(options?.startDate);
   const endDate = parseDateInput(options?.endDate);
   const windows =
     startDate && endDate && startDate <= endDate
       ? buildMonthlyWindows(startDate, endDate)
       : [];
-  const isIncremental = windows.length === 0 && checkpoints.length > 0;
+  const isIncremental = windows.length === 0 && Boolean(checkpoint?.lastInternalDateMs);
 
   const threadIds = new Set<string>();
-  for (const targetAddress of targetAddresses) {
-    const scopedTargetQuery = `(to:${targetAddress} OR cc:${targetAddress} OR deliveredto:${targetAddress})`;
-    const dateWindows = windows.length > 0 ? windows : [null];
+  const dateWindows = windows.length > 0 ? windows : [null];
 
-    for (const window of dateWindows) {
-      let pageToken: string | undefined;
-      let dateClause = "";
-      if (window) {
-        dateClause = ` after:${formatGmailDate(window.start)} before:${formatGmailDate(window.endExclusive)}`;
-      } else {
-        const checkpoint = checkpointMap.get(targetAddress);
-        if (checkpoint?.lastInternalDateMs) {
-          const ms = Number.parseInt(checkpoint.lastInternalDateMs, 10);
-          if (Number.isFinite(ms) && ms > 0) {
-            dateClause = ` after:${Math.floor(ms / 1000)}`;
-          }
-        }
+  for (const window of dateWindows) {
+    let pageToken: string | undefined;
+    let dateClause = "";
+    if (window) {
+      dateClause = ` after:${formatGmailDate(window.start)} before:${formatGmailDate(window.endExclusive)}`;
+    } else if (checkpoint?.lastInternalDateMs) {
+      const ms = Number.parseInt(checkpoint.lastInternalDateMs, 10);
+      if (Number.isFinite(ms) && ms > 0) {
+        dateClause = ` after:${Math.floor(ms / 1000)}`;
       }
+    }
 
-      for (let page = 0; page < maxPages; page += 1) {
-        const data = await gmailGet<GmailThreadListResponse>(
-          accessToken,
-          "/users/me/threads",
-          {
-            q: `${query} ${scopedTargetQuery}${dateClause}`.trim(),
-            maxResults: String(pageSize),
-            ...(pageToken ? { pageToken } : {}),
-          }
-        );
-        for (const thread of data.threads ?? []) {
-          threadIds.add(thread.id);
-        }
-        if (!data.nextPageToken) break;
-        pageToken = data.nextPageToken;
+    for (let page = 0; page < maxPages; page += 1) {
+      const data = await gmailGet<GmailThreadListResponse>(
+        accessToken,
+        "/users/me/threads",
+        {
+          q: `${query}${dateClause}`.trim(),
+          maxResults: String(pageSize),
+          ...(pageToken ? { pageToken } : {}),
+        },
+        { timeoutMs: listRequestTimeoutMs }
+      );
+      for (const thread of data.threads ?? []) {
+        threadIds.add(thread.id);
       }
+      if (!data.nextPageToken) break;
+      pageToken = data.nextPageToken;
     }
   }
 
@@ -279,15 +339,35 @@ export async function collectSatisfactionFromGmail(options?: {
         const detail = await gmailGet<GmailThreadGetResponse>(
           accessToken,
           `/users/me/threads/${encodeURIComponent(threadId)}`,
-          { format: "full" }
+          { format: "full" },
+          { timeoutMs: detailRequestTimeoutMs }
         );
-        const chosenMessage =
-          [...(detail.messages ?? [])].reverse().find(looksLikeSatisfactionMessage) ??
-          detail.messages?.[0];
-        if (!chosenMessage) return null;
+        let chosenMessage: GmailMessage | null = null;
+        let bestScore = 0;
+        for (const message of [...(detail.messages ?? [])].reverse()) {
+          const subject = normalizeTextForMatch(
+            findHeader(message.payload?.headers, "Subject")
+          );
+          const snippet = normalizeTextForMatch(message.snippet ?? null);
+          if (
+            SATISFACTION_NEGATIVE_SUBJECT_PATTERN.test(subject) &&
+            !SATISFACTION_POSITIVE_SIGNAL_PATTERN.test(subject) &&
+            !SATISFACTION_POSITIVE_SIGNAL_PATTERN.test(snippet)
+          ) {
+            continue;
+          }
+          const signalScore = getSatisfactionSignalScore(message);
+          if (signalScore > bestScore) {
+            bestScore = signalScore;
+            chosenMessage = message;
+          }
+        }
+        if (!chosenMessage || bestScore < SATISFACTION_MIN_SIGNAL_SCORE) {
+          return null;
+        }
 
         const headers = chosenMessage.payload?.headers;
-        const bodyText = extractBodyText(chosenMessage);
+        const bodyText = extractPrimaryBodyText(extractBodyText(chosenMessage));
 
         return {
           threadId,
@@ -313,7 +393,6 @@ export async function collectSatisfactionFromGmail(options?: {
     sourceKey: GMAIL_SATISFACTION_SOURCE_KEY,
     query,
     accountEmail,
-    targetAddresses,
     threads,
     incremental: isIncremental,
   };

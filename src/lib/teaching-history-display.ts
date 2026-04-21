@@ -65,6 +65,10 @@ function normalizeText(value: string | null | undefined): string | null {
   return normalized === "" ? null : normalized;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function formatCompactMoney(amount: number): string {
   const man = amount / 10000;
   return Number.isInteger(man) ? `${man}만원` : `${man.toFixed(1)}만원`;
@@ -133,6 +137,102 @@ function stripIterationSuffix(value: string | null | undefined): string | null {
     .trim();
 }
 
+export function normalizeCompanyKey(value: string | null | undefined): string {
+  return (stripIterationSuffix(value) ?? "")
+    .replace(/\s+/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function stripLeadingCourseMeta(value: string): string {
+  let next = value;
+
+  while (true) {
+    const updated = next
+      .replace(/^\[(?:부가세\s*별도|vat\s*별도|vat)\]\s*/iu, "")
+      .replace(/^\((?:B2B|B2C|온라인|오프라인|비대면|대면|집합)\)\s*/iu, "")
+      .trim();
+
+    if (updated === next) {
+      return updated;
+    }
+
+    next = updated;
+  }
+}
+
+function stripCourseCompanyPrefix(
+  value: string,
+  companyName: string | null | undefined
+): string {
+  const company = stripIterationSuffix(companyName);
+  if (!company) return value;
+
+  const exactPrefix = new RegExp(
+    `^${escapeRegExp(company)}(?:\\([^)]*\\))?[\\s_:/-]+`,
+    "u"
+  );
+
+  return value.replace(exactPrefix, "").trim();
+}
+
+function stripLeadingUnderscorePrefix(value: string): string {
+  const underscoreIndex = value.indexOf("_");
+  if (underscoreIndex <= 0) return value;
+
+  const prefix = value.slice(0, underscoreIndex).trim();
+  const suffix = value.slice(underscoreIndex + 1).trim();
+
+  if (!suffix) return value;
+  if (prefix.length > 30) return value;
+
+  return suffix;
+}
+
+function stripTrailingCourseMeta(value: string): string {
+  let next = value;
+
+  while (true) {
+    const updated = next
+      .replace(
+        /\s*[_-]?\s*\((?:오프라인|온라인|비대면|대면|집합|단기|장기)[^)]*\)\s*$/u,
+        ""
+      )
+      .replace(
+        /\s*[_-]?\s*(?:19|20|21|22|23|24|25|26)\s*년\s*\d{1,2}\s*월\s*$/u,
+        ""
+      )
+      .replace(/\s*[_-]?\s*\((?:19|20)\d{2}\)\s*$/u, "")
+      .replace(/\s*\((?:오프라인|온라인|비대면|대면|집합|단기|장기)[^)]*$/u, "")
+      .trim();
+
+    if (updated === next) {
+      return updated;
+    }
+
+    next = updated;
+  }
+}
+
+function compactCourseTitle(item: TeachingHistoryDisplayItem): string | null {
+  const courseName = normalizeText(item.course_name);
+  if (!courseName) return null;
+
+  const withoutUnderscorePrefix = stripLeadingUnderscorePrefix(courseName);
+  const withSpaces = withoutUnderscorePrefix
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const withoutLeadingMeta = stripLeadingCourseMeta(withSpaces);
+  const withoutCompanyPrefix = stripCourseCompanyPrefix(
+    withoutLeadingMeta,
+    item.company_name
+  );
+  const withoutTrailingMeta = stripTrailingCourseMeta(withoutCompanyPrefix);
+
+  return normalizeText(withoutTrailingMeta) ?? courseName;
+}
+
 export function extractTeachingHistoryRange(
   item: TeachingHistoryDisplayItem
 ): { start_date: string | null; end_date: string | null } {
@@ -174,7 +274,7 @@ function getOverlapRange(
 
 function getCourseSignature(item: TeachingHistoryDisplayItem): string {
   const courseName = normalizeText(item.course_name) ?? "";
-  const companyName = stripIterationSuffix(item.company_name) ?? "";
+  const companyName = normalizeCompanyKey(item.company_name);
   const courseId = normalizeText(item.course_id) ?? "";
   const specialLabel = getSpecialItemLabel(item) ?? "";
 
@@ -217,7 +317,7 @@ export function getTeachingHistoryDedupSignature(
 
   return [
     item.course_name?.trim() ?? "",
-    item.company_name?.trim() ?? "",
+    normalizeCompanyKey(item.company_name),
     item.course_id?.trim() ?? "",
     dealFeeHourly ?? "",
     item.contract_type?.trim() ?? "",
@@ -292,7 +392,7 @@ export function getTeachingHistoryDisplayTitle(
   item: TeachingHistoryDisplayItem
 ): string {
   return (
-    normalizeText(item.course_name) ||
+    compactCourseTitle(item) ||
     (normalizeText(item.course_id)
       ? `코스ID ${normalizeText(item.course_id)}`
       : null) ||
@@ -305,15 +405,7 @@ export function getTeachingHistoryDisplayTitle(
 export function getTeachingHistoryDisplayCompany(
   item: TeachingHistoryDisplayItem
 ): string | null {
-  const company = stripIterationSuffix(item.company_name);
-  if (!company) return null;
-
-  const title = getTeachingHistoryDisplayTitle(item);
-  if (title === company || title.includes(company)) {
-    return null;
-  }
-
-  return company;
+  return stripIterationSuffix(item.company_name);
 }
 
 export function groupTeachingHistories(
@@ -379,7 +471,8 @@ export function groupTeachingHistories(
       existing.display_company = nextDisplayCompany;
     } else if (
       nextDisplayCompany &&
-      normalizeText(existing.display_company) !== normalizeText(nextDisplayCompany)
+      normalizeCompanyKey(existing.display_company) !==
+        normalizeCompanyKey(nextDisplayCompany)
     ) {
       const existingBase = stripIterationSuffix(existing.display_company);
       const nextBase = stripIterationSuffix(nextDisplayCompany);
@@ -414,4 +507,17 @@ export function countGroupedTeachingHistories(
   }
 ): number {
   return groupTeachingHistories(items, options).length;
+}
+
+export function sumGroupedTeachingHistoryHours(
+  items: TeachingHistoryDisplayItem[],
+  options?: {
+    fromDate?: string;
+    untilDate?: string;
+  }
+): number {
+  return groupTeachingHistories(items, options).reduce(
+    (sum, item) => sum + (item.total_hours ?? 0),
+    0
+  );
 }

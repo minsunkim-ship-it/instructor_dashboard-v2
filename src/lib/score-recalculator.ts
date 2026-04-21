@@ -65,6 +65,40 @@ interface ValidationCandidate {
   score: number;
 }
 
+interface ScoreRecalcTimings {
+  loadActivityStatsMs: number;
+  loadTeachingHistoryCountsMs: number;
+  loadInstructorsMs: number;
+  scoringMs: number;
+  writeScoresMs: number;
+  validationMs: number;
+}
+
+function breakdownEquals(
+  current: Prisma.JsonValue,
+  next: ScoreBreakdown
+): boolean {
+  if (!current || typeof current !== "object" || Array.isArray(current)) {
+    return false;
+  }
+
+  const record = current as Record<string, unknown>;
+  const keys: Array<keyof ScoreBreakdown> = [
+    "courses",
+    "satisfaction",
+    "slack",
+    "recency",
+    "salesmap",
+    "email",
+    "ops_channel",
+  ];
+
+  return keys.every((key) => {
+    const value = record[key];
+    return typeof value === "number" && value === next[key];
+  });
+}
+
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
@@ -111,63 +145,41 @@ function localDayDiff(mostRecent: Date | null): number | null {
 }
 
 async function loadActivityStatsByInstructor(): Promise<Map<string, ActivityStats>> {
-  const registries = await prisma.activityReviewRegistry.findMany({
-    where: {
-      matchStatus: { in: [...ACCEPTED_ACTIVITY_STATUSES] },
-      resolvedInstructorId: { not: null },
-    },
-    select: {
-      resolvedInstructorId: true,
-      sourceType: true,
-      slackActivityCount: true,
-      emailActivityCount: true,
-      opsReportActivityCount: true,
-      dispatchRequestActivityCount: true,
-      lastActivityAt: true,
-    },
-  });
+  const rows = await prisma.$queryRaw<
+    Array<{
+      instructorId: string;
+      slackMentions: number | bigint | null;
+      slackLastActivityAt: Date | null;
+      gmailThreads: number | bigint | null;
+      gmailLastActivityAt: Date | null;
+      opsReportCount: number | bigint | null;
+    }>
+  >(Prisma.sql`
+    SELECT
+      resolved_instructor_id AS "instructorId",
+      COALESCE(SUM(slack_activity_count), 0) AS "slackMentions",
+      MAX(CASE WHEN source_type = 'slack' THEN last_activity_at END) AS "slackLastActivityAt",
+      COALESCE(SUM(email_activity_count), 0) AS "gmailThreads",
+      MAX(CASE WHEN source_type = 'gmail' THEN last_activity_at END) AS "gmailLastActivityAt",
+      COALESCE(SUM(ops_report_activity_count), 0) AS "opsReportCount"
+    FROM activity_review_registries
+    WHERE match_status IN (${Prisma.join(
+      ACCEPTED_ACTIVITY_STATUSES.map((status) => Prisma.sql`${status}`)
+    )})
+      AND resolved_instructor_id IS NOT NULL
+    GROUP BY resolved_instructor_id
+  `);
 
   const statsByInstructor = new Map<string, ActivityStats>();
-
-  for (const registry of registries) {
-    const instructorId = registry.resolvedInstructorId;
-    if (!instructorId) continue;
-
-    let stats = statsByInstructor.get(instructorId);
-    if (!stats) {
-      stats = {
-        slackMentions: 0,
-        slackLastActivityAt: null,
-        gmailThreads: 0,
-        gmailLastActivityAt: null,
-        opsReportCount: 0,
-      };
-      statsByInstructor.set(instructorId, stats);
-    }
-
-    stats.slackMentions += registry.slackActivityCount ?? 0;
-    stats.gmailThreads += registry.emailActivityCount ?? 0;
-    stats.opsReportCount += registry.opsReportActivityCount ?? 0;
-
-    if (registry.sourceType === "slack") {
-      if (
-        registry.lastActivityAt &&
-        (!stats.slackLastActivityAt ||
-          registry.lastActivityAt > stats.slackLastActivityAt)
-      ) {
-        stats.slackLastActivityAt = registry.lastActivityAt;
-      }
-    }
-
-    if (registry.sourceType === "gmail") {
-      if (
-        registry.lastActivityAt &&
-        (!stats.gmailLastActivityAt ||
-          registry.lastActivityAt > stats.gmailLastActivityAt)
-      ) {
-        stats.gmailLastActivityAt = registry.lastActivityAt;
-      }
-    }
+  for (const row of rows) {
+    if (!row.instructorId) continue;
+    statsByInstructor.set(row.instructorId, {
+      slackMentions: Number(row.slackMentions ?? 0),
+      slackLastActivityAt: row.slackLastActivityAt,
+      gmailThreads: Number(row.gmailThreads ?? 0),
+      gmailLastActivityAt: row.gmailLastActivityAt,
+      opsReportCount: Number(row.opsReportCount ?? 0),
+    });
   }
 
   return statsByInstructor;
@@ -380,33 +392,78 @@ async function recordValidationIssues(
  */
 export async function recalculateAllScores(options?: {
   runId?: string | null;
-}): Promise<void> {
+  validateIssues?: boolean;
+}): Promise<{
+  updatedInstructors: number;
+  totalInstructors: number;
+  timings: ScoreRecalcTimings;
+}> {
   const now = new Date();
+  const validateIssues = options?.validateIssues ?? true;
+  const timings: ScoreRecalcTimings = {
+    loadActivityStatsMs: 0,
+    loadTeachingHistoryCountsMs: 0,
+    loadInstructorsMs: 0,
+    scoringMs: 0,
+    writeScoresMs: 0,
+    validationMs: 0,
+  };
+
+  const instructorsPromise = (async () => {
+    const startedAt = Date.now();
+    const instructors = await prisma.instructor.findMany({
+      select: {
+        id: true,
+        name: true,
+        flag: true,
+        createdAt: true,
+        isPracticeCoach: true,
+        satisfactionAvg: true,
+        satisfactionCount: true,
+        satisfactionIsImputed: true,
+        contractSheetRows: true,
+        totalCourses: true,
+        score: true,
+        scoreBreakdown: true,
+        rank: true,
+        scorePolicyVersion: true,
+        salesmapDealCount: true,
+        salesmapLastDealAt: true,
+      },
+    });
+    timings.loadInstructorsMs = Date.now() - startedAt;
+    return instructors;
+  })();
+
+  const activityStatsPromise = (async () => {
+    const startedAt = Date.now();
+    const stats = await loadActivityStatsByInstructor();
+    timings.loadActivityStatsMs = Date.now() - startedAt;
+    return stats;
+  })();
+
+  const teachingHistoryCountsPromise = (async () => {
+    if (!validateIssues) {
+      return {
+        contractSheetCounts: new Map<string, number>(),
+        totalCounts: new Map<string, number>(),
+      };
+    }
+    const startedAt = Date.now();
+    const counts = await loadTeachingHistoryCounts();
+    timings.loadTeachingHistoryCountsMs = Date.now() - startedAt;
+    return counts;
+  })();
 
   const [
     allInstructors,
     activityStatsByInstructor,
     teachingHistoryCounts,
-  ] =
-    await Promise.all([
-      prisma.instructor.findMany({
-        select: {
-          id: true,
-          name: true,
-          flag: true,
-          createdAt: true,
-          isPracticeCoach: true,
-          satisfactionAvg: true,
-          satisfactionCount: true,
-          contractSheetRows: true,
-          totalCourses: true,
-          salesmapDealCount: true,
-          salesmapLastDealAt: true,
-        },
-      }),
-      loadActivityStatsByInstructor(),
-      loadTeachingHistoryCounts(),
-    ]);
+  ] = await Promise.all([
+    instructorsPromise,
+    activityStatsPromise,
+    teachingHistoryCountsPromise,
+  ]);
 
   allInstructors.sort((a, b) => {
     const byCreatedAt = a.createdAt.getTime() - b.createdAt.getTime();
@@ -454,6 +511,7 @@ export async function recalculateAllScores(options?: {
   );
 
   const validationCandidates: ValidationCandidate[] = [];
+  const scoringStartedAt = Date.now();
 
   const scored = allInstructors.map((inst, index) => {
     const activityStats = activityStatsByInstructor.get(inst.id) ?? {
@@ -522,21 +580,23 @@ export async function recalculateAllScores(options?: {
           ops_channel: round1(rawOpsScore),
         };
 
-    validationCandidates.push({
-      id: inst.id,
-      name: inst.name,
-      flag: inst.flag,
-      isPracticeCoach: inst.isPracticeCoach,
-      satisfactionAvg:
-        inst.satisfactionAvg !== null ? Number(inst.satisfactionAvg) : null,
-      contractSheetRows: inst.contractSheetRows,
-      contractHistoryCount:
-        teachingHistoryCounts.contractSheetCounts.get(inst.id) ?? 0,
-      totalHistoryCount: teachingHistoryCounts.totalCounts.get(inst.id) ?? 0,
-      totalCourses: inst.totalCourses,
-      preCoachScore,
-      score,
-    });
+    if (validateIssues) {
+      validationCandidates.push({
+        id: inst.id,
+        name: inst.name,
+        flag: inst.flag,
+        isPracticeCoach: inst.isPracticeCoach,
+        satisfactionAvg:
+          inst.satisfactionAvg !== null ? Number(inst.satisfactionAvg) : null,
+        contractSheetRows: inst.contractSheetRows,
+        contractHistoryCount:
+          teachingHistoryCounts.contractSheetCounts.get(inst.id) ?? 0,
+        totalHistoryCount: teachingHistoryCounts.totalCounts.get(inst.id) ?? 0,
+        totalCourses: inst.totalCourses,
+        preCoachScore,
+        score,
+      });
+    }
 
     return {
       id: inst.id,
@@ -544,26 +604,62 @@ export async function recalculateAllScores(options?: {
       breakdown,
       isImputed: !hasSatisfaction,
       originalIndex: index,
+      currentScore: inst.score !== null ? Number(inst.score) : null,
+      currentBreakdown: inst.scoreBreakdown,
+      currentRank: inst.rank,
+      currentIsImputed: inst.satisfactionIsImputed,
+      currentPolicyVersion: inst.scorePolicyVersion,
     };
   });
+  timings.scoringMs = Date.now() - scoringStartedAt;
 
   scored.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     return a.originalIndex - b.originalIndex;
   });
 
+  const changedRows = scored
+    .map((inst, index) => ({
+      ...inst,
+      nextRank: index + 1,
+    }))
+    .filter((inst) => {
+      return (
+        inst.currentScore !== inst.score ||
+        !breakdownEquals(inst.currentBreakdown, inst.breakdown) ||
+        inst.currentRank !== inst.nextRank ||
+        inst.currentIsImputed !== inst.isImputed ||
+        inst.currentPolicyVersion !== SCORE_VERSION
+      );
+    });
+
+  const writeScoresStartedAt = Date.now();
   const BATCH_SIZE = 100;
-  for (let i = 0; i < scored.length; i += BATCH_SIZE) {
-    const batch = scored.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < changedRows.length; i += BATCH_SIZE) {
+    const batch = changedRows.slice(i, i + BATCH_SIZE);
     const values = batch
-      .map((inst, batchIdx) => {
-        const rank = i + batchIdx + 1;
+      .map((inst) => {
         const breakdownJson = JSON.stringify(inst.breakdown).replace(/'/g, "''");
-        return `('${inst.id}'::uuid, ${inst.score}, '${breakdownJson}'::jsonb, '${now.toISOString()}'::timestamptz, ${rank}, ${inst.isImputed}, '${SCORE_VERSION}')`;
+        return `('${inst.id}'::uuid, ${inst.score}, '${breakdownJson}'::jsonb, '${now.toISOString()}'::timestamptz, ${inst.nextRank}, ${inst.isImputed}, '${SCORE_VERSION}')`;
       })
       .join(",\n");
 
-    await prisma.$executeRawUnsafe(`
+    if (!values) continue;
+
+    const rows = batch.map((inst) => {
+      const breakdownJson = JSON.stringify(inst.breakdown);
+      return Prisma.sql`(
+        ${inst.id}::uuid,
+        ${inst.score},
+        ${breakdownJson}::jsonb,
+        ${now.toISOString()}::timestamptz,
+        ${inst.nextRank},
+        ${inst.isImputed},
+        ${SCORE_VERSION}
+      )`;
+    });
+
+    await prisma.$executeRaw`
       UPDATE instructors AS t SET
         score = v.score,
         score_breakdown = v.breakdown,
@@ -571,11 +667,21 @@ export async function recalculateAllScores(options?: {
         rank = v.rank,
         satisfaction_is_imputed = v.is_imputed,
         score_policy_version = v.policy_version
-      FROM (VALUES ${values})
+      FROM (VALUES ${Prisma.join(rows)})
         AS v(id, score, breakdown, calculated_at, rank, is_imputed, policy_version)
       WHERE t.id = v.id
-    `);
+    `;
   }
+  timings.writeScoresMs = Date.now() - writeScoresStartedAt;
 
-  await recordValidationIssues(validationCandidates, options?.runId ?? null);
+  if (validateIssues) {
+    const validationStartedAt = Date.now();
+    await recordValidationIssues(validationCandidates, options?.runId ?? null);
+    timings.validationMs = Date.now() - validationStartedAt;
+  }
+  return {
+    updatedInstructors: changedRows.length,
+    totalInstructors: scored.length,
+    timings,
+  };
 }

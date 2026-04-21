@@ -8,7 +8,27 @@ import {
   calculateTeachingHistoryTotalPaid,
   countGroupedTeachingHistories,
   dedupeTeachingHistories,
+  normalizeCompanyKey,
+  sumGroupedTeachingHistoryHours,
 } from "@/lib/teaching-history-display";
+import {
+  FALLBACK_LAST_UPDATED_AT,
+  getFallbackInstructorDetail,
+} from "@/lib/fallback-data";
+import { readStoredFallbackSnapshot } from "@/lib/fallback-snapshot";
+import { shouldIncludeInInstructorList } from "@/lib/instructor-list-visibility";
+import { extractNotionPropertyTextList } from "@/lib/notion-property-utils";
+import {
+  extractOperationalFeedbackNotesFromImport,
+  extractOperationalIntelligencePayload,
+  getLegacyOperationalFields,
+} from "@/lib/operational-intelligence";
+import { enrichMemoFromNotionPage } from "@/lib/notion-enrichment";
+import { loadOpsNotesJson } from "@/lib/pipeline/ops-notes-loader";
+import type {
+  NotionMemoDiagnostics,
+  OperationalEvidenceSnapshot,
+} from "@/types/api";
 
 function dedupeFeeHistoryItems<
   T extends {
@@ -25,18 +45,41 @@ function dedupeFeeHistoryItems<
   const deduped = new Map<string, T>();
 
   for (const item of items) {
-    const key = [
-      item.effectiveDate?.toISOString().split("T")[0] ?? "",
-      item.effectiveLabel ?? "",
-      item.amount ?? "",
-      item.feeKind,
-      item.context ?? "",
-      item.sourceType,
-      item.isSpecialAmount ? "1" : "0",
-    ].join("||");
+    const key = item.isSpecialAmount
+      ? [
+          item.effectiveDate?.toISOString().split("T")[0] ?? "",
+          item.effectiveLabel ?? "",
+          item.feeKind,
+          item.context ?? "",
+          item.sourceType,
+          "1",
+        ].join("||")
+      : [
+          item.effectiveDate?.toISOString().split("T")[0] ?? "",
+          item.effectiveLabel ?? "",
+          item.amount ?? "",
+          item.feeKind,
+          item.context ?? "",
+          item.sourceType,
+          "0",
+        ].join("||");
 
     const existing = deduped.get(key);
-    if (!existing || (!existing.isCurrent && item.isCurrent)) {
+    if (!existing) {
+      deduped.set(key, item);
+      continue;
+    }
+
+    if (item.isSpecialAmount) {
+      const existingAmount = existing.amount ?? 0;
+      const nextAmount = item.amount ?? 0;
+      if (nextAmount > existingAmount) {
+        deduped.set(key, item);
+      }
+      continue;
+    }
+
+    if (!existing.isCurrent && item.isCurrent) {
       deduped.set(key, item);
     }
   }
@@ -48,12 +91,412 @@ function dedupeFeeHistoryItems<
   });
 }
 
+type MatchedSatisfactionImportRow = {
+  id: string;
+  sourceType: string;
+  sourceRefKey: string | null;
+  candidateName: string | null;
+  candidateCompanyName: string | null;
+  candidateCourseName: string | null;
+  scoreNormalized: number | null;
+  responseDate: string | null;
+  createdAt: Date;
+  rawPayload: Record<string, unknown>;
+  normalizedPayload: Record<string, unknown>;
+};
+
+function normalizeText(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function dedupeStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+
+  for (const value of values) {
+    const normalized = normalizeText(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+
+  return deduped;
+}
+
+function normalizeOperationalDataRichness(
+  value: string | null | undefined
+): "rich" | "moderate" | "sparse" | "minimal" | null {
+  switch (value) {
+    case "rich":
+    case "moderate":
+    case "sparse":
+    case "minimal":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function normalizeOperationalConfidence(
+  value: string | null | undefined
+): "high" | "medium" | "low" | null {
+  switch (value) {
+    case "high":
+    case "medium":
+    case "low":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function getRecordString(
+  record: Record<string, unknown>,
+  keys: string[]
+): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && normalizeText(value)) {
+      return normalizeText(value);
+    }
+  }
+  return null;
+}
+
+function countOperationalFeedbackNotes(
+  row: Pick<MatchedSatisfactionImportRow, "sourceType" | "rawPayload">
+): number {
+  return extractOperationalFeedbackNotesFromImport({
+    sourceType: row.sourceType,
+    rawPayload: row.rawPayload,
+  }).length;
+}
+
+function matchesTeachingContext(
+  row: MatchedSatisfactionImportRow,
+  teachingCompanies: Set<string>,
+  teachingCourses: Set<string>
+): boolean {
+  const companyName =
+    normalizeText(row.candidateCompanyName) ||
+    normalizeText(
+      getRecordString(row.normalizedPayload, ["company_name", "companyName"])
+    );
+  const courseName =
+    normalizeText(row.candidateCourseName) ||
+    normalizeText(
+      getRecordString(row.normalizedPayload, ["course_name", "courseName"])
+    );
+
+  const companyMatch = companyName ? teachingCompanies.has(companyName) : false;
+  const courseMatch = courseName
+    ? Array.from(teachingCourses).some(
+        (value) => value === courseName || value.includes(courseName) || courseName.includes(value)
+      )
+    : false;
+
+  return companyMatch && courseMatch;
+}
+
+function matchesInstructorImportRow(args: {
+  row: MatchedSatisfactionImportRow;
+  instructorId: string;
+  instructorName: string;
+}): boolean {
+  const suggestedInstructorId = getRecordString(args.row.normalizedPayload, [
+    "suggested_instructor_id",
+    "suggestedInstructorId",
+    "resolved_instructor_id",
+    "instructor_id",
+  ]);
+  if (suggestedInstructorId === args.instructorId) return true;
+
+  const normalizedInstructorName = normalizeText(args.instructorName);
+  const candidateNames = [
+    args.row.candidateName,
+    getRecordString(args.row.normalizedPayload, [
+      "instructor_name",
+      "instructorName",
+    ]),
+  ];
+
+  return candidateNames.some(
+    (name) => normalizeText(name) === normalizedInstructorName
+  );
+}
+
+function buildFeedbackEvidenceSnapshot(args: {
+  source: OperationalEvidenceSnapshot["source"];
+  title: string;
+  rows: MatchedSatisfactionImportRow[];
+  instructorId: string;
+  instructorName: string;
+  teachingCompanies: Set<string>;
+  teachingCourses: Set<string>;
+}): OperationalEvidenceSnapshot {
+  const matchedRows = args.rows.filter((row) =>
+    matchesInstructorImportRow({
+      row,
+      instructorId: args.instructorId,
+      instructorName: args.instructorName,
+    })
+  );
+  const matchedFeedbackRows = matchedRows.filter(
+    (row) => countOperationalFeedbackNotes(row) > 0
+  );
+  const possiblyUnmappedRows = args.rows.filter((row) => {
+    const suggestedInstructorId = getRecordString(row.normalizedPayload, [
+      "suggested_instructor_id",
+      "suggestedInstructorId",
+      "resolved_instructor_id",
+      "instructor_id",
+    ]);
+    if (suggestedInstructorId) return false;
+    if (normalizeText(row.candidateName)) return false;
+    if (countOperationalFeedbackNotes(row) === 0) return false;
+    return matchesTeachingContext(
+      row,
+      args.teachingCompanies,
+      args.teachingCourses
+    );
+  });
+
+  const examples: OperationalEvidenceSnapshot["examples"] = [];
+
+  for (const row of matchedFeedbackRows.slice(0, 2)) {
+    const notes = extractOperationalFeedbackNotesFromImport(row);
+    for (const note of notes.slice(0, 2)) {
+      examples.push({
+        kind: "matched_feedback",
+        text: note.text,
+        source_type: row.sourceType,
+      });
+      if (examples.length >= 4) break;
+    }
+    if (examples.length >= 4) break;
+  }
+
+  if (examples.length < 4) {
+    for (const row of possiblyUnmappedRows.slice(0, 2)) {
+      const notes = extractOperationalFeedbackNotesFromImport(row);
+      for (const note of notes.slice(0, 2)) {
+        examples.push({
+          kind: "unmapped_feedback",
+          text: note.text,
+          source_type: row.sourceType,
+        });
+        if (examples.length >= 4) break;
+      }
+      if (examples.length >= 4) break;
+    }
+  }
+
+  let note: string | null = null;
+  if (matchedRows.length > 0 && matchedFeedbackRows.length === 0) {
+    note = "연결된 row는 있지만 자유서술/특이사항은 비어 있습니다.";
+  } else if (matchedRows.length === 0 && possiblyUnmappedRows.length > 0) {
+    note = "강의 이력상 관련 있어 보이는 정성 피드백이 있지만 현재 강사 매핑은 없습니다.";
+  } else if (args.rows.length === 0) {
+    note = "이 소스 자체의 수집 row가 없습니다.";
+  }
+
+  return {
+    source: args.source,
+    title: args.title,
+    total_item_count: args.rows.length,
+    matched_item_count: matchedRows.length,
+    matched_feedback_item_count: matchedFeedbackRows.length,
+    unmapped_feedback_item_count: possiblyUnmappedRows.length,
+    examples,
+    note,
+  };
+}
+
+function buildRecentSatisfactionHistory(args: {
+  rows: MatchedSatisfactionImportRow[];
+  instructorId: string;
+  instructorName: string;
+}): Array<{
+  observed_at: string | null;
+  company_name: string | null;
+  course_name: string | null;
+  session_label: string | null;
+}> {
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setUTCMonth(sixMonthsAgo.getUTCMonth() - 6);
+  const sixMonthsAgoDate = sixMonthsAgo.toISOString().slice(0, 10);
+
+  return Array.from(
+    args.rows.reduce((map, row) => {
+      if (
+        !matchesInstructorImportRow({
+          row,
+          instructorId: args.instructorId,
+          instructorName: args.instructorName,
+        })
+      ) {
+        return map;
+      }
+      if (row.scoreNormalized === null) {
+        return map;
+      }
+
+      const observedAt =
+        row.responseDate ??
+        getRecordString(row.normalizedPayload, ["response_date", "responseDate"]) ??
+        row.createdAt.toISOString().slice(0, 10);
+      if (!observedAt || observedAt < sixMonthsAgoDate) {
+        return map;
+      }
+
+      const companyName =
+        row.candidateCompanyName ??
+        getRecordString(row.normalizedPayload, ["company_name", "companyName"]);
+      const courseName =
+        row.candidateCourseName ??
+        getRecordString(row.normalizedPayload, ["course_name", "courseName"]);
+      const sessionLabel = getRecordString(row.normalizedPayload, [
+        "session_label",
+        "sessionLabel",
+      ]);
+      const key =
+        row.sourceRefKey ??
+        [observedAt, companyName ?? "", courseName ?? "", sessionLabel ?? ""].join("::");
+
+      if (!map.has(key)) {
+        map.set(key, {
+          observed_at: observedAt,
+          company_name: companyName,
+          course_name: courseName,
+          session_label: sessionLabel,
+        });
+      }
+      return map;
+    }, new Map<string, {
+      observed_at: string | null;
+      company_name: string | null;
+      course_name: string | null;
+      session_label: string | null;
+    }>())
+  )
+    .map(([, item]) => item)
+    .sort((a, b) => (b.observed_at ?? "").localeCompare(a.observed_at ?? ""));
+}
+
+function buildOperationalEvidenceSnapshots(args: {
+  instructorId: string;
+  instructorName: string;
+  teachingCompanies: Set<string>;
+  teachingCourses: Set<string>;
+  satisfactionImportRows: MatchedSatisfactionImportRow[];
+}): OperationalEvidenceSnapshot[] {
+  const sheetRows = args.satisfactionImportRows.filter((row) =>
+    ["sheet_summary", "google_forms"].includes(row.sourceType)
+  );
+  const gmailRows = args.satisfactionImportRows.filter(
+    (row) => row.sourceType === "gmail_summary"
+  );
+
+  let curatedOpsSnapshot: OperationalEvidenceSnapshot;
+  try {
+    const loadedOpsNotes = loadOpsNotesJson();
+    const matchedEntries = loadedOpsNotes.acceptedEntries.filter(
+      (entry) => normalizeText(entry.name) === normalizeText(args.instructorName)
+    );
+    curatedOpsSnapshot = {
+      source: "curated_ops",
+      title: "Curated Ops",
+      total_item_count: loadedOpsNotes.acceptedEntries.length,
+      matched_item_count: matchedEntries.length,
+      matched_feedback_item_count: matchedEntries.length,
+      unmapped_feedback_item_count: 0,
+      examples: matchedEntries.slice(0, 3).map((entry) => ({
+        kind: "curated_note" as const,
+        text: entry.memo,
+        source_type: "curated_ops",
+      })),
+      note:
+        loadedOpsNotes.totalEntries === 0
+          ? "입력 파일이 비어 있습니다."
+          : matchedEntries.length === 0
+            ? "현재 강사에 연결된 curated ops note는 없습니다."
+            : null,
+    };
+  } catch {
+    curatedOpsSnapshot = {
+      source: "curated_ops",
+      title: "Curated Ops",
+      total_item_count: 0,
+      matched_item_count: 0,
+      matched_feedback_item_count: 0,
+      unmapped_feedback_item_count: 0,
+      examples: [],
+      note: "입력 파일을 읽지 못했습니다.",
+    };
+  }
+
+  return [
+    curatedOpsSnapshot,
+    buildFeedbackEvidenceSnapshot({
+      source: "sheet_feedback",
+      title: "강의관리 시트",
+      rows: sheetRows,
+      instructorId: args.instructorId,
+      instructorName: args.instructorName,
+      teachingCompanies: args.teachingCompanies,
+      teachingCourses: args.teachingCourses,
+    }),
+    buildFeedbackEvidenceSnapshot({
+      source: "gmail_feedback",
+      title: "Gmail 만족도",
+      rows: gmailRows,
+      instructorId: args.instructorId,
+      instructorName: args.instructorName,
+      teachingCompanies: args.teachingCompanies,
+      teachingCourses: args.teachingCourses,
+    }),
+  ];
+}
+
+function buildInstructorNotFoundResponse(args: {
+  requestId: string;
+  dataMode: "live" | "stored" | "fallback";
+  isFallback: boolean;
+}) {
+  return NextResponse.json(
+    {
+      status: "error",
+      meta: {
+        request_id: args.requestId,
+        data_mode: args.dataMode,
+        is_fallback: args.isFallback,
+      },
+      errors: [
+        {
+          code: "INSTRUCTOR_NOT_FOUND",
+          message: "강사 정보를 찾을 수 없습니다.",
+        },
+      ],
+    },
+    { status: 404 }
+  );
+}
+
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   const requestId = `req_${crypto.randomUUID()}`;
+  const searchParams = new URL(request.url).searchParams;
+  const requestedLimit = Number.parseInt(
+    searchParams.get("teaching_history_limit") ?? "30",
+    10
+  );
+  const teachingHistoryLimit =
+    Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 300)
+      : 30;
 
   try {
     const inst = await prisma.instructor.findUnique({
@@ -62,7 +505,6 @@ export async function GET(
         teachingHistories: {
           orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
         },
-        satisfactionRecords: true,
         // T8: fee_histories — effectiveDate desc, createdAt desc
         feeHistories: {
           orderBy: [
@@ -70,19 +512,18 @@ export async function GET(
             { createdAt: "desc" },
           ],
         },
+        instructorIntelligence: true,
+        sourceLinks: true,
       },
     });
 
-    if (!inst) {
+    if (!inst || !shouldIncludeInInstructorList(inst)) {
       // 6-6: 404 INSTRUCTOR_NOT_FOUND
-      return NextResponse.json(
-        {
-          status: "error",
-          meta: { request_id: requestId, data_mode: "live", is_fallback: false },
-          errors: [{ code: "INSTRUCTOR_NOT_FOUND", message: "강사 정보를 찾을 수 없습니다." }],
-        },
-        { status: 404 }
-      );
+      return buildInstructorNotFoundResponse({
+        requestId,
+        dataMode: "live",
+        isFallback: false,
+      });
     }
 
     // 6-4: 전임강사 규칙
@@ -119,7 +560,7 @@ export async function GET(
       untilDate: today,
     });
     const feeHistory = dedupeFeeHistoryItems(inst.feeHistories);
-    const teachingHistoryVisible = teachingHistory.slice(0, 30);
+    const teachingHistoryVisible = teachingHistory.slice(0, teachingHistoryLimit);
     const teachingHistoryRemainingCount = Math.max(
       0,
       teachingHistory.length - teachingHistoryVisible.length
@@ -129,9 +570,217 @@ export async function GET(
       fromDate: "2025-01-01",
       untilDate: today,
     });
+    const totalHours = sumGroupedTeachingHistoryHours(teachingHistory, {
+      fromDate: "2025-01-01",
+      untilDate: today,
+    });
     const recentCourses6mo = countGroupedTeachingHistories(teachingHistory, {
       fromDate: sixMonthsAgo.toISOString().split("T")[0],
       untilDate: today,
+    });
+    let memoRaw = inst.memoRaw;
+    const notionMemoDiagnostics: NotionMemoDiagnostics = {
+      source_linked: Boolean(
+        inst.sourceLinks.find((item) => item.sourceType === "notion" && item.externalKey)
+      ),
+      notion_page_id: null,
+      enrichment_attempted: false,
+      enrichment_updated: false,
+      comment_capability: "unknown",
+      page_comment_count: 0,
+      block_comment_count: 0,
+      block_text_count: 0,
+      incoming_line_count: 0,
+      error_message: null,
+    };
+    const notionSourceLink = inst.sourceLinks.find(
+      (item) => item.sourceType === "notion" && item.externalKey
+    );
+    if (notionSourceLink?.externalKey) {
+      notionMemoDiagnostics.notion_page_id = notionSourceLink.externalKey;
+    }
+    const shouldAttemptNotionEnrichment =
+      Boolean(notionSourceLink?.externalKey) &&
+      (searchParams.get("include_notion_enrichment") === "1" || !memoRaw);
+
+    if (notionSourceLink?.externalKey && shouldAttemptNotionEnrichment) {
+      notionMemoDiagnostics.enrichment_attempted = true;
+      try {
+        const enriched = await enrichMemoFromNotionPage({
+          existingMemo: memoRaw,
+          notionPageId: notionSourceLink.externalKey,
+        });
+        notionMemoDiagnostics.enrichment_updated = enriched.updated;
+        notionMemoDiagnostics.comment_capability = enriched.commentCapability;
+        notionMemoDiagnostics.page_comment_count = enriched.pageCommentCount;
+        notionMemoDiagnostics.block_comment_count = enriched.blockCommentCount;
+        notionMemoDiagnostics.block_text_count = enriched.blockTextCount;
+        notionMemoDiagnostics.incoming_line_count = enriched.incomingLineCount;
+
+        if (enriched.updated) {
+          await prisma.instructor.update({
+            where: { id: inst.id },
+            data: { memoRaw: enriched.mergedMemo },
+          });
+          memoRaw = enriched.mergedMemo;
+        }
+      } catch (error) {
+        notionMemoDiagnostics.error_message =
+          error instanceof Error ? error.message : String(error);
+        // 상세 조회 자체는 DB 저장 memoRaw로 계속 응답한다.
+      }
+    }
+
+    const operationalPayload = extractOperationalIntelligencePayload(
+      inst.instructorIntelligence?.sourceSummary
+    );
+    const legacyOperationalFields =
+      getLegacyOperationalFields(operationalPayload);
+    const payloadHasBehavioralSignals =
+      operationalPayload.raw_operational_notes.length > 0 ||
+      operationalPayload.classified_notes.length > 0 ||
+      operationalPayload.human_followups.length > 0 ||
+      operationalPayload.behavioral_intelligence.risk_patterns.length > 0 ||
+      operationalPayload.behavioral_intelligence.strength_patterns.length > 0 ||
+      operationalPayload.behavioral_intelligence.recommendation !== null ||
+      operationalPayload.behavioral_intelligence.key_question_for_humans !== null ||
+      operationalPayload.behavioral_intelligence.teaching_style !== null ||
+      operationalPayload.behavioral_intelligence.curriculum_compliance !== null ||
+      operationalPayload.behavioral_intelligence.attitude !== null;
+    const storedDataRichness = normalizeOperationalDataRichness(
+      inst.instructorIntelligence?.dataRichness
+    );
+    const storedConfidence = normalizeOperationalConfidence(
+      inst.instructorIntelligence?.confidence
+    );
+    const mergedBehavioralIntelligence = {
+      ...operationalPayload.behavioral_intelligence,
+      risk_patterns: dedupeStrings([
+        ...operationalPayload.behavioral_intelligence.risk_patterns,
+        ...(inst.instructorIntelligence?.riskNotes ?? []),
+      ]),
+      key_question_for_humans:
+        operationalPayload.behavioral_intelligence.key_question_for_humans ??
+        inst.instructorIntelligence?.opsCheckNote ??
+        null,
+      data_richness:
+        payloadHasBehavioralSignals
+          ? operationalPayload.behavioral_intelligence.data_richness
+          : storedDataRichness ??
+            operationalPayload.behavioral_intelligence.data_richness,
+      confidence:
+        payloadHasBehavioralSignals
+          ? operationalPayload.behavioral_intelligence.confidence
+          : storedConfidence ??
+            operationalPayload.behavioral_intelligence.confidence,
+    };
+    const recommendedFor = dedupeStrings([
+      ...(inst.instructorIntelligence?.recommendedFor ?? []),
+      ...legacyOperationalFields.recommended_for,
+    ]);
+    const avoidFor = dedupeStrings([
+      ...(inst.instructorIntelligence?.avoidFor ?? []),
+      ...legacyOperationalFields.avoid_for,
+    ]);
+    const riskNotes = dedupeStrings([
+      ...(inst.instructorIntelligence?.riskNotes ?? []),
+      ...legacyOperationalFields.risk_notes,
+      ...mergedBehavioralIntelligence.risk_patterns,
+    ]);
+    const rawTeachingCompanies = Array.from(
+      new Set(
+        teachingHistoryAll
+          .map((row) => normalizeText(row.company_name))
+          .filter(Boolean)
+      )
+    );
+    const rawTeachingCourses = Array.from(
+      new Set(
+        teachingHistoryAll
+          .map((row) => normalizeText(row.course_name))
+          .filter(Boolean)
+      )
+    );
+    const teachingCompanies = new Set(
+      teachingHistoryAll
+        .map((row) => normalizeCompanyKey(row.company_name))
+        .filter(Boolean)
+    );
+    const teachingCourses = new Set(
+      teachingHistoryAll
+        .map((row) => normalizeText(row.course_name))
+        .filter(Boolean)
+    );
+    const satisfactionImportSearchClauses = [
+      { candidateName: inst.name },
+      ...(rawTeachingCompanies.length > 0
+        ? [{ candidateCompanyName: { in: rawTeachingCompanies } }]
+        : []),
+      ...(rawTeachingCourses.length > 0
+        ? [{ candidateCourseName: { in: rawTeachingCourses } }]
+        : []),
+    ];
+    const satisfactionImportRows =
+      satisfactionImportSearchClauses.length === 0
+        ? []
+        : (
+            await prisma.satisfactionImportItem.findMany({
+              where: {
+                sourceType: {
+                  in: ["sheet_summary", "google_forms", "gmail_summary"],
+                },
+                OR: satisfactionImportSearchClauses,
+              },
+              select: {
+                id: true,
+                sourceType: true,
+                sourceRefKey: true,
+                candidateName: true,
+                candidateCompanyName: true,
+                candidateCourseName: true,
+                scoreNormalized: true,
+                responseDate: true,
+                createdAt: true,
+                rawPayload: true,
+                normalizedPayload: true,
+              },
+            })
+          ).map((row) => ({
+            id: row.id,
+            sourceType: row.sourceType,
+            sourceRefKey: row.sourceRefKey,
+            candidateName: row.candidateName,
+            candidateCompanyName: row.candidateCompanyName,
+            candidateCourseName: row.candidateCourseName,
+            scoreNormalized:
+              row.scoreNormalized !== null ? Number(row.scoreNormalized) : null,
+            responseDate:
+              row.responseDate?.toISOString().slice(0, 10) ?? null,
+            createdAt: row.createdAt,
+            rawPayload:
+              row.rawPayload &&
+              typeof row.rawPayload === "object" &&
+              !Array.isArray(row.rawPayload)
+                ? (row.rawPayload as Record<string, unknown>)
+                : {},
+            normalizedPayload:
+              row.normalizedPayload &&
+              typeof row.normalizedPayload === "object" &&
+              !Array.isArray(row.normalizedPayload)
+                ? (row.normalizedPayload as Record<string, unknown>)
+                : {},
+          }));
+    const recentSatisfactionHistory = buildRecentSatisfactionHistory({
+      rows: satisfactionImportRows,
+      instructorId: inst.id,
+      instructorName: inst.name,
+    });
+    const operationalEvidenceSnapshots = buildOperationalEvidenceSnapshots({
+      instructorId: inst.id,
+      instructorName: inst.name,
+      teachingCompanies,
+      teachingCourses,
+      satisfactionImportRows,
     });
 
     const response = {
@@ -147,16 +796,22 @@ export async function GET(
         name: inst.name,
         affiliation: inst.affiliation,
         categories: inst.categories,
+        teaching_titles: extractNotionPropertyTextList(
+          inst.notionRawProperties,
+          "담당 강의 정보"
+        ),
         contact: {
           email: inst.contactEmail,
           phone: inst.contactPhone,
         },
         specialties: inst.specialties,
         profile_summary: inst.profileSummary,
-        memo: inst.memoRaw,
+        memo: memoRaw,
+        notion_memo_diagnostics: notionMemoDiagnostics,
         is_fulltime: isFulltime,
         is_practice_coach: inst.isPracticeCoach,
         total_courses: totalCourses,
+        total_hours: totalHours,
         recent_courses_6mo: recentCourses6mo,
         // 6-4: total_paid — teaching_histories 기반 추정 누적 지급액
         total_paid: totalPaid,
@@ -169,11 +824,22 @@ export async function GET(
           count: inst.satisfactionCount,
           is_imputed: inst.satisfactionIsImputed,
         },
-        // 6-4: 추천/지양/리스크 — instructor_intelligence 기준 (파일럿 범위 밖이므로 null/빈값)
-        recommended_for: [],
-        avoid_for: [],
-        risk_notes: [],
-        ops_check_note: null,
+        recent_satisfaction_history: recentSatisfactionHistory,
+        recommended_for: recommendedFor,
+        avoid_for: avoidFor,
+        risk_notes: riskNotes,
+        raw_operational_notes: operationalPayload.raw_operational_notes,
+        classified_notes: operationalPayload.classified_notes,
+        human_followups: operationalPayload.human_followups,
+        behavioral_intelligence: mergedBehavioralIntelligence,
+        operational_intelligence_meta: {
+          generated_at:
+            inst.instructorIntelligence?.generatedAt?.toISOString() ?? null,
+          generated_by: inst.instructorIntelligence?.generatedBy ?? null,
+          generation_model:
+            inst.instructorIntelligence?.generationModel ?? null,
+        },
+        operational_evidence_snapshots: operationalEvidenceSnapshots,
         // 6-4: 전임강사는 fee_history 빈 배열. T8: 비전임 강사는 fee_histories 테이블에서 조회.
         fee_history: isFulltime
           ? []
@@ -196,12 +862,68 @@ export async function GET(
 
     return NextResponse.json(response);
   } catch {
-    // 6-6: 500 DETAIL_FETCH_FAILED
+    const snapshot = await readStoredFallbackSnapshot();
+    const snapshotDetail = snapshot?.details[id] ?? null;
+    const fallbackDetail = snapshotDetail ?? getFallbackInstructorDetail(id);
+
+    if (fallbackDetail && !shouldIncludeInInstructorList(fallbackDetail)) {
+      return buildInstructorNotFoundResponse({
+        requestId,
+        dataMode: snapshotDetail ? "stored" : "fallback",
+        isFallback: true,
+      });
+    }
+
+    if (fallbackDetail) {
+      const teachingHistoryVisible = (
+        fallbackDetail.teaching_history as unknown[]
+      ).slice(0, teachingHistoryLimit);
+      const teachingHistoryRemainingCount = Math.max(
+        0,
+        (fallbackDetail.teaching_history as unknown[]).length -
+          teachingHistoryVisible.length
+      );
+
+      return NextResponse.json({
+        status: "success",
+        meta: {
+          request_id: requestId,
+          data_mode: snapshotDetail ? "stored" : "fallback",
+          is_fallback: true,
+          last_updated_at: snapshot?.generated_at ?? FALLBACK_LAST_UPDATED_AT,
+        },
+        data: {
+          ...fallbackDetail,
+          total_hours: fallbackDetail.total_hours ?? 0,
+          teaching_history: teachingHistoryVisible,
+          teaching_history_remaining_count: teachingHistoryRemainingCount,
+        },
+        errors: [
+          {
+            code: snapshotDetail ? "DETAIL_STORED_FALLBACK" : "DETAIL_FALLBACK",
+            message: snapshotDetail
+              ? "상세 조회 실패로 마지막 정상 스냅샷 데이터를 표시합니다."
+              : "상세 조회 실패로 정적 fallback 데이터를 표시합니다.",
+          },
+        ],
+      });
+    }
+
     return NextResponse.json(
       {
         status: "error",
-        meta: { request_id: requestId, data_mode: "live", is_fallback: false, last_updated_at: null },
-        errors: [{ code: "DETAIL_FETCH_FAILED", message: "강사 상세 조회에 실패했습니다." }],
+        meta: {
+          request_id: requestId,
+          data_mode: "live",
+          is_fallback: false,
+          last_updated_at: null,
+        },
+        errors: [
+          {
+            code: "DETAIL_FETCH_FAILED",
+            message: "강사 상세 조회에 실패했습니다.",
+          },
+        ],
       },
       { status: 500 }
     );

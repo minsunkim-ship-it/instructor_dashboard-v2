@@ -17,6 +17,7 @@ export interface SatisfactionSheetSourceDefinition {
 export interface SatisfactionSheetCollectResult {
   definition: SatisfactionSheetSourceDefinition;
   rows: string[][];
+  error?: string;
 }
 
 export const ACCESSIBLE_SATISFACTION_SHEET_SOURCES: SatisfactionSheetSourceDefinition[] = [
@@ -93,15 +94,22 @@ export async function collectSatisfactionSheets(options?: {
       )
     : ACCESSIBLE_SATISFACTION_SHEET_SOURCES;
 
-  const results: SatisfactionSheetCollectResult[] = [];
-  for (const definition of sources) {
-    const rows = await sheetsValuesGet(
-      accessToken,
-      definition.spreadsheetId,
-      definition.range
-    );
-    results.push({ definition, rows });
-  }
-
-  return results;
+  return Promise.all(
+    sources.map(async (definition) => {
+      try {
+        const rows = await sheetsValuesGet(
+          accessToken,
+          definition.spreadsheetId,
+          definition.range
+        );
+        return { definition, rows };
+      } catch (error) {
+        return {
+          definition,
+          rows: [],
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })
+  );
 }

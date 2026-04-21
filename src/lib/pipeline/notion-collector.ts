@@ -5,6 +5,8 @@
  * 프로퍼티 매핑은 5-2-1절 기준을 따른다.
  */
 
+import { getEnvValue } from "@/lib/local-env";
+
 const NOTION_API_VERSION = "2022-06-28";
 const NOTION_BASE_URL = "https://api.notion.com/v1";
 const NOTION_REQUEST_TIMEOUT_MS = 20_000;
@@ -80,12 +82,14 @@ export interface RawNotionInstructor {
   name: string | null;
   affiliation: string[]; // multi_select raw values, order preserved
   categories: string[]; // multi_select raw values, order preserved
+  memo: string | null; // 메모 (rich_text) — 운영 메모 후보
   contactEmail: string | null;
   contactEmail2: string | null; // 이메일 주소 (2) — 보조 이메일
   contactPhone: string | null;
   contactPhone2: string | null; // 연락처2 — 보조 연락처
   baseFeeHourly: number | null; // 기본 강사료 (number)
   feeNote: string | null; // 강사료 특이사항 (rich_text)
+  rawProperties: Record<string, unknown>;
 }
 
 // --- Collector ---
@@ -96,13 +100,28 @@ interface NotionQueryResponse {
   next_cursor: string | null;
 }
 
+export interface NotionCollectProgressEvent {
+  stage: "page_request" | "page_complete" | "done";
+  page: number;
+  fetchedPages: number;
+  fetchedRows: number;
+}
+
 /**
  * Notion DB에서 모든 강사 페이지를 수집한다.
  * 04_data_pipeline.md 5-2-1절 매핑 기준.
  */
 export async function collectFromNotion(): Promise<RawNotionInstructor[]> {
-  const apiKey = process.env.NOTION_API_KEY;
-  const databaseId = process.env.NOTION_DATABASE_ID;
+  return collectFromNotionWithProgress();
+}
+
+export async function collectFromNotionWithProgress(options?: {
+  onProgress?: (
+    event: NotionCollectProgressEvent
+  ) => Promise<void> | void;
+}): Promise<RawNotionInstructor[]> {
+  const apiKey = getEnvValue("NOTION_API_KEY");
+  const databaseId = getEnvValue("NOTION_DATABASE_ID");
 
   if (!apiKey) throw new Error("NOTION_API_KEY 환경변수가 설정되지 않았습니다.");
   if (!databaseId)
@@ -116,11 +135,20 @@ export async function collectFromNotion(): Promise<RawNotionInstructor[]> {
 
   const allPages: { id: string; properties: Record<string, unknown> }[] = [];
   let cursor: string | null = null;
+  let page = 0;
 
   // pagination
   do {
+    page += 1;
     const body: Record<string, unknown> = { page_size: 100 };
     if (cursor) body.start_cursor = cursor;
+
+    await options?.onProgress?.({
+      stage: "page_request",
+      page,
+      fetchedPages: page - 1,
+      fetchedRows: allPages.length,
+    });
 
     const res = await fetch(
       `${NOTION_BASE_URL}/databases/${databaseId}/query`,
@@ -141,8 +169,21 @@ export async function collectFromNotion(): Promise<RawNotionInstructor[]> {
 
     const data = (await res.json()) as NotionQueryResponse;
     allPages.push(...data.results);
+    await options?.onProgress?.({
+      stage: "page_complete",
+      page,
+      fetchedPages: page,
+      fetchedRows: allPages.length,
+    });
     cursor = data.has_more ? data.next_cursor : null;
   } while (cursor);
+
+  await options?.onProgress?.({
+    stage: "done",
+    page,
+    fetchedPages: page,
+    fetchedRows: allPages.length,
+  });
 
   // 5-2-1절 프로퍼티 매핑
   return allPages.map((page) => {
@@ -156,6 +197,8 @@ export async function collectFromNotion(): Promise<RawNotionInstructor[]> {
       affiliation: extractMultiSelect(props["소속정보"]),
       // 카테고리 — multi_select, 순서 유지 배열
       categories: extractMultiSelect(props["카테고리"]),
+      // 메모 — rich_text 타입, 운영 메모 후보
+      memo: extractRichText(props["메모"]) ?? extractAny(props["메모"]),
       // 이메일 주소 — email 타입
       contactEmail:
         extractEmail(props["이메일 주소"]) ?? extractAny(props["이메일 주소"]),
@@ -175,6 +218,7 @@ export async function collectFromNotion(): Promise<RawNotionInstructor[]> {
       feeNote:
         extractRichText(props["강사료 특이사항"]) ??
         extractAny(props["강사료 특이사항"]),
+      rawProperties: props,
     };
   });
 }

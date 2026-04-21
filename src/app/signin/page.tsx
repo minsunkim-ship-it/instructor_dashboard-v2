@@ -32,7 +32,7 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
                 내부 운영 강사 대시보드
               </h1>
               <p className="max-w-xl text-base leading-7 text-gray-300">
-                강사 목록, 상세 정보, 만족도, 활동 로그, 점수 계산 결과를
+                강사 목록, 상세 정보, 최근 6개월 만족도 조사 결과, 활동 로그, 점수 계산 결과를
                 한 화면에서 확인하는 내부 전용 서비스입니다.
               </p>
             </div>

@@ -41,6 +41,13 @@ function parsePositiveInt(
   return typeof max === "number" ? Math.min(parsed, max) : parsed;
 }
 
+function formatStageMessage(parts: Record<string, unknown>): string {
+  return Object.entries(parts)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+}
+
 /**
  * 채널별 checkpoint를 source_checkpoints 테이블에서 로드한다.
  * scope_key = `slack:channel:{channelId}`
@@ -124,12 +131,94 @@ export async function POST(request: NextRequest) {
   });
 
   const syncStartedAt = new Date();
+  const syncLog = await prisma.sourceSyncLog.create({
+    data: {
+      runId: run.id,
+      sourceType: "slack",
+      status: "running",
+      startedAt: syncStartedAt,
+    },
+  });
+
+  let latestStage = "queued";
+  let latestStageDetail = "";
+  // pipelineRun.summary는 in-memory 캐시를 통해 single-query update만 수행한다.
+  // mergeRunSummary의 read-then-write 패턴을 제거해 stage당 DB 호출을 2 → 1로 축소.
+  let currentSummary: Prisma.InputJsonObject = {};
+
+  const markStage = async (
+    stage: string,
+    detail?: Record<string, unknown>,
+    extra?: Partial<{
+      fetchedCount: number;
+      updatedCount: number;
+      status: "running" | "success" | "partial" | "failed";
+      finishedAt: Date;
+    }>,
+    opts?: { coarse?: string }
+  ) => {
+    latestStage = stage;
+    latestStageDetail = detail ? formatStageMessage(detail) : "";
+
+    // syncLog는 항상 fine-level stage 기록 (route 내부 진단용)
+    await prisma.sourceSyncLog.update({
+      where: { id: syncLog.id },
+      data: {
+        ...(typeof extra?.fetchedCount === "number"
+          ? { fetchedCount: extra.fetchedCount }
+          : {}),
+        ...(typeof extra?.updatedCount === "number"
+          ? { updatedCount: extra.updatedCount }
+          : {}),
+        ...(extra?.status ? { status: extra.status } : {}),
+        ...(extra?.finishedAt ? { finishedAt: extra.finishedAt } : {}),
+        errorMessage:
+          latestStageDetail.length > 0
+            ? `stage=${stage} ${latestStageDetail}`
+            : `stage=${stage}`,
+      },
+    });
+
+    // pipelineRun.summary는 coarse 경계 전이에서만 갱신 (/api/status의 current_run.stage 관찰성 유지)
+    if (opts?.coarse) {
+      currentSummary = {
+        ...currentSummary,
+        stage: `source:slack:${opts.coarse}`,
+        stage_started_at: new Date().toISOString(),
+        stage_detail: detail
+          ? (detail as unknown as Prisma.InputJsonObject)
+          : null,
+      };
+      await prisma.pipelineRun.update({
+        where: { id: run.id },
+        data: { summary: currentSummary },
+      });
+    }
+  };
 
   try {
     // Step 1: checkpoint 로드 (reconcile 모드면 빈 배열 → full backfill)
+    await markStage(
+      "load_checkpoints",
+      { mode: isReconcile ? "reconcile" : "incremental" },
+      undefined,
+      { coarse: "load" }
+    );
     const checkpoints = isReconcile ? [] : await loadSlackCheckpoints();
 
     // Step 2: Slack direct API 수집
+    const collectStartedAt = Date.now();
+    await markStage(
+      "collect_start",
+      {
+        checkpoints: checkpoints.length,
+        per_page_limit: perPageLimit,
+        incremental_max_pages: incrementalMaxPages,
+        full_backfill_max_pages: fullBackfillMaxPages,
+      },
+      undefined,
+      { coarse: "collect" }
+    );
     const collect = await collectFromSlack({
       checkpoints,
       perPageLimit,
@@ -145,20 +234,73 @@ export async function POST(request: NextRequest) {
       (sum, c) => sum + c.messages.length,
       0
     );
+    await markStage("collect_done", {
+      collect_ms: Date.now() - collectStartedAt,
+      channels: collect.channels.length,
+      messages: totalMessages,
+      channel_errors: channelErrors.length,
+    }, {
+      fetchedCount: totalMessages,
+    });
 
     // Step 3: 정규화
+    const normalizeStartedAt = Date.now();
+    await markStage(
+      "normalize_start",
+      { messages: totalMessages },
+      undefined,
+      { coarse: "normalize" }
+    );
     const normalized = normalizeSlackCollect(collect);
+    await markStage("normalize_done", {
+      normalize_ms: Date.now() - normalizeStartedAt,
+      normalized_items: normalized.length,
+    });
 
     // Step 4: upsert + registry 취합 + aggregate 재계산 (영향받은 강사만)
-    const applyResult = await applyActivities(run.id, normalized, []);
+    const applyStartedAt = Date.now();
+    await markStage(
+      "apply_start",
+      { normalized_items: normalized.length },
+      undefined,
+      { coarse: "apply" }
+    );
+    const applyResult = await applyActivities(run.id, normalized, [], {
+      onProgress: async (stage, detail) => {
+        await markStage(`apply_${stage}`, detail);
+      },
+    });
+    await markStage("apply_done", {
+      apply_ms: Date.now() - applyStartedAt,
+      inserted: applyResult.items.inserted,
+      updated: applyResult.items.updated,
+      matched: applyResult.items.matched,
+      unmatched: applyResult.items.unmatched,
+      ambiguous: applyResult.items.ambiguous,
+      invalid: applyResult.items.invalid,
+      affected_instructors: applyResult.affectedInstructorIds.length,
+      aggregate_updates: applyResult.aggregateUpdates.length,
+    }, {
+      updatedCount: applyResult.aggregateUpdates.length,
+    });
 
     // Step 5: checkpoint 갱신
+    const checkpointStartedAt = Date.now();
+    await markStage(
+      "checkpoint_start",
+      { channels: collect.channels.length },
+      undefined,
+      { coarse: "checkpoint" }
+    );
     await saveSlackCheckpoints(
       collect.channels.map((c) => ({
         channelId: c.channelId,
         messages: c.messages,
       }))
     );
+    await markStage("checkpoint_done", {
+      checkpoint_ms: Date.now() - checkpointStartedAt,
+    });
 
     // Step 6: source_sync_logs
     const hasError = channelErrors.length > 0;
@@ -168,17 +310,23 @@ export async function POST(request: NextRequest) {
         : "partial"
       : "success";
 
-    await prisma.sourceSyncLog.create({
+    // 성공 시에도 apply substage timing은 errorMessage에 보존한다.
+    // 운영성 진단을 위해 final state에 남겨야 함 (ad-hoc 분석/대시보드 소비).
+    const applyTimingNote =
+      `apply_load_existing_ms=${applyResult.timings.loadExistingMs} ` +
+      `apply_upsert_items_ms=${applyResult.timings.upsertItemsMs} ` +
+      `apply_registry_rebuild_ms=${applyResult.timings.registryRebuildMs} ` +
+      `apply_registry_upsert_ms=${applyResult.timings.registryUpsertMs} ` +
+      `apply_aggregate_update_ms=${applyResult.timings.aggregateUpdateMs}`;
+    await prisma.sourceSyncLog.update({
+      where: { id: syncLog.id },
       data: {
-        runId: run.id,
-        sourceType: "slack",
         status: syncStatus,
         fetchedCount: totalMessages,
         updatedCount: applyResult.aggregateUpdates.length,
         errorMessage: hasError
-          ? `channel_errors:${channelErrors.length}`
-          : null,
-        startedAt: syncStartedAt,
+          ? `channel_errors:${channelErrors.length} | ${applyTimingNote}`
+          : applyTimingNote,
         finishedAt: new Date(),
       },
     });
@@ -210,6 +358,12 @@ export async function POST(request: NextRequest) {
         applyResult.unmatchedSamples as unknown as Prisma.InputJsonArray,
       ambiguous_samples:
         applyResult.ambiguousSamples as unknown as Prisma.InputJsonArray,
+      // apply 단계별 timing 보존 — final summary에 남아 /api/status 및 사후 진단에서 확인 가능
+      apply_load_existing_ms: applyResult.timings.loadExistingMs,
+      apply_upsert_items_ms: applyResult.timings.upsertItemsMs,
+      apply_registry_rebuild_ms: applyResult.timings.registryRebuildMs,
+      apply_registry_upsert_ms: applyResult.timings.registryUpsertMs,
+      apply_aggregate_update_ms: applyResult.timings.aggregateUpdateMs,
     };
 
     const runStatus: "success" | "partial" | "failed" =
@@ -219,6 +373,8 @@ export async function POST(request: NextRequest) {
           ? "partial"
           : "success";
 
+    // 최종 summary를 단일 write로 기록하고 in-memory 캐시에도 반영
+    // (다음 markStage("done", ..., { coarse: "done" })가 이 위에 stage 키만 얹도록 보장)
     await prisma.pipelineRun.update({
       where: { id: run.id },
       data: {
@@ -227,6 +383,21 @@ export async function POST(request: NextRequest) {
         summary: runSummary,
       },
     });
+    currentSummary = { ...runSummary };
+
+    await markStage(
+      "done",
+      {
+        run_status: runStatus,
+        total_messages_fetched: totalMessages,
+        aggregate_updates: applyResult.aggregateUpdates.length,
+      },
+      {
+        status: syncStatus,
+        finishedAt: new Date(),
+      },
+      { coarse: "done" }
+    );
 
     return NextResponse.json({
       status: runStatus === "failed" ? "error" : "success",
@@ -242,15 +413,16 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
 
-    await prisma.sourceSyncLog.create({
+    // 실패 시에도 이전 markStage가 기록한 fetchedCount/updatedCount는 보존한다.
+    // 어느 stage에서 얼마만큼 진행됐는지의 진단 정보를 지우지 않기 위함.
+    await prisma.sourceSyncLog.update({
+      where: { id: syncLog.id },
       data: {
-        runId: run.id,
-        sourceType: "slack",
         status: "failed",
-        fetchedCount: 0,
-        updatedCount: 0,
-        errorMessage: message,
-        startedAt: syncStartedAt,
+        errorMessage:
+          latestStageDetail.length > 0
+            ? `${message} (last_stage=${latestStage} ${latestStageDetail})`
+            : `${message} (last_stage=${latestStage})`,
         finishedAt: new Date(),
       },
     });
@@ -260,7 +432,11 @@ export async function POST(request: NextRequest) {
       data: {
         status: "failed",
         finishedAt: new Date(),
-        summary: { error: message },
+        summary: {
+          error: message,
+          last_stage: latestStage,
+          last_stage_detail: latestStageDetail || null,
+        },
       },
     });
 

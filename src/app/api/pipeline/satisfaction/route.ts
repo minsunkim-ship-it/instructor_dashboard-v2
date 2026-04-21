@@ -8,7 +8,7 @@ import {
 import {
   GMAIL_SATISFACTION_SOURCE_KEY,
   collectSatisfactionFromGmail,
-  type SatisfactionGmailTargetCheckpoint,
+  type SatisfactionGmailCheckpoint,
 } from "@/lib/pipeline/satisfaction-gmail-collector";
 import { normalizeSatisfactionGmailResults } from "@/lib/pipeline/satisfaction-gmail-normalizer";
 import {
@@ -20,28 +20,27 @@ import { applySatisfactionImports } from "@/lib/pipeline/satisfaction-applier";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-async function loadSatisfactionGmailCheckpoints(
-  targetAddresses: string[]
-): Promise<SatisfactionGmailTargetCheckpoint[]> {
-  const checkpoints: SatisfactionGmailTargetCheckpoint[] = [];
-  for (const addr of targetAddresses) {
-    const scopeKey = `gmail_satisfaction:target:${addr}`;
-    const row = await prisma.sourceCheckpoint.findUnique({
-      where: { sourceType_scopeKey: { sourceType: "gmail_satisfaction", scopeKey } },
-    });
-    if (!row) continue;
-    const json = row.checkpointJson as Record<string, unknown>;
-    checkpoints.push({
-      targetAddress: addr,
-      lastInternalDateMs:
-        typeof json.last_internal_date_ms === "string" ? json.last_internal_date_ms : null,
-    });
-  }
-  return checkpoints;
+async function loadSatisfactionGmailCheckpoint(): Promise<SatisfactionGmailCheckpoint | null> {
+  const row = await prisma.sourceCheckpoint.findUnique({
+    where: {
+      sourceType_scopeKey: {
+        sourceType: "gmail_satisfaction",
+        scopeKey: "mailbox",
+      },
+    },
+  });
+  if (!row) return null;
+
+  const json = row.checkpointJson as Record<string, unknown>;
+  return {
+    lastInternalDateMs:
+      typeof json.last_internal_date_ms === "string"
+        ? json.last_internal_date_ms
+        : null,
+  };
 }
 
 async function saveSatisfactionGmailCheckpoints(
-  targetAddresses: string[],
   threads: Array<{ threadId: string; sentAt: string | null }>
 ): Promise<void> {
   let latestSentAtMs: string | null = null;
@@ -56,22 +55,24 @@ async function saveSatisfactionGmailCheckpoints(
   }
   if (!latestSentAtMs) return;
 
-  for (const addr of targetAddresses) {
-    const scopeKey = `gmail_satisfaction:target:${addr}`;
-    await prisma.sourceCheckpoint.upsert({
-      where: { sourceType_scopeKey: { sourceType: "gmail_satisfaction", scopeKey } },
-      create: {
+  await prisma.sourceCheckpoint.upsert({
+    where: {
+      sourceType_scopeKey: {
         sourceType: "gmail_satisfaction",
-        scopeKey,
-        checkpointJson: { last_internal_date_ms: latestSentAtMs },
-        lastSyncedAt: new Date(),
+        scopeKey: "mailbox",
       },
-      update: {
-        checkpointJson: { last_internal_date_ms: latestSentAtMs },
-        lastSyncedAt: new Date(),
-      },
-    });
-  }
+    },
+    create: {
+      sourceType: "gmail_satisfaction",
+      scopeKey: "mailbox",
+      checkpointJson: { last_internal_date_ms: latestSentAtMs },
+      lastSyncedAt: new Date(),
+    },
+    update: {
+      checkpointJson: { last_internal_date_ms: latestSentAtMs },
+      lastSyncedAt: new Date(),
+    },
+  });
 }
 
 const SATISFACTION_PIPELINE_SOURCE_KEYS = [
@@ -151,35 +152,35 @@ export async function POST(request: NextRequest) {
     const normalizedSheets = await normalizeSatisfactionSheetResults(collected);
     const allItems = [...normalizedSheets.items];
     const allSourceSummaries = [...normalizedSheets.sourceSummaries];
+    let gmailSkippedSamples: Prisma.InputJsonArray = [];
+    let gmailThreadsForCheckpoint: Array<{
+      threadId: string;
+      sentAt: string | null;
+    }> = [];
 
     if (includeGmail) {
-      const targetAddresses = (process.env.GMAIL_TARGET_ADDRESSES ?? "")
-        .split(",")
-        .map((v) => v.trim())
-        .filter(Boolean);
-      const gmailCheckpoints =
+      const gmailCheckpoint =
         gmailReconcile || gmailStartDate || gmailEndDate
-          ? []
-          : await loadSatisfactionGmailCheckpoints(targetAddresses);
+          ? null
+          : await loadSatisfactionGmailCheckpoint();
       const gmailCollected = await collectSatisfactionFromGmail({
         query: gmailQuery,
         maxPages: gmailMaxPages,
         pageSize: gmailPageSize,
         detailConcurrency: gmailDetailConcurrency,
-        checkpoints: gmailCheckpoints,
+        checkpoint: gmailCheckpoint,
         startDate: gmailStartDate,
         endDate: gmailEndDate,
       });
-      await saveSatisfactionGmailCheckpoints(
-        gmailCollected.targetAddresses,
-        gmailCollected.threads.map((thread) => ({
-          threadId: thread.threadId,
-          sentAt: thread.sentAt,
-        }))
-      );
+      gmailThreadsForCheckpoint = gmailCollected.threads.map((thread) => ({
+        threadId: thread.threadId,
+        sentAt: thread.sentAt,
+      }));
       const gmailNormalized = await normalizeSatisfactionGmailResults(gmailCollected);
       allItems.push(...gmailNormalized.items);
       allSourceSummaries.push(gmailNormalized.sourceSummary);
+      gmailSkippedSamples =
+        gmailNormalized.skippedSamples as unknown as Prisma.InputJsonArray;
     }
 
     const applyResult = await applySatisfactionImports({
@@ -187,6 +188,14 @@ export async function POST(request: NextRequest) {
       items: allItems,
       recalculateScores: true,
     });
+    if (includeGmail && gmailThreadsForCheckpoint.length > 0) {
+      await saveSatisfactionGmailCheckpoints(
+        gmailThreadsForCheckpoint.map((thread) => ({
+          threadId: thread.threadId,
+          sentAt: thread.sentAt,
+        }))
+      );
+    }
 
     for (const summary of allSourceSummaries) {
       await prisma.sourceSyncLog.create({
@@ -196,7 +205,7 @@ export async function POST(request: NextRequest) {
           status:
             summary.status === "success"
               ? "success"
-              : summary.status === "partial"
+              : summary.status === "partial" || summary.status === "skipped"
                 ? "partial"
                 : "failed",
           fetchedCount: summary.fetchedRows,
@@ -236,6 +245,7 @@ export async function POST(request: NextRequest) {
       registry_invalid_count: applyResult.registries.invalidCount,
       affected_instructors: applyResult.affectedInstructors,
       canonical_records_upserted: applyResult.canonicalRecordsUpserted,
+      gmail_skipped_samples: gmailSkippedSamples,
       source_summaries:
         allSourceSummaries.map(toSourceSummaryJson) as unknown as Prisma.InputJsonArray,
     };

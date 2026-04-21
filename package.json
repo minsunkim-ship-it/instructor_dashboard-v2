@@ -7,7 +7,20 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "seed:mock": "node --experimental-strip-types prisma/seed.mock.ts"
+    "seed:mock": "node --experimental-strip-types prisma/seed.mock.ts",
+    "test:external-sources": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/test-external-sources.ts",
+    "test:source:contract": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/test-source-contract.ts",
+    "test:source:dispatch": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/test-source-dispatch.ts",
+    "test:source:satisfaction-sheets": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/test-source-satisfaction-sheets.ts",
+    "test:source:slack": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/test-source-slack.ts",
+    "test:source:gmail": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/test-source-gmail.ts",
+    "test:source:gmail-satisfaction-drive": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/test-source-gmail-satisfaction-drive.ts",
+    "test:unit:forwarded-message-trim": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-forwarded-message-trim.ts",
+    "test:unit:registry-key-backcompat": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-registry-key-backcompat.ts",
+    "test:unit:satisfaction-checkpoint-ordering": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-satisfaction-checkpoint-ordering.ts",
+    "test:unit:activity-applier-two-phase": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-activity-applier-two-phase.ts",
+    "check:registry-key-format": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/check-registry-key-format.ts",
+    "check:contract-legacy-rows": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/check-contract-legacy-rows.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

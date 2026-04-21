@@ -25,6 +25,14 @@ export const INSTRUCTOR_DISPATCH_SHEET_DEFINITIONS: readonly InstructorDispatchS
       spreadsheetId: "1hInJeNY3QwA1dRT_rbhqtjUWpu6YD3XEUEarDGB8Qvs",
       worksheetGid: 2070530086,
     },
+    // 공지연 정산 분기 탭들은 이 canonical 탭의 부분집합이라 중복 적재를 피하기 위해
+    // 전임소진(공지연)만 수집한다.
+    {
+      key: "gongjiyeon_2025_2026_dispatch",
+      instructorName: "공지연",
+      spreadsheetId: "1TPgeSiyhJE8HBZeH9cKA4DWeh6z6dy0wW5LPfXTuM1M",
+      worksheetGid: 1871999347,
+    },
     {
       key: "shindongwon_2025_dispatch_h2",
       instructorName: "신동원",

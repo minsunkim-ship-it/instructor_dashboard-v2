@@ -19,7 +19,10 @@ import { COURSE_COUNT_SOURCE_TYPES } from "./teaching-history-sources";
 import {
   countGroupedTeachingHistories,
 } from "@/lib/teaching-history-display";
-import { loadCourseIdFallbackRegistry } from "./course-id-fallback";
+import {
+  loadCourseIdFallbackRegistry,
+  type CourseIdFallbackEntry,
+} from "./course-id-fallback";
 import { loadNotionCourseIdFallbackRegistry } from "./notion-course-id-fallback";
 import { sanitizeTeachingHistoryCourseName } from "./notion-comment-course-name";
 import {

@@ -255,7 +255,13 @@ interface LlmClassificationPatch {
 
 type BehavioralSummaryFields = Pick<
   BehavioralIntelligence,
-  "teaching_style" | "curriculum_compliance" | "attitude" | "recommendation"
+  | "teaching_style"
+  | "curriculum_compliance"
+  | "attitude"
+  | "risk_patterns"
+  | "strength_patterns"
+  | "recommendation"
+  | "key_question_for_humans"
 >;
 
 interface GenerateOperationalIntelligenceOptions {
@@ -1146,7 +1152,10 @@ function createEmptyBehavioralSummary(): BehavioralSummaryFields {
     teaching_style: null,
     curriculum_compliance: null,
     attitude: null,
+    risk_patterns: [],
+    strength_patterns: [],
     recommendation: null,
+    key_question_for_humans: null,
   };
 }
 
@@ -1158,13 +1167,25 @@ function getBehavioralSummarySchema(): Record<string, unknown> {
       teaching_style: { type: "string" },
       curriculum_compliance: { type: "string" },
       attitude: { type: "string" },
+      risk_patterns: {
+        type: "array",
+        items: { type: "string" },
+      },
+      strength_patterns: {
+        type: "array",
+        items: { type: "string" },
+      },
       recommendation: { type: "string" },
+      key_question_for_humans: { type: "string" },
     },
     required: [
       "teaching_style",
       "curriculum_compliance",
       "attitude",
+      "risk_patterns",
+      "strength_patterns",
       "recommendation",
+      "key_question_for_humans",
     ],
   };
 }
@@ -1184,6 +1205,12 @@ function buildBehavioralSummaryPrompt(args: {
     "Do not generalize a stable trait from a single isolated incident.",
     "If evidence is weak or ambiguous, return an empty string for that field.",
     "Each field should be concise: one short sentence, except recommendation can be one or two short sentences.",
+    "strength_patterns and risk_patterns should each contain up to 3 short Korean phrases summarizing repeated feedback themes.",
+    "Write reaction-based interpretations, not generic templates. Pick the most distinctive repeated themes for this instructor.",
+    "Avoid boilerplate strengths that could apply to almost anyone, such as '설명을 잘함' or '실습이 좋음', when the notes support something more specific like a target audience, hands-on style, or incident response pattern.",
+    "If two candidate themes are both true, prefer the one that better distinguishes this instructor from others.",
+    "Prefer wording that stays close to collected reactions. Avoid abstract evaluator language such as operational maturity, sharpness, or strong adaptability unless the raw notes explicitly say so.",
+    "Structured signals like repeated recent courses or satisfaction counts can support confidence, but should not be surfaced as strength_patterns or risk_patterns by themselves.",
     "Do not mention note ids, source systems, raw note wording, or that you are summarizing notes.",
     "Return JSON only.",
     "",
@@ -1191,7 +1218,10 @@ function buildBehavioralSummaryPrompt(args: {
     "- teaching_style: teaching/delivery style or how the instructor guides learners",
     "- curriculum_compliance: fit of pace, hands-on balance, examples, materials, or curriculum execution",
     "- attitude: preparation, responsiveness, participant handling, or professionalism",
+    "- strength_patterns: repeated strengths distilled from actual collected reactions; factual and user-facing",
+    "- risk_patterns: repeated cautions distilled from actual collected reactions; if there is no meaningful caution, return []",
     "- recommendation: where this instructor seems to fit best and what to watch operationally",
+    "- key_question_for_humans: one or two short Korean sentences for a user-facing '확인 필요' note. No internal labels, no source/system terms, no counts, no mention of human_followups. If there is nothing worth surfacing separately, return an empty string.",
     "",
     "Structured signals:",
     JSON.stringify(
@@ -1206,6 +1236,13 @@ function buildBehavioralSummaryPrompt(args: {
         risk_patterns: args.riskPatterns,
         strength_patterns: args.strengthPatterns,
         human_followup_count: args.humanFollowups.length,
+        human_followups: args.humanFollowups.map((item) => ({
+          family: item.family,
+          owner: item.owner,
+          polarity: item.polarity,
+          why_flagged: item.why_flagged,
+          raw_text: item.raw_text,
+        })),
       },
       null,
       2
@@ -1233,6 +1270,7 @@ function buildBehavioralSummaryPrompt(args: {
 
 function buildFallbackBehavioralSummary(args: {
   notes: ClassificationResult[];
+  humanFollowups: HumanFollowup[];
   riskPatterns: string[];
   strengthPatterns: string[];
 }): BehavioralSummaryFields {
@@ -1245,27 +1283,47 @@ function buildFallbackBehavioralSummary(args: {
     .map((item) => normalizeText(item.raw.raw_text))
     .filter(Boolean);
 
-  const recommendationParts: string[] = [];
-  if (positiveNotes[0]) {
-    recommendationParts.push(`주요 강점: ${positiveNotes[0]}`);
-  }
-  if (negativeNotes[0]) {
-    recommendationParts.push(`주의 포인트: ${negativeNotes[0]}`);
+  let recommendation: string | null = null;
+  if (args.strengthPatterns[0] && args.riskPatterns[0]) {
+    recommendation = `${args.strengthPatterns[0]}. 다만 ${args.riskPatterns[0]}.`;
+  } else if (args.strengthPatterns[0]) {
+    recommendation = `${args.strengthPatterns[0]}.`;
+  } else if (positiveNotes[0] && negativeNotes[0]) {
+    recommendation = `${positiveNotes[0]} 다만 ${negativeNotes[0]}`;
+  } else if (positiveNotes[0]) {
+    recommendation = positiveNotes[0];
   } else if (args.riskPatterns[0]) {
-    recommendationParts.push(`주의 포인트: ${args.riskPatterns[0]}`);
+    recommendation = `${args.riskPatterns[0]}.`;
+  } else if (negativeNotes[0]) {
+    recommendation = negativeNotes[0];
   }
-
-  const recommendation =
-    recommendationParts.length > 0
-      ? recommendationParts.join(" ")
-      : args.strengthPatterns[0] ?? null;
 
   return {
     teaching_style: null,
     curriculum_compliance: null,
     attitude: null,
+    risk_patterns: args.riskPatterns,
+    strength_patterns: args.strengthPatterns,
     recommendation,
+    key_question_for_humans: buildKeyQuestionForHumans(args.humanFollowups),
   };
+}
+
+function sanitizeBehavioralPatternList(
+  value: unknown,
+  kind: "risk" | "strength"
+): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Set(
+      value
+        .map((item) => (typeof item === "string" ? normalizeText(item) : ""))
+        .filter(Boolean)
+        .map((item) => normalizeLegacyPatternLabel(item, kind))
+        .filter(Boolean)
+    )
+  ).slice(0, 3);
 }
 
 export async function summarizeBehavioralIntelligenceFromEvidence(args: {
@@ -1324,6 +1382,7 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
     return {
       summary: buildFallbackBehavioralSummary({
         notes,
+        humanFollowups: args.humanFollowups,
         riskPatterns: args.riskPatterns,
         strengthPatterns: args.strengthPatterns,
       }),
@@ -1364,6 +1423,7 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
       return {
         summary: buildFallbackBehavioralSummary({
           notes,
+          humanFollowups: args.humanFollowups,
           riskPatterns: args.riskPatterns,
           strengthPatterns: args.strengthPatterns,
         }),
@@ -1373,6 +1433,14 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
 
     const body = (await response.json()) as Record<string, unknown>;
     const parsed = JSON.parse(extractResponseText(body)) as Record<string, unknown>;
+    const llmRiskPatterns = sanitizeBehavioralPatternList(
+      parsed.risk_patterns,
+      "risk"
+    );
+    const llmStrengthPatterns = sanitizeBehavioralPatternList(
+      parsed.strength_patterns,
+      "strength"
+    );
 
     return {
       summary: {
@@ -1387,9 +1455,19 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
         attitude: normalizeText(
           typeof parsed.attitude === "string" ? parsed.attitude : null
         ) || null,
+        risk_patterns: llmRiskPatterns.length > 0 ? llmRiskPatterns : args.riskPatterns,
+        strength_patterns:
+          llmStrengthPatterns.length > 0
+            ? llmStrengthPatterns
+            : args.strengthPatterns,
         recommendation: normalizeText(
           typeof parsed.recommendation === "string"
             ? parsed.recommendation
+            : null
+        ) || null,
+        key_question_for_humans: normalizeText(
+          typeof parsed.key_question_for_humans === "string"
+            ? parsed.key_question_for_humans
             : null
         ) || null,
       },
@@ -1399,6 +1477,7 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
     return {
       summary: buildFallbackBehavioralSummary({
         notes,
+        humanFollowups: args.humanFollowups,
         riskPatterns: args.riskPatterns,
         strengthPatterns: args.strengthPatterns,
       }),
@@ -2110,7 +2189,16 @@ function selectDataRichness(
   signals: StructuredSignals,
   evidence: EvidenceProfile
 ): OperationalDataRichness {
+  const hasDenseMultiSourceFeedback =
+    stats.meaningfulFeedbackCount >= 4 &&
+    evidence.relevantSourceCount >= 2 &&
+    evidence.positiveNoteCount > 0 &&
+    evidence.negativeNoteCount > 0;
+
   if (stats.curatedOpsNoteCount > 0 && stats.meaningfulFeedbackCount > 0) {
+    return "rich";
+  }
+  if (hasDenseMultiSourceFeedback) {
     return "rich";
   }
   if (stats.curatedOpsNoteCount > 0) {
@@ -2134,74 +2222,307 @@ function selectDataRichness(
 function buildRiskPatterns(
   classifications: ClassificationResult[]
 ): string[] {
-  const grouped = new Map<OperationalNoteFamily, ClassificationResult[]>();
-
-  for (const item of classifications) {
+  const normalizedTextByRawId = new Map<string, string>();
+  const riskItems = classifications.filter((item) => {
     const { family, owner, polarity } = item.classified;
-    if (!isBehavioralJudgmentRelevant(item.raw, item.classified)) continue;
-    if (owner !== "instructor" || polarity !== "negative") continue;
-    if (family === "data_gap" || family === "commercial_constraint") continue;
-    if (family === "environment_issue" && owner !== "instructor") continue;
-
-    const list = grouped.get(family) ?? [];
-    list.push(item);
-    grouped.set(family, list);
-  }
+    if (!isBehavioralJudgmentRelevant(item.raw, item.classified)) return false;
+    if (owner !== "instructor" || polarity !== "negative") return false;
+    if (family === "data_gap" || family === "commercial_constraint") return false;
+    if (family === "environment_issue" && owner !== "instructor") return false;
+    normalizedTextByRawId.set(
+      item.raw.id,
+      normalizeKeywordText(item.raw.raw_text)
+    );
+    return true;
+  });
 
   const patterns: string[] = [];
-  for (const [family, items] of grouped.entries()) {
-    const observationKeys = new Set(
-      items.map((item) => getOperationalEvidenceBundleKey(item.raw))
-    );
+  const pushPattern = (label: string): void => {
+    if (!patterns.includes(label)) {
+      patterns.push(label);
+    }
+  };
+  const hasKeyword = (text: string, keywords: string[]): boolean =>
+    keywords.some((keyword) => includesKeyword(text, keyword));
+  const countEvidence = (
+    predicate: (item: ClassificationResult, normalizedText: string) => boolean
+  ): number => {
+    const keys = new Set<string>();
+    for (const item of riskItems) {
+      const normalizedText =
+        normalizedTextByRawId.get(item.raw.id) ??
+        normalizeKeywordText(item.raw.raw_text);
+      if (!predicate(item, normalizedText)) continue;
+      keys.add(getOperationalEvidenceBundleKey(item.raw));
+    }
+    return keys.size;
+  };
 
-    if (observationKeys.size < 2) continue;
-    patterns.push(`${family} 반복 근거 ${observationKeys.size}건`);
+  if (
+    countEvidence(
+      (item, text) =>
+        item.classified.family === "responsiveness_or_schedule" &&
+        hasKeyword(text, [
+          "fgi",
+          "긴급 일정",
+          "급한 일정",
+          "비정기 요청",
+          "급한 요청",
+          "응답 지연",
+          "회신 지연",
+          "연락 지연",
+        ])
+    ) >= 2
+  ) {
+    pushPattern("비정기 요청(FGI, 긴급 일정)에 대한 응답 지연");
+  }
+
+  if (
+    countEvidence(
+      (item, text) =>
+        item.classified.family === "delivery_quality" &&
+        hasKeyword(text, [
+          "속도",
+          "빠르",
+          "따라가기 어려움",
+          "어려움",
+          "난이도",
+          "눈높이",
+        ])
+    ) >= 2
+  ) {
+    pushPattern("강의 난이도·속도 조절에 대한 보완 필요");
+  }
+
+  const fallbackLabels = new Map<OperationalNoteFamily, string>([
+    ["delivery_quality", "강의 전달력과 학습자 이해도 점검 보완 필요"],
+    ["material_delivery", "교안·실습 자료 전달 타이밍 관리 보완 필요"],
+    ["curriculum_compliance", "시간 배분과 커리큘럼 마무리 완성도 보완 필요"],
+    ["responsiveness_or_schedule", "일정 조율과 응답 속도 관리 보완 필요"],
+    ["environment_issue", "환경 이슈 발생 시 사전 점검과 운영 안내 보완 필요"],
+  ]);
+
+  for (const [family, label] of fallbackLabels.entries()) {
+    const evidenceCount = countEvidence(
+      (item) => item.classified.family === family
+    );
+    if (evidenceCount >= 2) {
+      pushPattern(label);
+    }
   }
 
   return patterns;
 }
 
-function buildStrengthPatterns(
-  classifications: ClassificationResult[],
-  signals: StructuredSignals
-): string[] {
+function buildStrengthPatterns(classifications: ClassificationResult[]): string[] {
   const patterns: string[] = [];
+  const normalizedTextByRawId = new Map<string, string>();
+  const strengthItems = classifications.filter((item) => {
+    if (!isBehavioralJudgmentRelevant(item.raw, item.classified)) return false;
+    if (
+      item.classified.owner !== "instructor" ||
+      !["positive", "mixed"].includes(item.classified.polarity)
+    ) {
+      return false;
+    }
+    normalizedTextByRawId.set(
+      item.raw.id,
+      normalizeKeywordText(item.raw.raw_text)
+    );
+    return true;
+  });
   const grouped = new Map<OperationalNoteFamily, ClassificationResult[]>();
 
-  for (const item of classifications) {
-    if (!isBehavioralJudgmentRelevant(item.raw, item.classified)) continue;
-    if (item.classified.polarity !== "positive") continue;
+  for (const item of strengthItems) {
     const list = grouped.get(item.classified.family) ?? [];
     list.push(item);
     grouped.set(item.classified.family, list);
   }
 
+  const pushPattern = (label: string): void => {
+    if (!patterns.includes(label)) {
+      patterns.push(label);
+    }
+  };
+  const hasKeyword = (text: string, keywords: string[]): boolean =>
+    keywords.some((keyword) => includesKeyword(text, keyword));
+  const countEvidence = (
+    predicate: (item: ClassificationResult, normalizedText: string) => boolean
+  ): number => {
+    const keys = new Set<string>();
+    for (const item of strengthItems) {
+      const normalizedText =
+        normalizedTextByRawId.get(item.raw.id) ??
+        normalizeKeywordText(item.raw.raw_text);
+      if (!predicate(item, normalizedText)) continue;
+      keys.add(getOperationalEvidenceBundleKey(item.raw));
+    }
+    return keys.size;
+  };
+
+  if (
+    countEvidence(
+      (_item, text) =>
+        hasKeyword(text, [
+          "재요청",
+          "재요청 의견",
+          "만족도 상승",
+          "합격률",
+          "합격자 비율",
+        ])
+    ) >= 2
+  ) {
+    pushPattern("반복 회차에서 만족도 상승과 재요청 반응이 함께 확인됨");
+  }
+
+  if (
+    countEvidence(
+      (_item, text) =>
+        hasKeyword(text, ["장애", "오류", "계정", "환경 이슈", "재접속"]) &&
+        hasKeyword(text, ["침착", "대체", "대응", "대처", "우회", "신속", "유연"])
+    ) >= 2
+  ) {
+    pushPattern("기술 장애 발생 시 침착 대체 운영");
+  }
+
+  if (
+    countEvidence(
+      (_item, text) =>
+        hasKeyword(text, [
+          "비전공자",
+          "고연령",
+          "눈높이",
+          "쉽게",
+          "초보",
+          "입문",
+          "공감",
+          "이해하기 쉬",
+          "연령대",
+        ])
+    ) >= 2
+  ) {
+    pushPattern("비전공자·고연령층 공감대 형성");
+  }
+
+  const fallbackLabels = new Map<OperationalNoteFamily, string>([
+    ["delivery_quality", "수강생 눈높이에 맞춘 설명과 몰입도 높은 진행"],
+    ["curriculum_compliance", "실습 중심 커리큘럼과 시간 운영 완성도 높음"],
+    ["material_delivery", "교안·실습 자료 준비와 전달이 안정적"],
+  ]);
+
   for (const [family, items] of grouped.entries()) {
     const uniqueBundles = new Set(
       items.map((item) => getOperationalEvidenceBundleKey(item.raw))
     );
-    if (uniqueBundles.size >= 2) {
-      patterns.push(`${family} positive 근거 ${uniqueBundles.size}건`);
+    const label = fallbackLabels.get(family);
+    if (label && uniqueBundles.size >= 2) {
+      pushPattern(label);
     }
   }
 
+  return patterns;
+}
+
+export function deriveBehavioralPatternLists(args: {
+  rawNotes: RawOperationalNote[];
+  classifiedNotes: ClassifiedOperationalNote[];
+  signals: {
+    satisfactionAvg: number | null;
+    satisfactionCount: number;
+    slackActivityCount: number;
+    totalCourses: number;
+    recentCourses6mo: number;
+  };
+}): {
+  riskPatterns: string[];
+  strengthPatterns: string[];
+} {
+  const classifications = args.rawNotes.map((raw) => ({
+    raw,
+    classified:
+      args.classifiedNotes.find((item) => item.raw_note_id === raw.id) ?? {
+        raw_note_id: raw.id,
+        family: "unknown" as const,
+        owner: "unknown" as const,
+        polarity: "neutral" as const,
+        auto_confidence: "low" as const,
+        needs_followup: false,
+        why_flagged: "missing_classification",
+      },
+  }));
+
+  return {
+    riskPatterns: buildRiskPatterns(classifications),
+    strengthPatterns: buildStrengthPatterns(classifications),
+  };
+}
+
+function normalizeLegacyPatternLabel(
+  pattern: string,
+  kind: "risk" | "strength"
+): string {
+  const normalized = normalizeText(pattern);
+  if (!normalized) return normalized;
+
+  if (kind === "risk") {
+    if (/^delivery_quality 반복 근거 \d+건$/i.test(normalized)) {
+      return "강의 전달력과 학습자 이해도 점검 보완 필요";
+    }
+    if (/^material_delivery 반복 근거 \d+건$/i.test(normalized)) {
+      return "교안·실습 자료 전달 타이밍 관리 보완 필요";
+    }
+    if (/^curriculum_compliance 반복 근거 \d+건$/i.test(normalized)) {
+      return "시간 배분과 커리큘럼 마무리 완성도 보완 필요";
+    }
+    if (/^responsiveness_or_schedule 반복 근거 \d+건$/i.test(normalized)) {
+      return "일정 조율과 응답 속도 관리 보완 필요";
+    }
+    if (/^environment_issue 반복 근거 \d+건$/i.test(normalized)) {
+      return "환경 이슈 발생 시 사전 점검과 운영 안내 보완 필요";
+    }
+    return normalized;
+  }
+
+  if (/^delivery_quality positive 근거 \d+건$/i.test(normalized)) {
+    return "수강생 눈높이에 맞춘 설명과 몰입도 높은 진행";
+  }
+  if (/^positive_signal positive 근거 \d+건$/i.test(normalized)) {
+    return "";
+  }
+  if (/^curriculum_compliance positive 근거 \d+건$/i.test(normalized)) {
+    return "실습 중심 커리큘럼과 시간 운영 완성도 높음";
+  }
+  if (/^material_delivery positive 근거 \d+건$/i.test(normalized)) {
+    return "교안·실습 자료 준비와 전달이 안정적";
+  }
+  if (/^만족도 평균 [\d.]+ 이상 근거 확인$/i.test(normalized)) {
+    return "";
+  }
   if (
-    signals.satisfactionAvg !== null &&
-    signals.satisfactionAvg >= 4.5 &&
-    signals.satisfactionCount >= 5
+    /^출강 이력 \d+건 이상$/i.test(normalized) ||
+    /^최근 6개월 출강 \d+건 이상$/i.test(normalized) ||
+    normalized === "다수 회차 운영 경험으로 현장 적응력이 높음" ||
+    normalized === "최근에도 출강이 꾸준해 운영 감각이 유지됨" ||
+    normalized === "다수 회차 출강 이력이 확인됨" ||
+    normalized === "최근 6개월에도 반복 출강 이력이 확인됨"
   ) {
-    patterns.push("만족도 평균 4.5 이상 근거 확인");
+    return "";
   }
 
-  if (signals.totalCourses >= 20) {
-    patterns.push("출강 이력 20건 이상");
-  }
+  return normalized;
+}
 
-  if (signals.recentCourses6mo >= 5) {
-    patterns.push("최근 6개월 출강 5건 이상");
-  }
-
-  return Array.from(new Set(patterns));
+export function normalizeOperationalPatternLabels(
+  patterns: string[],
+  kind: "risk" | "strength"
+): string[] {
+  return Array.from(
+    new Set(
+      patterns
+        .map((pattern) => normalizeLegacyPatternLabel(pattern, kind))
+        .filter((pattern) => Boolean(pattern))
+    )
+  );
 }
 
 function buildConfidence(
@@ -2279,8 +2600,10 @@ function describeStructuredSignalEvidence(
   const storedStructuredPatterns = strengthPatterns.filter(
     (pattern) =>
       pattern.includes("만족도") ||
-      pattern.includes("출강 이력") ||
-      pattern.includes("최근 6개월 출강")
+      pattern.includes("출강") ||
+      pattern.includes("회차") ||
+      pattern.includes("운영 경험") ||
+      pattern.includes("최근")
   );
 
   if (storedStructuredPatterns.length > 0) {
@@ -2317,6 +2640,16 @@ function buildDataRichnessReason(
   );
 
   if (dataRichness === "rich") {
+    if (stats.curatedOpsNoteCount === 0) {
+      const profile = options?.evidenceProfile ?? {
+        relevantNoteCount: 0,
+        relevantSourceCount: 0,
+        notionCommentCount: 0,
+        negativeNoteCount: 0,
+        positiveNoteCount: 0,
+      };
+      return `의미 있는 피드백 ${stats.meaningfulFeedbackCount}건과 근거 source ${profile.relevantSourceCount}개에서 긍정/주의 패턴이 함께 확인돼 rich로 분류했습니다.`;
+    }
     return `큐레이션 운영 메모 ${stats.curatedOpsNoteCount}건과 의미 있는 피드백 ${stats.meaningfulFeedbackCount}건이 함께 있어 rich로 분류했습니다.`;
   }
 
@@ -2478,11 +2811,7 @@ function buildKeyQuestionForHumans(
 
   if (topThemes.length === 0) return null;
 
-  if (humanFollowups.length === 1) {
-    return `검토 큐 human_followups 원문 1건 요약: ${topThemes[0]}`;
-  }
-
-  return `검토 큐 human_followups 원문 ${humanFollowups.length}건 요약: ${topThemes.join(" / ")}`;
+  return `확인 포인트: ${topThemes.join(" / ")}`;
 }
 
 function buildEvidenceHash(
@@ -2538,7 +2867,7 @@ async function buildPayloadForInstructor(
   };
   const dataRichness = selectDataRichness(stats, signals, evidenceProfile);
   const riskPatterns = buildRiskPatterns(classifications);
-  const strengthPatterns = buildStrengthPatterns(classifications, signals);
+  const strengthPatterns = buildStrengthPatterns(classifications);
   const confidence = buildConfidence(
     dataRichness,
     humanFollowups,
@@ -2562,13 +2891,13 @@ async function buildPayloadForInstructor(
     curriculum_compliance:
       behavioralSummaryResult.summary.curriculum_compliance,
     attitude: behavioralSummaryResult.summary.attitude,
-    risk_patterns: riskPatterns,
-    strength_patterns: strengthPatterns,
+    risk_patterns: behavioralSummaryResult.summary.risk_patterns,
+    strength_patterns: behavioralSummaryResult.summary.strength_patterns,
     recommendation: behavioralSummaryResult.summary.recommendation,
     data_richness: dataRichness,
     data_richness_reason: buildDataRichnessReason(dataRichness, stats, {
       signals,
-      strengthPatterns,
+      strengthPatterns: behavioralSummaryResult.summary.strength_patterns,
       evidenceProfile,
     }),
     confidence,
@@ -2576,11 +2905,12 @@ async function buildPayloadForInstructor(
       dataRichness,
       confidence,
       humanFollowups,
-      riskPatterns,
-      strengthPatterns,
+      behavioralSummaryResult.summary.risk_patterns,
+      behavioralSummaryResult.summary.strength_patterns,
       evidenceProfile
     ),
-    key_question_for_humans: buildKeyQuestionForHumans(humanFollowups),
+    key_question_for_humans:
+      behavioralSummaryResult.summary.key_question_for_humans,
   };
 
   return {
@@ -2814,16 +3144,18 @@ export function extractOperationalIntelligencePayload(
       ? ({
           ...createEmptyBehavioralIntelligence(),
           ...candidate.behavioral_intelligence,
-          risk_patterns: Array.isArray(
-            candidate.behavioral_intelligence.risk_patterns
-          )
-            ? candidate.behavioral_intelligence.risk_patterns
-            : [],
-          strength_patterns: Array.isArray(
-            candidate.behavioral_intelligence.strength_patterns
-          )
-            ? candidate.behavioral_intelligence.strength_patterns
-            : [],
+          risk_patterns: normalizeOperationalPatternLabels(
+            Array.isArray(candidate.behavioral_intelligence.risk_patterns)
+              ? candidate.behavioral_intelligence.risk_patterns
+              : [],
+            "risk"
+          ),
+          strength_patterns: normalizeOperationalPatternLabels(
+            Array.isArray(candidate.behavioral_intelligence.strength_patterns)
+              ? candidate.behavioral_intelligence.strength_patterns
+              : [],
+            "strength"
+          ),
         } as BehavioralIntelligence)
       : createEmptyBehavioralIntelligence();
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type {
   InstructorDetailResponse,
   InstructorDetailData,
@@ -129,34 +129,6 @@ function buildRecentSatisfactionEntries(
     .sort((a, b) => (b.observedAt ?? "").localeCompare(a.observedAt ?? ""));
 }
 
-function buildHeaderTags(data: InstructorDetailData) {
-  const tags = [
-    ...data.categories.map((item) => ({
-      key: `category-${item}`,
-      label: item,
-      className: "bg-indigo-50 text-indigo-700",
-    })),
-    ...data.specialties.map((item) => ({
-      key: `specialty-${item}`,
-      label: item,
-      className: "bg-gray-100 text-gray-700",
-    })),
-    ...data.teaching_titles.map((item) => ({
-      key: `teaching-${item}`,
-      label: item,
-      className: "bg-sky-50 text-sky-700",
-    })),
-  ];
-
-  const seen = new Set<string>();
-  return tags.filter((tag) => {
-    const key = tag.label.replace(/\s+/g, "").trim().toLowerCase();
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 function normalizeComparableText(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
@@ -173,6 +145,15 @@ type CollapsedOperationalNoteGroup = RawOperationalNoteGroup & {
   observedDates: string[];
   duplicateCount: number;
 };
+
+type NotionCommentCard = {
+  key: string;
+  sourceLabel: string;
+  observedAt: string | null;
+  text: string;
+};
+
+const NOTION_COMMENT_SECTION_ID = "notion-comment-experience";
 
 function collapseOperationalNoteGroups(
   groups: RawOperationalNoteGroup[]
@@ -254,6 +235,45 @@ function sanitizeOperationalMemoText(text: string): string {
     .filter((segment) => !shouldHideSegment(segment));
 
   return segments.join("\n");
+}
+
+function buildNotionCommentCards(data: InstructorDetailData): NotionCommentCard[] {
+  const groupedOperationalNotes = Array.from(
+    data.raw_operational_notes.reduce((map, note) => {
+      const key =
+        note.source_type === "notion_comment"
+          ? getNotionCommentBundleKey(note)
+          : note.id;
+      const noteDate = getOperationalNoteDate(note);
+      const existing = map.get(key) ?? {
+        key,
+        sourceType: note.source_type,
+        observedAt: noteDate,
+        ids: [] as string[],
+        texts: [] as string[],
+      };
+      existing.ids.push(note.id);
+      if (!existing.texts.includes(note.raw_text)) {
+        existing.texts.push(note.raw_text);
+      }
+      if (!existing.observedAt && noteDate) {
+        existing.observedAt = noteDate;
+      }
+      map.set(key, existing);
+      return map;
+    }, new Map<string, RawOperationalNoteGroup>())
+  ).map(([, group]) => group);
+
+  return collapseOperationalNoteGroups(groupedOperationalNotes)
+    .filter((note) => note.sourceType === "notion_comment")
+    .map((note) => ({
+      key: `notion-${note.key}`,
+      sourceLabel: "노션 comment",
+      observedAt: note.observedAt,
+      text: sanitizeOperationalMemoText(note.texts.join("\n")),
+    }))
+    .filter((note) => note.text.length > 0)
+    .sort((a, b) => (b.observedAt ?? "").localeCompare(a.observedAt ?? ""));
 }
 
 function extractDateRangeFromLabel(
@@ -945,9 +965,6 @@ function FeeTrendChart({ timeline }: { timeline: CollapsedFeeHistoryItem[] }) {
       <div className="mb-3 flex items-end justify-between gap-4">
         <div>
           <div className="text-xs font-medium text-gray-500">단가 추이</div>
-          <div className="mt-1 text-sm text-gray-600">
-            실제 날짜 간격 기준으로 변동 흐름을 표시합니다.
-          </div>
         </div>
         <div className="flex items-end gap-5 text-right">
           <div>
@@ -1065,11 +1082,25 @@ export default function InstructorDetail({
   const [teachingHistoryLimits, setTeachingHistoryLimits] = useState<
     Record<string, number>
   >({});
-  const [highlightedFeeHistoryId, setHighlightedFeeHistoryId] = useState<
-    string | null
-  >(null);
+  const [feeHistoryTableExpandedByInstructor, setFeeHistoryTableExpandedByInstructor] =
+    useState<Record<string, boolean>>({});
+  const [highlightedFeeHistoryState, setHighlightedFeeHistoryState] = useState<{
+    instructorId: string;
+    targetId: string;
+  } | null>(null);
+  const [pendingFeeHistoryScrollTarget, setPendingFeeHistoryScrollTarget] =
+    useState<{
+      instructorId: string;
+      targetId: string;
+    } | null>(null);
   const feeHistoryHighlightTimerRef = useRef<number | null>(null);
   const teachingHistoryLimit = teachingHistoryLimits[instructorId] ?? 30;
+  const isFeeHistoryTableExpanded =
+    feeHistoryTableExpandedByInstructor[instructorId] ?? false;
+  const highlightedFeeHistoryId =
+    highlightedFeeHistoryState?.instructorId === instructorId
+      ? highlightedFeeHistoryState.targetId
+      : null;
 
   const { data, isLoading, isError, error, isFetching } = useQuery({
     queryKey: ["instructor", instructorId, teachingHistoryLimit],
@@ -1078,25 +1109,72 @@ export default function InstructorDetail({
   });
 
   const handleJumpToFeeHistory = useCallback((targetId: string) => {
-    const target = document.getElementById(targetId);
-    if (!target) return;
+    setFeeHistoryTableExpandedByInstructor((current) => ({
+      ...current,
+      [instructorId]: true,
+    }));
+    setPendingFeeHistoryScrollTarget({ instructorId, targetId });
+  }, [instructorId]);
 
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
-    setHighlightedFeeHistoryId(targetId);
+  useEffect(() => {
+    if (!pendingFeeHistoryScrollTarget) return;
+    if (pendingFeeHistoryScrollTarget.instructorId !== instructorId) return;
+
+    let frameId = 0;
+    let retryFrameId = 0;
+
+    const scrollToTarget = () => {
+      const target = document.getElementById(pendingFeeHistoryScrollTarget.targetId);
+      if (!target) {
+        retryFrameId = window.requestAnimationFrame(() => {
+          const retriedTarget = document.getElementById(
+            pendingFeeHistoryScrollTarget.targetId
+          );
+          if (!retriedTarget) return;
+
+          retriedTarget.scrollIntoView({ behavior: "smooth", block: "center" });
+          setHighlightedFeeHistoryState(pendingFeeHistoryScrollTarget);
+          setPendingFeeHistoryScrollTarget(null);
+        });
+        return;
+      }
+
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedFeeHistoryState(pendingFeeHistoryScrollTarget);
+      setPendingFeeHistoryScrollTarget(null);
+    };
+
+    frameId = window.requestAnimationFrame(scrollToTarget);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.cancelAnimationFrame(retryFrameId);
+    };
+  }, [instructorId, pendingFeeHistoryScrollTarget]);
+
+  useEffect(() => {
+    if (!highlightedFeeHistoryState) return;
 
     if (feeHistoryHighlightTimerRef.current !== null) {
       window.clearTimeout(feeHistoryHighlightTimerRef.current);
     }
 
     feeHistoryHighlightTimerRef.current = window.setTimeout(() => {
-      setHighlightedFeeHistoryId(null);
+      setHighlightedFeeHistoryState(null);
       feeHistoryHighlightTimerRef.current = null;
     }, 2400);
-  }, []);
+
+    return () => {
+      if (feeHistoryHighlightTimerRef.current !== null) {
+        window.clearTimeout(feeHistoryHighlightTimerRef.current);
+        feeHistoryHighlightTimerRef.current = null;
+      }
+    };
+  }, [highlightedFeeHistoryState]);
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500">
+      <div className="flex min-h-[60vh] items-center justify-center px-8 text-sm font-medium text-[var(--text-muted)]">
         상세 정보를 불러오는 중...
       </div>
     );
@@ -1104,29 +1182,56 @@ export default function InstructorDetail({
 
   if (isError) {
     return (
-      <div className="flex items-center justify-center h-full text-red-500">
-        {(error as Error)?.message ?? "상세 정보를 불러오지 못했습니다."}
+      <div className="dashboard-empty">
+        <div className="empty-state border-red-200 text-red-500">
+          <div className="empty-state-mark bg-red-50 text-red-500">!</div>
+          <p className="text-sm font-medium">
+            {(error as Error)?.message ?? "상세 정보를 불러오지 못했습니다."}
+          </p>
+        </div>
       </div>
     );
   }
 
   if (!data?.data) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500">
-        데이터가 없습니다.
+      <div className="dashboard-empty">
+        <div className="empty-state">
+          <div className="empty-state-mark">-</div>
+          <p className="text-sm font-medium text-slate-500">데이터가 없습니다.</p>
+        </div>
       </div>
     );
   }
 
   const inst = data.data;
+  const notionCommentCards = buildNotionCommentCards(inst);
+  const handleJumpToNotionComments = () => {
+    const target = document.getElementById(NOTION_COMMENT_SECTION_ID);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   return (
-    <div className="bg-gray-50">
-      <div className="max-w-4xl mx-auto px-6 py-6 space-y-6">
-        <HeaderSection data={inst} />
+    <div className="dashboard-main-inner">
+      <div className="mx-auto max-w-6xl">
+        <HeaderSection
+          data={inst}
+          hasNotionComments={notionCommentCards.length > 0}
+          onJumpToNotionComments={handleJumpToNotionComments}
+        />
         <MetricsSection data={inst} />
-        <ScoreSatisfactionSection data={inst} />
-        <OpsIntelligenceSection data={inst} />
+        <FeeHistorySection
+          data={inst}
+          isTableExpanded={isFeeHistoryTableExpanded}
+          onToggleTable={() =>
+            setFeeHistoryTableExpandedByInstructor((current) => ({
+              ...current,
+              [instructorId]: !isFeeHistoryTableExpanded,
+            }))
+          }
+          highlightedFeeHistoryId={highlightedFeeHistoryId}
+        />
         <TeachingHistorySection
           key={instructorId}
           data={inst}
@@ -1139,9 +1244,13 @@ export default function InstructorDetail({
           }
           isLoadingMore={isFetching && !isLoading}
         />
-        <FeeHistorySection
+        <section className="grid gap-4 xl:grid-cols-2">
+          <ScoreBreakdownSection data={inst} />
+          <SatisfactionSection data={inst} />
+        </section>
+        <OpsIntelligenceSection
           data={inst}
-          highlightedFeeHistoryId={highlightedFeeHistoryId}
+          notionCommentCards={notionCommentCards}
         />
         <MemoSection data={inst} />
       </div>
@@ -1151,69 +1260,126 @@ export default function InstructorDetail({
 
 // --- A. Header Section ---
 
-function HeaderSection({ data }: { data: InstructorDetailData }) {
-  const headerTags = buildHeaderTags(data);
+function HeaderSection({
+  data,
+  hasNotionComments,
+  onJumpToNotionComments,
+}: {
+  data: InstructorDetailData;
+  hasNotionComments: boolean;
+  onJumpToNotionComments: () => void;
+}) {
+  const subtitleParts = Array.from(
+    new Map(
+      [
+        data.categories[0] ?? null,
+        data.is_fulltime ? "전임강사" : null,
+        data.is_practice_coach ? "실습코치" : null,
+      ]
+        .filter((value): value is string => Boolean(value && value.trim()))
+        .map((value) => [value.replace(/\s+/g, "").toLowerCase(), value])
+    ).values()
+  );
+  const contactItems = [
+    {
+      label: "이메일",
+      value: data.contact.email,
+      marker: "@",
+      href: data.contact.email ? `mailto:${data.contact.email}` : null,
+    },
+    {
+      label: "연락처",
+      value: data.contact.phone,
+      marker: "TEL",
+      href: data.contact.phone
+        ? `tel:${data.contact.phone.replace(/[^0-9+]/g, "")}`
+        : null,
+    },
+    {
+      label: "기본 단가",
+      value: formatMoneyPerHour(data.base_fee_hourly, data.is_fulltime),
+      marker: "W",
+      href: null,
+    },
+    {
+      label: "소속",
+      value: data.affiliation,
+      marker: "A",
+      href: null,
+    },
+  ].filter((item) => item.value && item.value !== "-");
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-start justify-between">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="text-2xl font-bold text-gray-900">{data.name}</h2>
+    <section className="profile-card">
+      <div className="profile-top">
+        <div className="profile-identity">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2>
+              {data.name}
+              {data.is_practice_coach && <span className="rank-label">실습코치</span>}
+            </h2>
+            {hasNotionComments && (
+              <button
+                type="button"
+                onClick={onJumpToNotionComments}
+                className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px font-medium text-amber-700 transition hover:border-amber-300 hover:bg-amber-100"
+                style={{ fontSize: "11px", lineHeight: 1.15 }}
+              >
+                노션 코멘트 확인 필요
+              </button>
+            )}
           </div>
+
+          {subtitleParts.length > 0 && (
+            <div className="subtitle">{subtitleParts.join(" · ")}</div>
+          )}
+
+          {data.profile_summary && (
+            <p className="mt-3 max-w-3xl text-[13px] leading-6 text-[var(--text-secondary)]">
+              {data.profile_summary}
+            </p>
+          )}
+        </div>
+
+        <div className="profile-score">
+          <div
+            className="score-value"
+            style={{ color: data.score !== null ? "var(--primary)" : "var(--text-muted)" }}
+          >
+            {formatScore(data.score)}
+          </div>
+          <div className="score-label">Engagement Score</div>
         </div>
       </div>
 
-      {/* Contact */}
-      {(data.contact.email || data.contact.phone) && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-600">
-          {data.contact.email && (
-            <a
-              href={`mailto:${data.contact.email}`}
-              className="inline-flex min-w-0 items-center gap-2 hover:text-blue-700"
-            >
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                Email
-              </span>
-              <span className="break-all font-medium text-gray-800">
-                {data.contact.email}
-              </span>
-            </a>
-          )}
-          {data.contact.phone && (
-            <a
-              href={`tel:${data.contact.phone.replace(/[^0-9+]/g, "")}`}
-              className="inline-flex items-center gap-2 hover:text-blue-700"
-            >
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                Phone
-              </span>
-              <span className="font-medium text-gray-800">
-                {data.contact.phone}
-              </span>
-            </a>
-          )}
-        </div>
-      )}
+      {contactItems.length > 0 && (
+        <div className="profile-details">
+          {contactItems.map((item) => {
+            const content = (
+              <>
+                <span className="detail-item-mark">{item.marker}</span>
+                <div className="min-w-0">
+                  <div className="label">{item.label}</div>
+                  <div className="value break-all">{item.value}</div>
+                </div>
+              </>
+            );
 
-      {headerTags.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {headerTags.map((tag) => (
-            <span
-              key={tag.key}
-              className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ${tag.className}`}
-            >
-              {tag.label}
-            </span>
-          ))}
-        </div>
-      )}
+            if (item.href) {
+              return (
+                <a key={item.label} href={item.href} className="detail-item">
+                  {content}
+                </a>
+              );
+            }
 
-      {/* Profile summary */}
-      {data.profile_summary && (
-        <p className="text-sm text-gray-600 leading-relaxed bg-gray-50 rounded-md px-3 py-2">
-          {data.profile_summary}
-        </p>
+            return (
+              <div key={item.label} className="detail-item">
+                {content}
+              </div>
+            );
+          })}
+        </div>
       )}
     </section>
   );
@@ -1222,57 +1388,78 @@ function HeaderSection({ data }: { data: InstructorDetailData }) {
 // --- B. Key Metrics Section ---
 
 function MetricsSection({ data }: { data: InstructorDetailData }) {
+  const feeHistory = data.fee_history as FeeHistoryItem[];
+  const feeTimeline = collapseFeeTimeline(feeHistory);
+  const firstFee = feeTimeline[0] ?? null;
+  const lastFee = feeTimeline[feeTimeline.length - 1] ?? null;
+  const feeChange =
+    firstFee && lastFee ? lastFee.amount - firstFee.amount : 0;
+  const feeChangeValue =
+    feeTimeline.length < 2
+      ? "변동없음"
+      : feeChange > 0
+        ? `+${formatMoney(feeChange)}`
+        : feeChange < 0
+          ? `-${formatMoney(Math.abs(feeChange))}`
+          : "변동없음";
+  const feeChangeToneClass =
+    feeTimeline.length < 2 || feeChange === 0
+      ? "text-[var(--text-muted)]"
+      : feeChange > 0
+        ? "text-[var(--success)]"
+        : "text-[var(--danger)]";
+  const feeChangeSub = firstFee ? `${firstFee.start_label} ~ 현재` : "-";
+
   const metrics = [
     {
-      label: "총 출강 횟수",
+      label: "총 출강",
       value: `${data.total_courses}회`,
+      sub: "전체 기간",
     },
     {
-      label: "총 강의 시간",
+      label: "총 출강시간",
       value: formatHours(data.total_hours),
+      sub: "누적 강의 시간",
     },
     {
       label: "최근 6개월",
       value: `${data.recent_courses_6mo}회`,
+      sub: "최근 활동",
     },
     {
-      label: "누적 지급액 (추정)",
+      label: "누적 지급액",
       value: formatMoney(data.total_paid),
+      sub: "기록 기준",
     },
     {
-      label: "기본 단가",
-      value: formatMoneyPerHour(data.base_fee_hourly, data.is_fulltime),
+      label: "단가 변동",
+      value: feeChangeValue,
+      sub: feeChangeSub,
+      toneClass: feeChangeToneClass,
     },
   ];
 
   return (
-    <section className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
+    <section className="kpi-row">
       {metrics.map((m) => (
-        <div
-          key={m.label}
-          className="min-w-0 rounded-lg border border-gray-200 bg-white px-3.5 py-3"
-        >
-          <div className="mb-1 text-[11px] leading-tight text-gray-500 md:text-xs">
-            {m.label}
-          </div>
-          <div className="truncate text-base font-semibold text-gray-900 md:text-lg">
-            {m.value}
-          </div>
+        <div key={m.label} className="kpi-card min-w-0">
+          <div className="kpi-label">{m.label}</div>
+          <div className={`kpi-value truncate ${m.toneClass ?? ""}`}>{m.value}</div>
+          <div className="kpi-sub">{m.sub}</div>
         </div>
       ))}
     </section>
   );
 }
 
-// --- C. Score & Satisfaction Section ---
+// --- C. Score Breakdown Section ---
 
-function ScoreSatisfactionSection({
+function ScoreBreakdownSection({
   data,
 }: {
   data: InstructorDetailData;
 }) {
   const breakdown = data.score_breakdown ?? {};
-  const recentSatisfactionEntries = buildRecentSatisfactionEntries(data);
   const orderedKeys = [
     "courses",
     "satisfaction",
@@ -1296,242 +1483,251 @@ function ScoreSatisfactionSection({
     .filter((item): item is NonNullable<typeof item> => item !== null);
 
   return (
-    <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-      {/* Left: Total score + breakdown */}
-      <div className="bg-white border border-gray-200 rounded-lg px-5 py-4">
-        <div className="flex items-end justify-between gap-3 mb-4">
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-bold text-gray-900">
-              {formatScore(data.score)}
-            </span>
-            <span className="text-sm text-gray-400">/ 100</span>
-          </div>
-          <span className="text-[11px] text-gray-400">
-            항목별 기여도
-          </span>
-        </div>
-        <div className="h-3 rounded-full bg-gray-100 overflow-hidden flex mb-4">
-          {breakdownItems.map((item) => (
-            <div
-              key={item.key}
-              className={`${item.colorClass} h-full transition-all`}
-              style={{ width: `${Math.min(100, Math.max(0, item.value))}%` }}
-              aria-label={`${item.label}: ${item.tooltip}`}
-            />
-          ))}
-        </div>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-          {breakdownItems.map((item) => (
-            <div key={item.key} className="flex items-center gap-2 min-w-0">
-              <span
-                className={`h-2.5 w-2.5 rounded-full shrink-0 ${item.colorClass}`}
-              />
-              <span className="text-xs text-gray-600 truncate">
-                {item.label}
-              </span>
-              <InlineTooltip label={item.label} text={item.tooltip} />
-              <span className="ml-auto text-xs font-medium text-gray-900 shrink-0">
-                {item.value.toFixed(1)} / {item.max}
-              </span>
-            </div>
-          ))}
-        </div>
+    <section className="section-card">
+      <div className="section-title">
+        <span className="section-title-mark">S</span>
+        점수 구성
       </div>
-
-      {/* Right: Satisfaction */}
-      <div className="bg-white border border-gray-200 rounded-lg px-5 py-4">
-        <div className="mb-3 text-xs text-gray-500">최근 6개월 만족도 조사 결과</div>
-        <div className="flex items-baseline gap-2 mb-2">
-          <span className="text-3xl font-bold text-gray-900">
-            {data.recent_satisfaction_summary.avg !== null
-              ? data.recent_satisfaction_summary.avg.toFixed(1)
-              : "-"}
+      <div className="mb-4 flex items-end justify-between gap-3">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[24px] font-bold text-[var(--text-primary)]">
+            {formatScore(data.score)}
           </span>
-          <span className="text-sm text-gray-400">/ 5.0</span>
+          <span className="text-[12px] text-[var(--text-muted)]">/ 100</span>
         </div>
-        <div className="space-y-1 text-sm text-gray-600">
-          <div>응답 {data.recent_satisfaction_summary.count}건</div>
-          {data.recent_satisfaction_summary.is_imputed && (
-            <div className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-50 text-yellow-700">
-              추정값
+        <span className="text-[10px] text-[var(--text-muted)]">
+          Engagement Score
+        </span>
+      </div>
+      <div className="space-y-2">
+        {breakdownItems.map((item) => (
+          <div key={item.key} className="flex items-center gap-2 text-[11px]">
+            <span className="w-[60px] shrink-0 text-[var(--text-secondary)]">
+              {item.label}
+            </span>
+            <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-[var(--border-light)]">
+              <div
+                className={`h-full rounded-full ${item.colorClass} opacity-70`}
+                style={{
+                  width: `${Math.min(100, Math.max(0, (item.value / item.max) * 100))}%`,
+                }}
+              />
             </div>
-          )}
-        </div>
-        {recentSatisfactionEntries.length > 0 && (
-          <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 px-3 py-3">
-            <div className="text-[11px] font-medium text-gray-700">
-              최근 6개월 내역 {recentSatisfactionEntries.length}건
-            </div>
-            <details className="mt-2">
-              <summary className="cursor-pointer text-[11px] font-medium text-gray-600">
-                날짜와 과정 내역 보기
-              </summary>
-              <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
-                {recentSatisfactionEntries.map((item) => (
-                  <div
-                    key={item.key}
-                    className="rounded bg-white px-3 py-2 text-[11px] text-gray-600"
-                  >
-                    <div className="text-[10px] font-medium text-gray-500">
-                      {formatDate(item.observedAt)}
-                    </div>
-                    <div className="mt-1 text-gray-700">
-                      {[item.companyName, item.courseName, item.sessionLabel]
-                        .filter(Boolean)
-                        .join(" · ") || "과정 정보 없음"}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </details>
+            <span className="w-[45px] shrink-0 text-right font-semibold text-[var(--text-primary)]">
+              {item.value.toFixed(1)}
+            </span>
+            <span className="w-[30px] shrink-0 text-[var(--text-muted)]">
+              /{item.max}
+            </span>
+            <InlineTooltip label={item.label} text={item.tooltip} />
           </div>
-        )}
+        ))}
       </div>
     </section>
   );
 }
+
+function SatisfactionSection({
+  data,
+}: {
+  data: InstructorDetailData;
+}) {
+  const recentSatisfactionEntries = buildRecentSatisfactionEntries(data);
+  const satisfactionAverage = data.recent_satisfaction_summary.avg;
+  const roundedScore =
+    satisfactionAverage === null
+      ? 0
+      : Math.max(0, Math.min(5, Math.round(satisfactionAverage)));
+  const stars = `${"★".repeat(roundedScore)}${"☆".repeat(5 - roundedScore)}`;
+
+  return (
+    <section className="section-card">
+      <div className="section-title">
+        <span className="section-title-mark">T</span>
+        만족도
+      </div>
+      <div className="mb-2 flex items-center gap-3">
+        <span className="text-[24px] font-bold text-[var(--text-primary)]">
+          {satisfactionAverage !== null ? satisfactionAverage.toFixed(1) : "-"}
+        </span>
+        <span className="text-[16px] tracking-[1.5px] text-[var(--warning)]">
+          {stars}
+        </span>
+        <span className="text-[12px] text-[var(--text-muted)]">
+          {data.recent_satisfaction_summary.count}건 조사
+        </span>
+      </div>
+      <div className="text-[12px] text-[var(--text-secondary)]">
+        최근 6개월 만족도 결과
+        {data.recent_satisfaction_summary.is_imputed && (
+          <span className="ml-2 inline-flex items-center rounded bg-yellow-50 px-2 py-0.5 text-[11px] text-yellow-700">
+            추정값
+          </span>
+        )}
+      </div>
+      {recentSatisfactionEntries.length > 0 && (
+        <div className="mt-4 rounded-[var(--radius-xs)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
+          <div className="text-[11px] font-medium text-[var(--text-primary)]">
+            최근 6개월 내역 {recentSatisfactionEntries.length}건
+          </div>
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[11px] font-medium text-[var(--text-secondary)]">
+              날짜와 과정 내역 보기
+            </summary>
+            <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
+              {recentSatisfactionEntries.map((item) => (
+                <div
+                  key={item.key}
+                  className="rounded-[var(--radius-xs)] bg-white px-3 py-2 text-[11px] text-[var(--text-secondary)]"
+                >
+                  <div className="text-[10px] font-medium text-[var(--text-muted)]">
+                    {formatDate(item.observedAt)}
+                  </div>
+                  <div className="mt-1 text-[var(--text-primary)]">
+                    {[item.companyName, item.courseName, item.sessionLabel]
+                      .filter(Boolean)
+                      .join(" · ") || "과정 정보 없음"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // --- D. Operations Intelligence Section ---
 
-function OpsIntelligenceSection({ data }: { data: InstructorDetailData }) {
+function OpsIntelligenceSection({
+  data,
+  notionCommentCards,
+}: {
+  data: InstructorDetailData;
+  notionCommentCards: NotionCommentCard[];
+}) {
   const behavioral = data.behavioral_intelligence;
-  const getOperationalNoteBundleKey = (
-    note: InstructorDetailData["raw_operational_notes"][number]
-  ): string => {
-    if (note.source_type === "notion_comment") {
-      return getNotionCommentBundleKey(note);
-    }
-
-    const sourceRef = note.source_ref ?? {};
-    const satisfactionImportItemId =
-      typeof sourceRef.satisfaction_import_item_id === "string"
-        ? sourceRef.satisfaction_import_item_id
-        : null;
-    if (satisfactionImportItemId) {
-      return `${note.source_type}:satisfaction_import_item:${satisfactionImportItemId}`;
-    }
-
-    const activityImportItemId =
-      typeof sourceRef.activity_import_item_id === "string"
-        ? sourceRef.activity_import_item_id
-        : null;
-    if (activityImportItemId) {
-      return `${note.source_type}:activity_import_item:${activityImportItemId}`;
-    }
-
-    const entryIndex =
-      typeof sourceRef.entry_index === "number" ||
-      typeof sourceRef.entry_index === "string"
-        ? String(sourceRef.entry_index)
-        : null;
-    if (entryIndex) {
-      return `${note.source_type}:entry_index:${entryIndex}`;
-    }
-
-    return note.id;
-  };
-  const groupedOperationalNotes = Array.from(
-    data.raw_operational_notes.reduce((map, note) => {
-      const key = getOperationalNoteBundleKey(note);
-      const noteDate = getOperationalNoteDate(note);
-      const existing = map.get(key) ?? {
-        key,
-        sourceType: note.source_type,
-        observedAt: noteDate,
-        ids: [] as string[],
-        texts: [] as string[],
-      };
-      existing.ids.push(note.id);
-      if (!existing.texts.includes(note.raw_text)) {
-        existing.texts.push(note.raw_text);
-      }
-      if (!existing.observedAt && noteDate) {
-        existing.observedAt = noteDate;
-      }
-      map.set(key, existing);
-      return map;
-    }, new Map<string, RawOperationalNoteGroup>())
-  ).map(([, group]) => group);
-  const collapsedOperationalNotes = collapseOperationalNoteGroups(
-    groupedOperationalNotes
-  );
-  const behavioralSummaryCards = [
+  const strengths = behavioral.strength_patterns ?? [];
+  const risks =
+    behavioral.risk_patterns.length > 0
+      ? behavioral.risk_patterns
+      : data.risk_notes;
+  const detailItems = [
     {
-      label: "강의 스타일",
-      value: behavioral.teaching_style,
+      title: "강의 스타일",
+      body: behavioral.teaching_style,
     },
     {
-      label: "커리큘럼 적합성",
-      value: behavioral.curriculum_compliance,
+      title: "커리큘럼 준수",
+      body: behavioral.curriculum_compliance,
     },
     {
-      label: "태도/운영",
-      value: behavioral.attitude,
+      title: "애티튜드",
+      body: behavioral.attitude,
     },
   ].filter(
-    (
-      item
-    ): item is {
-      label: string;
-      value: string;
-    } => Boolean(item.value)
+    (item): item is { title: string; body: string } =>
+      Boolean(item.body && item.body.trim())
   );
-  const notionCommentCards = collapsedOperationalNotes
-    .filter((note) => note.sourceType === "notion_comment")
-    .map((note) => ({
-      key: `notion-${note.key}`,
-      sourceLabel: "노션 comment",
-      observedAt: note.observedAt,
-      text: sanitizeOperationalMemoText(note.texts.join("\n")),
-    }))
-    .filter((note) => note.text.length > 0)
-    .sort((a, b) => (b.observedAt ?? "").localeCompare(a.observedAt ?? ""));
+  const hasTags = data.recommended_for.length > 0 || data.avoid_for.length > 0;
+  const richnessTone =
+    behavioral.data_richness === "rich"
+      ? "text-[var(--success)]"
+      : behavioral.data_richness === "moderate"
+        ? "text-[var(--primary)]"
+        : "text-[var(--text-muted)]";
   const hasNotionComments = notionCommentCards.length > 0;
-  const hasStructuredSummary =
-    behavioral.recommendation !== null || behavioralSummaryCards.length > 0;
-
-  if (!hasStructuredSummary && !hasNotionComments) return null;
 
   return (
     <section>
-      <div className="space-y-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-100 px-5 py-4 shadow-sm">
-        <div>
-          <h3 className="text-sm font-semibold text-gray-900">
-            운영 인텔리전스
-          </h3>
+      <div className="intel-card">
+        <div className="intel-header">
+          <span className="intel-title">운영 인텔리전스</span>
+          <span className={`intel-richness ${richnessTone}`}>
+            {behavioral.data_richness}
+          </span>
         </div>
 
-        {behavioral.recommendation && (
-          <div className="rounded-xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
-            <p className="text-[11px] font-semibold tracking-wide text-gray-500">
-              운영 판단 요약
-            </p>
-            <p className="mt-2 text-sm leading-6 text-gray-700">
-              {behavioral.recommendation}
-            </p>
-          </div>
-        )}
+        <div className="intel-section intel-rec">
+          <p className="intel-rec-label">
+            {behavioral.recommendation ??
+              "운영 근거가 아직 충분히 수집되지 않았습니다. 추가 메모와 피드백이 쌓이면 적합·주의 포인트를 함께 보여줍니다."}
+          </p>
+          {hasTags && (
+            <div className="mt-2 space-y-2">
+              {data.recommended_for.length > 0 && (
+                <div className="intel-tags">
+                  <span className="intel-tag-label good">적합</span>
+                  {data.recommended_for.map((tag) => (
+                    <span key={`recommended-${tag}`} className="intel-tag good">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {data.avoid_for.length > 0 && (
+                <div className="intel-tags">
+                  <span className="intel-tag-label bad">지양</span>
+                  {data.avoid_for.map((tag) => (
+                    <span key={`avoid-${tag}`} className="intel-tag bad">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
-        {behavioralSummaryCards.length > 0 && (
-          <div className="grid gap-2 sm:grid-cols-3">
-            {behavioralSummaryCards.map((item) => (
-              <div
-                key={item.label}
-                className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
-              >
-                <p className="text-[11px] font-semibold tracking-wide text-gray-500">
-                  {item.label}
-                </p>
-                <p className="mt-2 text-sm leading-6 text-gray-700">
-                  {item.value}
-                </p>
+        <div className="intel-grid">
+          <div>
+            <div className="intel-col-title intel-strength-title">강점</div>
+            {strengths.length > 0 ? (
+              strengths.slice(0, 3).map((item) => (
+                <div key={item} className="intel-pattern intel-strength">
+                  {item}
+                </div>
+              ))
+            ) : (
+              <div className="intel-pattern bg-[var(--bg)] text-[var(--text-muted)]">
+                강점 정보 없음
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="intel-col-title intel-risk-title">주의</div>
+            {risks.length > 0 ? (
+              risks.slice(0, 3).map((item) => (
+                <div key={item} className="intel-pattern intel-risk-high">
+                  {item}
+                </div>
+              ))
+            ) : (
+              <div className="intel-pattern bg-[var(--bg)] text-[var(--text-muted)]">
+                주의 정보 없음
+              </div>
+            )}
+          </div>
+        </div>
+
+        {detailItems.length > 0 && (
+          <div className="intel-details">
+            {detailItems.map((item) => (
+              <div key={item.title} className="intel-detail">
+                <div className="intel-detail-title">{item.title}</div>
+                <div className="intel-detail-body">{item.body}</div>
               </div>
             ))}
           </div>
         )}
 
         {hasNotionComments && (
-          <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 shadow-sm">
-            <p className="text-[11px] font-semibold tracking-wide text-gray-700">
+          <div
+            id={NOTION_COMMENT_SECTION_ID}
+            className="scroll-mt-6 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-4 py-3 shadow-sm"
+          >
+            <p className="text-[11px] font-semibold tracking-wide text-[var(--text-primary)]">
               협업 경험
             </p>
             <div className="mt-4 space-y-3">
@@ -1593,31 +1789,33 @@ function TeachingHistorySection({
     0,
     history.length - COLLAPSED_TEACHING_HISTORY_COUNT
   );
+  const hiddenCount = collapsedCount + data.teaching_history_remaining_count;
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-        <span>강의 상세 이력</span>
-        <span className="text-gray-500">
+    <section className="section-card">
+      <div className="section-title">
+        <span className="section-title-mark">H</span>
+        강의 상세 이력
+        <span className="text-[11px] font-medium text-[var(--text-muted)]">
           (최근 {rawHistory.length}건 / 전체 {totalCount}건)
         </span>
       </div>
 
       {history.length === 0 ? (
-        <p className="text-sm text-gray-400">강의 이력이 없습니다</p>
+        <p className="text-sm text-[var(--text-muted)]">강의 이력이 없습니다</p>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+        <div className="overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-white">
           <div className="overflow-x-auto">
-            <table className="min-w-full table-fixed">
-              <thead className="border-b border-gray-200 bg-gray-50">
-                <tr className="text-left text-xs font-medium text-gray-500">
+            <table className="history-table min-w-full table-fixed">
+              <thead>
+                <tr>
                   <th className="px-5 py-4 w-[20%]">시기</th>
                   <th className="px-5 py-4 w-[18%]">기업명</th>
                   <th className="px-5 py-4 w-[46%]">과정명</th>
                   <th className="px-5 py-4 w-[16%]">강사료</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody>
                 {visibleHistory.map((item) => {
                   const company =
                     getTeachingHistoryDisplayCompany(item) ??
@@ -1634,18 +1832,18 @@ function TeachingHistorySection({
 
                   return (
                     <tr key={item.id} className="align-top">
-                      <td className="px-5 py-4 text-sm text-gray-500">
+                      <td className="px-5 py-4 text-sm text-[var(--text-muted)]">
                         <div>{dateDisplay}</div>
                         {summary && (
-                          <div className="mt-1 text-xs text-gray-400">
+                          <div className="mt-1 text-xs text-[var(--text-muted)]">
                             {summary}
                           </div>
                         )}
                       </td>
-                      <td className="px-5 py-4 text-sm font-semibold text-gray-900">
-                        <div className="break-words">{company}</div>
+                      <td className="company px-5 py-4">
+                        <div className="break-words text-sm">{company}</div>
                       </td>
-                      <td className="px-5 py-4 text-sm text-gray-700">
+                      <td className="course px-5 py-4 text-sm">
                         <div className="flex items-start gap-2">
                           {relatedFeeHistoryId ? (
                             <button
@@ -1656,12 +1854,12 @@ function TeachingHistorySection({
                               className="min-w-0 text-left"
                               title={`${title} 단가 이력으로 이동`}
                             >
-                              <div className="font-medium text-gray-900 underline decoration-blue-200 underline-offset-2 transition hover:text-blue-700">
+                              <div className="font-medium text-[var(--text-primary)] underline decoration-blue-200 underline-offset-2 transition hover:text-blue-700">
                                 {title}
                               </div>
                             </button>
                           ) : (
-                            <div className="font-medium text-gray-900" title={title}>
+                            <div className="font-medium text-[var(--text-primary)]" title={title}>
                               {title}
                             </div>
                           )}
@@ -1678,7 +1876,7 @@ function TeachingHistorySection({
                           )}
                         </div>
                       </td>
-                      <td className="px-5 py-4 text-sm font-semibold text-gray-900">
+                      <td className="fee px-5 py-4 text-sm">
                         {formatMoney(item.deal_fee_hourly ?? null)}
                       </td>
                     </tr>
@@ -1688,33 +1886,39 @@ function TeachingHistorySection({
             </table>
           </div>
           {(collapsedCount > 0 || data.teaching_history_remaining_count > 0) && (
-            <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-5 py-3">
-              <div className="text-xs text-gray-500">
-                {collapsedCount > 0
-                  ? `접힌 이력 ${collapsedCount}건`
-                  : `${data.teaching_history_remaining_count}건 더 있음`}
-              </div>
-              <div className="flex items-center gap-2">
-                {collapsedCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setIsExpanded((current) => !current)}
-                    className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-                  >
-                    {isExpanded ? "15개만 보기" : `${collapsedCount}건 더 펼치기`}
-                  </button>
-                )}
-                {isExpanded && data.teaching_history_remaining_count > 0 && (
-                  <button
-                    type="button"
-                    onClick={onLoadMore}
-                    disabled={isLoadingMore}
-                    className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isLoadingMore ? "불러오는 중..." : "서버에서 더 보기"}
-                  </button>
-                )}
-              </div>
+            <div className="border-t border-[var(--border-light)] px-5 py-3 text-center">
+              {!isExpanded && hiddenCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setIsExpanded(true)}
+                  className="text-[11px] font-medium text-[#94A3B8] transition hover:text-[var(--primary)]"
+                >
+                  + {hiddenCount}건 더 있음
+                </button>
+              )}
+
+              {isExpanded && collapsedCount > 0 && data.teaching_history_remaining_count === 0 && (
+                <button
+                  type="button"
+                  onClick={() => setIsExpanded(false)}
+                  className="text-[11px] font-medium text-[#94A3B8] transition hover:text-[var(--primary)]"
+                >
+                  접기
+                </button>
+              )}
+
+              {isExpanded && data.teaching_history_remaining_count > 0 && (
+                <button
+                  type="button"
+                  onClick={onLoadMore}
+                  disabled={isLoadingMore}
+                  className="text-[11px] font-medium text-[#94A3B8] transition hover:text-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isLoadingMore
+                    ? "불러오는 중..."
+                    : `+ ${data.teaching_history_remaining_count}건 더 있음`}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1727,9 +1931,13 @@ function TeachingHistorySection({
 
 function FeeHistorySection({
   data,
+  isTableExpanded,
+  onToggleTable,
   highlightedFeeHistoryId,
 }: {
   data: InstructorDetailData;
+  isTableExpanded: boolean;
+  onToggleTable: () => void;
   highlightedFeeHistoryId: string | null;
 }) {
   const history = data.fee_history as FeeHistoryItem[];
@@ -1758,39 +1966,54 @@ function FeeHistorySection({
   const dateGroups = buildFeeHistoryDateGroups(timeline, referenceItems);
 
   return (
-    <section className="space-y-3">
-      <h3 className="text-sm font-semibold text-gray-900">단가 이력</h3>
+    <section className="section-card">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="section-title">
+          <span className="section-title-mark">F</span>
+          강사료 이력
+        </div>
+        {dateGroups.length > 0 && (
+          <button
+            type="button"
+            onClick={onToggleTable}
+            aria-expanded={isTableExpanded}
+            className="inline-flex shrink-0 items-center justify-center self-start px-0 py-0 text-[10px] font-medium leading-none text-[var(--text-muted)] transition hover:text-blue-700"
+          >
+            {isTableExpanded ? "단가 이력 접기" : "단가 이력 보기"}
+          </button>
+        )}
+      </div>
       {history.length === 0 ? (
-        <p className="text-sm text-gray-400">이력 없음</p>
+        <p className="text-sm text-[var(--text-muted)]">이력 없음</p>
       ) : (
         <div className="space-y-4">
           {timeline.length > 0 && <FeeTrendChart timeline={timeline} />}
 
           {undatedHourlyCount > 0 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+            <div className="rounded-[var(--radius-xs)] border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
               날짜를 확정할 수 없는 단가 이력 {undatedHourlyCount}건은 추이에서 제외했습니다.
             </div>
           )}
 
-          {dateGroups.length > 0 && (
-            <div className="rounded-lg border border-gray-200 bg-white">
-              <div className="border-b border-gray-100 px-4 py-3">
+          {dateGroups.length > 0 && isTableExpanded && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-white">
+              <div className="border-b border-[var(--border-light)] px-4 py-3">
                 <div className="grid gap-2 md:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)]">
-                  <div className="text-xs font-medium text-gray-500">시점</div>
-                  <div className="text-xs font-medium text-gray-500">
+                  <div className="text-xs font-medium text-[var(--text-muted)]">시점</div>
+                  <div className="text-xs font-medium text-[var(--text-muted)]">
                     시간당 단가 변동
                   </div>
-                  <div className="text-xs font-medium text-gray-500">
+                  <div className="text-xs font-medium text-[var(--text-muted)]">
                     특수 금액 / 참고
                   </div>
                 </div>
               </div>
-              <div className="divide-y divide-gray-100">
+              <div className="divide-y divide-[var(--border-light)]">
                 {dateGroups.map((group) => {
                   return (
                     <div key={group.sortKey} className="px-4 py-4">
                       <div className="grid gap-3 md:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)]">
-                        <div className="text-sm font-semibold text-gray-900">
+                        <div className="text-sm font-semibold text-[var(--text-primary)]">
                           {group.label}
                         </div>
 
@@ -1837,7 +2060,7 @@ function FeeHistorySection({
                                         index
                                       )
                                         ? "border-blue-300 bg-blue-50"
-                                        : "border-gray-200 bg-gray-50"
+                                        : "border-[var(--border)] bg-[var(--bg)]"
                                     }`}
                                   >
                                     <div className="flex items-start justify-between gap-4">
@@ -1854,7 +2077,7 @@ function FeeHistorySection({
                                             </span>
                                           )}
                                         </div>
-                                        <div className="text-xs text-gray-500">
+                                        <div className="text-xs text-[var(--text-muted)]">
                                           유지 구간:{" "}
                                           {formatFeeSegmentPeriod(
                                             item,
@@ -1862,7 +2085,7 @@ function FeeHistorySection({
                                           )}
                                         </div>
                                         {contextLine && (
-                                          <div className="text-xs text-gray-500">
+                                          <div className="text-xs text-[var(--text-muted)]">
                                             {contextLine}
                                           </div>
                                         )}
@@ -1871,10 +2094,10 @@ function FeeHistorySection({
                                             {item.notes.map((note) => (
                                               <div
                                                 key={note.id}
-                                                className="rounded bg-white px-2 py-1.5 text-xs text-gray-600"
+                                                className="rounded-[var(--radius-xs)] bg-white px-2 py-1.5 text-xs text-[var(--text-secondary)]"
                                               >
                                                 {(note.period || note.context) && (
-                                                  <div className="mb-0.5 text-[11px] text-gray-500">
+                                                  <div className="mb-0.5 text-[11px] text-[var(--text-muted)]">
                                                     {[note.period, note.context]
                                                       .filter(Boolean)
                                                       .join(" · ")}
@@ -1887,11 +2110,11 @@ function FeeHistorySection({
                                         )}
                                       </div>
                                       <div className="shrink-0 text-right">
-                                        <div className="text-sm font-semibold text-gray-900">
+                                        <div className="text-sm font-semibold text-[var(--text-primary)]">
                                           {formatMoney(item.amount)}
                                         </div>
                                         {changeAmount !== 0 && (
-                                          <div className="mt-1 text-xs text-gray-500">
+                                          <div className="mt-1 text-xs text-[var(--text-muted)]">
                                             {formatMoneyDelta(changeAmount)}
                                           </div>
                                         )}
@@ -1902,7 +2125,7 @@ function FeeHistorySection({
                               }
                             )
                           ) : (
-                            <div className="rounded-md border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-400">
+                            <div className="rounded-[var(--radius-xs)] border border-dashed border-[var(--border)] px-3 py-3 text-xs text-[var(--text-muted)]">
                               해당 날짜의 시간당 단가 변동 없음
                             </div>
                           )}
@@ -1957,13 +2180,13 @@ function FeeHistorySection({
                                         </span>
                                       </div>
                                       {contextLine && (
-                                        <div className="text-xs text-gray-500">
+                                        <div className="text-xs text-[var(--text-muted)]">
                                           {contextLine}
                                         </div>
                                       )}
                                     </div>
                                     <div className="shrink-0 text-right">
-                                      <div className="text-sm font-semibold text-gray-900">
+                                      <div className="text-sm font-semibold text-[var(--text-primary)]">
                                         {formatMoney(item.amount)}
                                       </div>
                                     </div>
@@ -1972,7 +2195,7 @@ function FeeHistorySection({
                               );
                             })
                           ) : (
-                            <div className="rounded-md border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-400">
+                            <div className="rounded-[var(--radius-xs)] border border-dashed border-[var(--border)] px-3 py-3 text-xs text-[var(--text-muted)]">
                               해당 날짜의 특수 금액 / 참고 이력 없음
                             </div>
                           )}
@@ -1986,7 +2209,7 @@ function FeeHistorySection({
           )}
 
           {dateGroups.length === 0 && (
-            <p className="text-sm text-gray-400">이력 없음</p>
+            <p className="text-sm text-[var(--text-muted)]">이력 없음</p>
           )}
         </div>
       )}
@@ -2011,9 +2234,12 @@ function MemoSection({ data }: { data: InstructorDetailData }) {
   if (!visibleMemo) return null;
 
   return (
-    <section className="space-y-3">
-      <h3 className="text-sm font-semibold text-gray-900">운영 메모</h3>
-      <div className="px-4 py-3 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg whitespace-pre-wrap leading-relaxed">
+    <section className="section-card">
+      <div className="section-title">
+        <span className="section-title-mark">M</span>
+        운영 메모
+      </div>
+      <div className="memo-box">
         {visibleMemo}
       </div>
     </section>

@@ -124,8 +124,8 @@ function normalizeMessage(
   if (isDispatchRequest && channel.mappedInstructorName) {
     // 5-4-1 / 사용자 지시: 출강요청은 channel → 강사명 매핑을 우선 적용
     candidateName = channel.mappedInstructorName;
-  } else {
-    // 운영보고: 작성자 profile에서 name/email 후보 추출
+  } else if (!isOpsReport) {
+    // 운영보고가 아닌 일반 채널만 작성자 profile에서 name/email 후보 추출
     const author: SlackUserProfile | undefined = m.user
       ? channel.users[m.user]
       : undefined;

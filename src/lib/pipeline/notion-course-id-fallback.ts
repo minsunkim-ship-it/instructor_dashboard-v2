@@ -413,6 +413,7 @@ async function loadTeachingHistoryEntriesForPage(
         notionPageId,
       });
       return extractTeachingHistoryEntriesFromNotionLines([
+        ...content.pageTitleLines,
         ...content.blockLines,
         ...content.pageCommentLines,
         ...content.blockCommentLines,

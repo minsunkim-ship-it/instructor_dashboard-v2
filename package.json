@@ -19,6 +19,7 @@
     "test:unit:registry-key-backcompat": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-registry-key-backcompat.ts",
     "test:unit:satisfaction-checkpoint-ordering": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-satisfaction-checkpoint-ordering.ts",
     "test:unit:activity-applier-two-phase": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-activity-applier-two-phase.ts",
+    "test:unit:cron-auth": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-cron-auth.ts",
     "check:registry-key-format": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/check-registry-key-format.ts",
     "check:contract-legacy-rows": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/check-contract-legacy-rows.ts"
   },

@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { auth, isAllowedEmail, isAuthDisabled } from "@/auth";
+import { isAuthorizedCronRequest } from "@/lib/cron-auth";
 
 type AuthProxyRequest = NextRequest & {
   auth: {
@@ -34,6 +35,10 @@ export default auth((req: AuthProxyRequest) => {
   const { nextUrl } = req;
   const { pathname, search, hostname } = nextUrl;
 
+  if (pathname === "/api/health") {
+    return NextResponse.next();
+  }
+
   if (isAuthDisabled()) {
     return NextResponse.next();
   }
@@ -45,6 +50,14 @@ export default auth((req: AuthProxyRequest) => {
 
   if (isLocalDevRefresh) {
     return NextResponse.next();
+  }
+
+  if (pathname === "/api/refresh/cron") {
+    if (isAuthorizedCronRequest(req)) {
+      return NextResponse.next();
+    }
+
+    return buildApiError(401, "UNAUTHORIZED", "유효한 cron secret이 없습니다.");
   }
 
   if (pathname.startsWith("/api/auth")) {

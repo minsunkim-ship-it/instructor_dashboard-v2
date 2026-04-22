@@ -41,7 +41,7 @@ export default function FallbackBanner({
   if (!isFallback) return null;
 
   const baseClassName =
-    "bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm text-amber-800 font-medium";
+    "border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800";
   const mergedClassName = className
     ? `${baseClassName} ${className}`
     : baseClassName;

@@ -418,7 +418,7 @@ Phase 1에서는 아래 단순 lane selection을 기본값으로 사용해도 �
 ### 9-1. `rich/moderate`
 - LLM 합성을 허용한다.
 - 반드시 evidence를 가진다.
-- `risk_patterns`는 반복 근거만 사용한다.
+- `risk_patterns`와 `strength_patterns`는 반복 근거를 바탕으로 하되, 저장 문자열은 짧은 자연어 요약 문구를 사용한다.
 
 ### 9-2. `sparse/minimal`
 - 규칙 기반 카드만 생성한다.

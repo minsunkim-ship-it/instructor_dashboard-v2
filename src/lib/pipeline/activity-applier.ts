@@ -18,6 +18,11 @@ import { Prisma } from "@prisma/client";
 
 import type { NormalizedSlackActivity } from "./slack-activity-normalizer";
 import type { NormalizedGmailActivity } from "./gmail-activity-normalizer";
+import {
+  courseContextOverlapScore,
+  extractInstructorMentionsFromOpsReportText,
+  extractOpsReportCourseContext,
+} from "./ops-report-text";
 
 export type MatchStatus = "matched" | "unmatched" | "ambiguous" | "ignored" | "invalid";
 export type ActivityRegistryStatus =
@@ -126,6 +131,51 @@ interface MatchCandidateResult {
 interface InstructorIndex {
   nameMap: Map<string, { id: string }[]>;
   emailMap: Map<string, { id: string }[]>;
+  courseSignalsByInstructor: Map<
+    string,
+    Array<{
+      comparableText: string;
+      companyName: string | null;
+      startDate: Date | null;
+      endDate: Date | null;
+    }>
+  >;
+}
+
+function extractOpsReportInstructorIdsFromText(
+  text: string | null,
+  index: InstructorIndex
+): { ids: string[]; matchedNames: string[] } {
+  if (!text) return { ids: [], matchedNames: [] };
+
+  const matched = new Map<string, string>();
+  for (const extractedName of extractInstructorMentionsFromOpsReportText(text)) {
+    const candidates = index.nameMap.get(normalizeName(extractedName) ?? "");
+    if (!candidates || candidates.length !== 1) continue;
+    matched.set(candidates[0].id, extractedName);
+  }
+  const sortedNames = Array.from(index.nameMap.keys()).sort(
+    (a, b) => b.length - a.length
+  );
+
+  for (const name of sortedNames) {
+    if (!name || name.length < 2) continue;
+    if (!text.includes(name)) continue;
+
+    const candidates = index.nameMap.get(name) ?? [];
+    if (candidates.length !== 1) continue;
+    matched.set(candidates[0].id, name);
+  }
+
+  return {
+    ids: Array.from(matched.keys()),
+    matchedNames: Array.from(matched.values()),
+  };
+}
+
+function getRawPayloadText(rawPayload: Prisma.InputJsonObject): string | null {
+  const value = rawPayload.text;
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 export interface StoredActivityRow {
@@ -409,14 +459,30 @@ async function loadLightRowsForAffectedRegistries(
 async function buildInstructorIndex(filters?: {
   names?: string[];
   emails?: string[];
+  includeCourseSignals?: boolean;
 }): Promise<InstructorIndex> {
   const names = Array.from(new Set((filters?.names ?? []).filter(Boolean)));
   const emails = Array.from(new Set((filters?.emails ?? []).filter(Boolean)));
+  const includeCourseSignals = Boolean(filters?.includeCourseSignals);
 
   const all =
     names.length === 0 && emails.length === 0
       ? await prisma.instructor.findMany({
-          select: { id: true, name: true, contactEmail: true },
+          select: {
+            id: true,
+            name: true,
+            contactEmail: true,
+            teachingHistories: includeCourseSignals
+              ? {
+                  select: {
+                    companyName: true,
+                    courseName: true,
+                    startDate: true,
+                    endDate: true,
+                  },
+                }
+              : false,
+          },
         })
       : await prisma.instructor.findMany({
           where: {
@@ -427,11 +493,34 @@ async function buildInstructorIndex(filters?: {
                 : []),
             ],
           },
-          select: { id: true, name: true, contactEmail: true },
+          select: {
+            id: true,
+            name: true,
+            contactEmail: true,
+            teachingHistories: includeCourseSignals
+              ? {
+                  select: {
+                    companyName: true,
+                    courseName: true,
+                    startDate: true,
+                    endDate: true,
+                  },
+                }
+              : false,
+          },
         });
 
   const nameMap = new Map<string, { id: string }[]>();
   const emailMap = new Map<string, { id: string }[]>();
+  const courseSignalsByInstructor = new Map<
+    string,
+    Array<{
+      comparableText: string;
+      companyName: string | null;
+      startDate: Date | null;
+      endDate: Date | null;
+    }>
+  >();
 
   for (const instructor of all) {
     const name = normalizeName(instructor.name);
@@ -447,9 +536,86 @@ async function buildInstructorIndex(filters?: {
       list.push({ id: instructor.id });
       emailMap.set(email, list);
     }
+
+    if (includeCourseSignals && Array.isArray(instructor.teachingHistories)) {
+      const signals = instructor.teachingHistories
+        .map((history) => {
+          const comparableText = [history.companyName, history.courseName]
+            .filter((value): value is string => Boolean(value && value.trim()))
+            .join(" ");
+          if (!comparableText.trim()) return null;
+          return {
+            comparableText,
+            companyName: history.companyName ?? null,
+            startDate: history.startDate ?? null,
+            endDate: history.endDate ?? null,
+          };
+        })
+        .filter((value): value is NonNullable<typeof value> => Boolean(value));
+
+      if (signals.length > 0) {
+        courseSignalsByInstructor.set(instructor.id, signals);
+      }
+    }
   }
 
-  return { nameMap, emailMap };
+  return { nameMap, emailMap, courseSignalsByInstructor };
+}
+
+function getOpsReportDateBonus(
+  activityAt: Date | null,
+  signal: { startDate: Date | null; endDate: Date | null }
+): number {
+  if (!activityAt) return 0;
+  const candidates = [signal.startDate, signal.endDate].filter(
+    (value): value is Date => Boolean(value)
+  );
+  if (candidates.length === 0) return 0;
+
+  const diffDays = Math.min(
+    ...candidates.map((date) =>
+      Math.abs(activityAt.getTime() - date.getTime()) / (1000 * 60 * 60 * 24)
+    )
+  );
+  if (diffDays <= 30) return 3;
+  if (diffDays <= 90) return 2;
+  if (diffDays <= 180) return 1;
+  return 0;
+}
+
+function resolveOpsReportInstructorByCourseContext(
+  item: PendingItem,
+  index: InstructorIndex,
+  instructorIds: string[]
+): string | null {
+  const text = getRawPayloadText(item.rawPayload);
+  const courseContext = extractOpsReportCourseContext(text);
+  if (!courseContext) return null;
+
+  const scored = instructorIds
+    .map((instructorId) => {
+      const signals = index.courseSignalsByInstructor.get(instructorId) ?? [];
+      let bestScore = 0;
+
+      for (const signal of signals) {
+        const score =
+          courseContextOverlapScore(
+            courseContext,
+            signal.comparableText,
+            signal.companyName
+          ) + getOpsReportDateBonus(item.activityAt, signal);
+        bestScore = Math.max(bestScore, score);
+      }
+
+      return { instructorId, score: bestScore };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  const best = scored[0];
+  const second = scored[1];
+  if (!best || best.score < 4) return null;
+  if (second && best.score - second.score < 1.5) return null;
+  return best.instructorId;
 }
 
 function matchCandidate(
@@ -503,6 +669,40 @@ function matchCandidate(
         instructorId: null,
         basis: "email",
         errorReason: `multiple_email_matches:${byEmail.length}`,
+      };
+    }
+  }
+
+  if (item.isOpsReport) {
+    const text = getRawPayloadText(item.rawPayload);
+    const mentioned = extractOpsReportInstructorIdsFromText(text, index);
+    if (mentioned.ids.length === 1) {
+      return {
+        status: "matched",
+        instructorId: mentioned.ids[0],
+        basis: "ops_report_text",
+        errorReason: null,
+      };
+    }
+    if (mentioned.ids.length > 1) {
+      const resolvedByCourse = resolveOpsReportInstructorByCourseContext(
+        item,
+        index,
+        mentioned.ids
+      );
+      if (resolvedByCourse) {
+        return {
+          status: "matched",
+          instructorId: resolvedByCourse,
+          basis: "ops_report_course_context",
+          errorReason: null,
+        };
+      }
+      return {
+        status: "ambiguous",
+        instructorId: null,
+        basis: "ops_report_text",
+        errorReason: `multiple_ops_report_name_matches:${mentioned.matchedNames.join(",")}`,
       };
     }
   }
@@ -862,10 +1062,15 @@ export async function applyActivities(
     candidate_emails: pendingEmails.length,
   });
   const loadExistingStartedAt = Date.now();
-  const instructorIndex = await buildInstructorIndex({
-    names: pendingNames,
-    emails: pendingEmails,
-  });
+  const hasOpsReportItems = pending.some((item) => item.isOpsReport);
+  const instructorIndex = await buildInstructorIndex(
+    hasOpsReportItems
+      ? { includeCourseSignals: true }
+      : {
+          names: pendingNames,
+          emails: pendingEmails,
+        }
+  );
   const affectedRegistryKeys = new Set<string>();
   const existingItems = await prisma.activityImportItem.findMany({
     where: {

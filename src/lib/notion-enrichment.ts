@@ -36,6 +36,11 @@ type NotionBlock = {
   [key: string]: unknown;
 };
 
+type NotionPage = {
+  properties?: Record<string, unknown>;
+  title?: Array<{ plain_text?: string }> | string;
+};
+
 export interface NotionMemoEnrichmentResult {
   mergedMemo: string | null;
   incomingMemo: string | null;
@@ -173,6 +178,40 @@ export function extractMemoLinesFromNotionComment(comment: NotionComment): strin
   return [`[Notion comment · ${author} · ${date}] ${body}`];
 }
 
+export function extractMemoLinesFromNotionPage(page: NotionPage): string[] {
+  const candidates: string[] = [];
+
+  const directTitle = extractPlainTextArray(page.title);
+  if (directTitle) candidates.push(directTitle);
+  if (typeof page.title === "string" && normalizeText(page.title)) {
+    candidates.push(normalizeText(page.title));
+  }
+
+  const properties =
+    page.properties &&
+    typeof page.properties === "object" &&
+    !Array.isArray(page.properties)
+      ? page.properties
+      : null;
+
+  if (properties) {
+    for (const prop of Object.values(properties)) {
+      if (!prop || typeof prop !== "object" || Array.isArray(prop)) continue;
+      const property = prop as Record<string, unknown>;
+      if (property.type !== "title") continue;
+
+      const titleText = extractPlainTextArray(property.title);
+      if (titleText) candidates.push(titleText);
+
+      if (typeof property.title === "string" && normalizeText(property.title)) {
+        candidates.push(normalizeText(property.title));
+      }
+    }
+  }
+
+  return [...new Set(candidates.flatMap(splitLines))];
+}
+
 function buildMemoCandidate(lines: string[]): string | null {
   const deduped: string[] = [];
   const seen = new Set<string>();
@@ -257,6 +296,25 @@ async function listBlockChildren(
   return fetchPaginated<NotionBlock>(url, headers);
 }
 
+async function retrievePage(
+  pageId: string,
+  headers: HeadersInit
+): Promise<NotionPage> {
+  const response = await fetch(`${NOTION_BASE_URL}/pages/${pageId}`, {
+    headers,
+    signal: AbortSignal.timeout(NOTION_REQUEST_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(
+      `Notion API 호출 실패: ${response.status} ${response.statusText} — ${message}`
+    );
+  }
+
+  return (await response.json()) as NotionPage;
+}
+
 async function collectMemoLinesFromBlocks(
   blockId: string,
   headers: HeadersInit,
@@ -317,6 +375,7 @@ export async function collectNotionPageContentLines(args: {
   includeBlockComments?: boolean;
   includeBlockText?: boolean;
 }): Promise<{
+  pageTitleLines: string[];
   pageCommentLines: string[];
   pageCommentCount: number;
   blockLines: string[];
@@ -329,17 +388,21 @@ export async function collectNotionPageContentLines(args: {
     args.includeBlockText !== false &&
     !BLOCK_TEXT_EXCLUDED_PAGE_IDS.has(args.notionPageId);
 
-  const pageComments =
+  const [page, pageComments, nested] = await Promise.all([
+    retrievePage(args.notionPageId, headers),
     args.includePageComments === false
-      ? []
-      : await listCommentsForBlock(args.notionPageId, headers);
+      ? Promise.resolve([])
+      : listCommentsForBlock(args.notionPageId, headers),
+    collectMemoLinesFromBlocks(args.notionPageId, headers, {
+      includeBlockText,
+    }),
+  ]);
+
+  const pageTitleLines = extractMemoLinesFromNotionPage(page);
   const pageCommentLines = pageComments.flatMap(extractMemoLinesFromNotionComment);
 
-  const nested = await collectMemoLinesFromBlocks(args.notionPageId, headers, {
-    includeBlockText,
-  });
-
   return {
+    pageTitleLines,
     pageCommentLines,
     pageCommentCount: pageCommentLines.length,
     blockLines: includeBlockText ? nested.blockLines : [],
@@ -364,6 +427,7 @@ export async function enrichMemoFromNotionPage(args: {
   });
 
   const incomingMemo = buildMemoCandidate([
+    ...contentLines.pageTitleLines,
     ...contentLines.pageCommentLines,
     ...contentLines.blockLines,
     ...contentLines.blockCommentLines,

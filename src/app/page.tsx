@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { Suspense, useState, useCallback } from "react";
 import InstructorList from "@/components/InstructorList";
 import InstructorDetail from "@/components/InstructorDetail";
@@ -13,35 +14,46 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="min-h-screen">
       <FallbackBanner isFallback={false} />
-      <div className="flex bg-gray-50">
-      {/* 좌측 목록 영역 */}
-      <div className="sticky top-0 self-start h-screen w-[420px] border-r border-gray-200 bg-white flex flex-col shrink-0 overflow-hidden">
-        <Suspense
-          fallback={
-            <div className="flex items-center justify-center h-full text-gray-500">
-              데이터를 불러오는 중...
-            </div>
-          }
-        >
-          <InstructorList
-            onSelectInstructor={handleSelectInstructor}
-            selectedInstructorId={selectedId}
-          />
-        </Suspense>
-      </div>
+      <div className="dashboard-shell">
+        <div className="dashboard-sidebar">
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center text-sm text-slate-500">
+                데이터를 불러오는 중...
+              </div>
+            }
+          >
+            <InstructorList
+              onSelectInstructor={handleSelectInstructor}
+              selectedInstructorId={selectedId}
+            />
+          </Suspense>
+        </div>
 
-      {/* 우측 상세 패널 */}
-      <div className="flex-1 min-w-0 bg-gray-50">
-        {selectedId ? (
-          <InstructorDetail instructorId={selectedId} />
-        ) : (
-          <div className="flex items-center justify-center min-h-screen text-gray-400">
-            강사를 선택하면 상세 정보가 표시됩니다.
-          </div>
-        )}
-      </div>
+        <div className="dashboard-main">
+          {selectedId ? (
+            <InstructorDetail instructorId={selectedId} />
+          ) : (
+            <div className="dashboard-empty">
+              <div className="flex flex-col items-center justify-center gap-4 text-center">
+                <div className="empty-state-mark">
+                  <Image
+                    src="/favicon.ico"
+                    alt="패스트캠퍼스 강사 대시보드"
+                    width={36}
+                    height={36}
+                    className="h-9 w-9 rounded-[10px]"
+                  />
+                </div>
+                <p className="text-sm font-medium text-slate-500">
+                  좌측에서 강사를 선택하면 상세 정보가 표시됩니다.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

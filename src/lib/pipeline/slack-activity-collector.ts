@@ -137,6 +137,11 @@ export interface SlackCollectOptions {
    */
   fullBackfillMaxPages?: number;
   /**
+   * checkpoint가 없는 full backfill / reconcile 시 최소 확보해야 하는 lookback 일수.
+   * 기본값 183일(약 6개월).
+   */
+  fullBackfillMinLookbackDays?: number;
+  /**
    * incremental 겹침 초. 오래된 thread reply가 누락되지 않도록 보수적으로 사용한다.
    * 기본값 600초 (10분). 문서 가이드: 300~600초 범위.
    *
@@ -280,6 +285,7 @@ async function fetchChannelHistory(
     oldest?: string;
     perPageLimit?: number;
     maxPages?: number;
+    ensureCoverageToOldest?: boolean;
     signal?: AbortSignal;
     requestTimeoutMs?: number;
   }
@@ -288,8 +294,20 @@ async function fetchChannelHistory(
   const maxPages = options?.maxPages ?? 5;
   const collected: SlackMessage[] = [];
   let cursor: string | undefined;
+  const oldestEpoch =
+    typeof options?.oldest === "string" ? slackTsToEpoch(options.oldest) : null;
+  let oldestCollectedEpoch: number | null = null;
 
-  for (let page = 0; page < maxPages; page++) {
+  for (let page = 0; ; page++) {
+    if (page >= maxPages) {
+      const needsMoreCoverage =
+        Boolean(options?.ensureCoverageToOldest) &&
+        oldestEpoch !== null &&
+        oldestCollectedEpoch !== null &&
+        oldestCollectedEpoch > oldestEpoch;
+      if (!needsMoreCoverage) break;
+    }
+
     const params: Record<string, string> = {
       channel: channelId,
       limit: String(perPageLimit),
@@ -309,6 +327,14 @@ async function fetchChannelHistory(
 
     if (Array.isArray(data.messages)) {
       collected.push(...data.messages);
+      for (const message of data.messages) {
+        const epoch = slackTsToEpoch(message.ts);
+        if (!Number.isFinite(epoch)) continue;
+        oldestCollectedEpoch =
+          oldestCollectedEpoch === null
+            ? epoch
+            : Math.min(oldestCollectedEpoch, epoch);
+      }
     }
 
     if (!data.has_more || !data.response_metadata?.next_cursor) break;
@@ -429,6 +455,10 @@ export async function collectFromSlack(
   const perPageLimit = Math.min(Math.max(opts?.perPageLimit ?? 200, 1), 200);
   const incrementalMaxPages = Math.max(opts?.incrementalMaxPages ?? 5, 1);
   const fullBackfillMaxPages = Math.max(opts?.fullBackfillMaxPages ?? 10, 1);
+  const fullBackfillMinLookbackDays = Math.max(
+    opts?.fullBackfillMinLookbackDays ?? 183,
+    1
+  );
   const overlapSeconds = opts?.overlapSeconds ?? 600;
   const requestTimeoutMs = Math.max(opts?.requestTimeoutMs ?? 10_000, 1_000);
   const channelTimeoutMs = Math.max(opts?.channelTimeoutMs ?? 30_000, 5_000);
@@ -454,19 +484,25 @@ export async function collectFromSlack(
     }, channelTimeoutMs);
     try {
       // incremental: oldest = last_seen_ts - overlap_seconds
-      let oldest: string | undefined;
       const cp = cpMap.get(cfg.channelId);
+      let oldest: string | undefined;
+      const hasCheckpoint = Boolean(cp?.lastSeenTs);
       if (cp?.lastSeenTs) {
         const epoch = slackTsToEpoch(cp.lastSeenTs);
         if (Number.isFinite(epoch) && epoch > 0) {
           oldest = epochToSlackTs(epoch - overlapSeconds);
         }
+      } else {
+        const sixMonthsAgoEpoch =
+          Date.now() / 1000 - fullBackfillMinLookbackDays * 24 * 60 * 60;
+        oldest = epochToSlackTs(sixMonthsAgoEpoch);
       }
 
       const messages = await fetchChannelHistory(token, cfg.channelId, {
         oldest,
         perPageLimit,
-        maxPages: oldest ? incrementalMaxPages : fullBackfillMaxPages,
+        maxPages: hasCheckpoint ? incrementalMaxPages : fullBackfillMaxPages,
+        ensureCoverageToOldest: !hasCheckpoint,
         signal: channelController.signal,
         requestTimeoutMs,
       });

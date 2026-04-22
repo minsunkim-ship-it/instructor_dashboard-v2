@@ -121,6 +121,10 @@ export async function POST(request: NextRequest) {
     request.nextUrl.searchParams.get("maxPages"),
     10
   );
+  const fullBackfillMinLookbackDays = parsePositiveInt(
+    request.nextUrl.searchParams.get("minLookbackDays"),
+    183
+  );
 
   const run = await prisma.pipelineRun.create({
     data: {
@@ -215,6 +219,7 @@ export async function POST(request: NextRequest) {
         per_page_limit: perPageLimit,
         incremental_max_pages: incrementalMaxPages,
         full_backfill_max_pages: fullBackfillMaxPages,
+        full_backfill_min_lookback_days: fullBackfillMinLookbackDays,
       },
       undefined,
       { coarse: "collect" }
@@ -224,6 +229,7 @@ export async function POST(request: NextRequest) {
       perPageLimit,
       incrementalMaxPages,
       fullBackfillMaxPages,
+      fullBackfillMinLookbackDays,
     });
 
     const channelErrors = collect.channels
@@ -340,6 +346,7 @@ export async function POST(request: NextRequest) {
       page_size: perPageLimit,
       incremental_max_pages: incrementalMaxPages,
       full_backfill_max_pages: fullBackfillMaxPages,
+      full_backfill_min_lookback_days: fullBackfillMinLookbackDays,
       channel_errors: channelErrors as unknown as Prisma.InputJsonArray,
       total_messages_fetched: totalMessages,
       activity_items_inserted: applyResult.items.inserted,

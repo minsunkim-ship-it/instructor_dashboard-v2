@@ -24,6 +24,7 @@ const SORT_OPTIONS = [
 ] as const;
 
 const DEFAULT_SORT = "score_desc";
+const MAX_VISIBLE_INSTRUCTORS = 100;
 
 // 디바운스 훅 — 검색 입력 300ms 지연
 function useDebounce<T>(value: T, delay: number): T {
@@ -74,11 +75,6 @@ function getScoreBarClass(score: number | null): string {
   return "bg-gray-200";
 }
 
-function formatHours(hours: number): string {
-  if (hours === Math.floor(hours)) return `${hours}시간`;
-  return `${hours.toFixed(1)}시간`;
-}
-
 function formatCourses(courses: number): string {
   return `${courses}회`;
 }
@@ -109,13 +105,6 @@ function dedupeTagValues(values: string[]): string[] {
   }
 
   return deduped;
-}
-
-function formatListTagLabel(value: string): string {
-  const trimmed = value.trim();
-  const maxLength = 16;
-  if (trimmed.length <= maxLength) return trimmed;
-  return `${trimmed.slice(0, maxLength)}…`;
 }
 
 interface InstructorListInnerProps {
@@ -204,8 +193,8 @@ function InstructorListInner({ onSelectInstructor, selectedInstructorId }: Instr
   );
 
   const handleCategoryChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) => {
-      updateParams({ category: e.target.value });
+    (category: string) => {
+      updateParams({ category });
     },
     [updateParams]
   );
@@ -235,14 +224,14 @@ function InstructorListInner({ onSelectInstructor, selectedInstructorId }: Instr
     );
   }
 
-  const items = data?.data.items ?? [];
-  const visibleCount = items.length;
+  const allItems = data?.data.items ?? [];
+  const items = allItems.slice(0, MAX_VISIBLE_INSTRUCTORS);
   const lastUpdated = data?.meta.last_updated_at;
 
   // 검색/필터 결과가 비어있을 때
   const hasActiveFilter =
     debouncedQuery !== "" || categoryParam !== "전체";
-  const isEmpty = data?.status === "empty" || items.length === 0;
+  const isEmpty = data?.status === "empty" || allItems.length === 0;
 
   if (isEmpty && !hasActiveFilter) {
     return (
@@ -253,61 +242,62 @@ function InstructorListInner({ onSelectInstructor, selectedInstructorId }: Instr
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Feature A: 목록 영역 상단 — 제목, 전체 강사 수, 마지막 업데이트 시각 */}
-      <div className="border-b border-slate-200 bg-gradient-to-b from-white via-white to-slate-50/70 px-4 py-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
-              강사 목록
-            </h1>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-              <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 font-medium text-slate-700">
-                현재 {visibleCount}명
-              </span>
-              {lastUpdated && (
-                <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1">
-                  {new Date(lastUpdated).toLocaleDateString("ko-KR")} 업데이트
-                </span>
-              )}
+    <div className="flex h-full flex-col">
+      <div className="border-b border-[var(--border)] bg-white">
+        <div className="border-b border-[var(--border)] px-5 py-4">
+          <div className="mb-2 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="truncate text-[16px] font-bold tracking-[-0.015em] text-[var(--text-primary)]">
+                패스트캠퍼스 강사 대시보드
+              </h1>
             </div>
+          </div>
+
+          <div className="text-[11px] text-[var(--text-muted)]">
+            {lastUpdated
+              ? `마지막 업데이트 ${new Date(lastUpdated).toLocaleString("ko-KR")}`
+              : "마지막 업데이트 정보 없음"}
           </div>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-sm">
+        <div className="border-b border-[var(--border-light)] px-5 py-3">
           <div className="relative">
-            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-              <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4 fill-current">
-                <path d="M8.5 3a5.5 5.5 0 1 0 3.48 9.76l3.63 3.63 1.06-1.06-3.63-3.63A5.5 5.5 0 0 0 8.5 3Zm0 1.5a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" />
-              </svg>
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[var(--text-muted)]">
+              Q
             </span>
             <input
               type="text"
               value={searchInput}
               onChange={handleSearchChange}
               placeholder="강사명, 담당 강의 정보, 전문분야 검색..."
-              className="w-full rounded-xl border border-slate-200 bg-slate-50/70 py-3 pl-10 pr-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-100"
+              className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 pl-9 text-[12px] leading-5 text-[var(--text-primary)] outline-none transition placeholder:text-[12px] placeholder:text-[var(--text-muted)] focus:border-[var(--primary-light)]"
             />
           </div>
+        </div>
 
-          <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)_110px] gap-2 border-b border-[var(--border-light)] px-5 py-2">
+          <div className="relative">
             <select
               value={categoryParam}
-              onChange={handleCategoryChange}
-              className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2.5 text-sm font-medium text-slate-700 focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-100"
+              onChange={(e) => handleCategoryChange(e.target.value)}
+              className="h-8 w-full appearance-none rounded-[var(--radius-xs)] border border-[var(--border)] bg-white px-3 pr-8 text-[9px] leading-none font-normal text-[var(--text-secondary)] outline-none"
             >
-              <option value="전체">전체</option>
+              <option value="전체">전체 카테고리</option>
               {categoryOptions.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
                 </option>
               ))}
             </select>
-
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[8px] text-[var(--text-muted)]">
+              ▾
+            </span>
+          </div>
+          <div className="relative">
             <select
               value={sortParam}
               onChange={handleSortChange}
-              className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2.5 text-sm font-medium text-slate-700 focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-100"
+              className="h-8 w-full appearance-none rounded-[var(--radius-xs)] border border-[var(--border)] bg-white px-3 pr-7 text-[9px] leading-none font-normal text-[var(--text-secondary)] outline-none"
             >
               {SORT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -315,14 +305,17 @@ function InstructorListInner({ onSelectInstructor, selectedInstructorId }: Instr
                 </option>
               ))}
             </select>
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[8px] text-[var(--text-muted)]">
+              ▾
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Feature A: 카드형 리스트 */}
-      <div className="flex-1 overflow-y-auto bg-slate-50/60 px-3 py-3">
+      <div className="flex-1 overflow-y-auto bg-white px-2.5 py-2">
         {isEmpty ? (
-          <div className="flex items-center justify-center h-32 text-gray-500 text-sm">
+          <div className="flex flex-col items-center justify-center px-5 py-10 text-center text-[13px] text-[var(--text-muted)]">
+            <div className="mb-2 text-2xl opacity-40">Q</div>
             검색 결과가 없습니다
           </div>
         ) : (
@@ -377,13 +370,10 @@ function InstructorCard({
 }) {
   const teachingTitles = dedupeTagValues(instructor.teaching_titles);
   const specialties = dedupeTagValues(instructor.specialties);
-  const tagClass =
-    "inline-flex h-7 min-w-0 items-center rounded-full px-3 text-[12px] leading-none font-medium align-middle";
   const tagItems = [
     ...teachingTitles.map((title) => ({
       key: `teaching-${title}`,
       label: title,
-      className: "bg-sky-50 text-sky-700",
     })),
     ...specialties
       .filter(
@@ -395,87 +385,82 @@ function InstructorCard({
       .map((spec) => ({
         key: `specialty-${spec}`,
         label: spec,
-        className: "bg-slate-100 text-slate-700",
       })),
   ];
   const visibleTagItems = tagItems.slice(0, 2);
+  const primaryCategory = instructor.categories[0]?.trim() || null;
+  const visibleSubtitleTags = visibleTagItems.filter(
+    (tag) =>
+      !primaryCategory ||
+      normalizeTagComparableText(tag.label) !== normalizeTagComparableText(primaryCategory)
+  );
   const hiddenTagCount = Math.max(0, tagItems.length - visibleTagItems.length);
+  const subtitleParts = [
+    primaryCategory,
+    visibleSubtitleTags.length > 0
+      ? visibleSubtitleTags.map((tag) => tag.label).join(", ")
+      : null,
+    hiddenTagCount > 0 ? `외 ${hiddenTagCount}개` : null,
+  ].filter((value): value is string => Boolean(value && value.trim()));
+  const rankClass =
+    instructor.rank !== null && instructor.rank <= 3
+      ? "bg-gradient-to-br from-amber-500 to-orange-500 text-white"
+      : instructor.rank !== null && instructor.rank <= 10
+        ? "bg-[var(--primary)] text-white"
+        : "bg-[var(--border-light)] text-[var(--text-secondary)]";
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`mb-2.5 w-full rounded-2xl border px-4 py-3.5 text-left shadow-sm transition-all cursor-pointer ${
+      className={`mb-0.5 flex w-full items-center gap-3 rounded-[var(--radius-sm)] border px-3 py-3 text-left transition-all ${
         isSelected
-          ? "border-sky-300 bg-white ring-2 ring-sky-100"
-          : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md"
+          ? "border-[var(--primary-light)] bg-[var(--primary-50)]"
+          : "border-transparent bg-white hover:bg-[var(--border-light)]"
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="text-[22px] leading-none tracking-tight font-semibold text-slate-900 truncate">
-                {instructor.name}
-              </div>
-              {visibleTagItems.length > 0 && (
-                <div className="mt-3 flex items-center gap-1.5 whitespace-nowrap">
-                  {visibleTagItems.map((tag) => (
-                    <span
-                      key={tag.key}
-                      className={`${tagClass} shrink-0 ${tag.className}`}
-                      title={tag.label}
-                    >
-                      {formatListTagLabel(tag.label)}
-                    </span>
-                  ))}
-                  {hiddenTagCount > 0 && (
-                    <span
-                      className={`${tagClass} shrink-0 bg-sky-100 text-sky-600`}
-                    >
-                      외 {hiddenTagCount}개
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
+      <div
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${rankClass}`}
+      >
+        {instructor.rank ?? "-"}
+      </div>
 
-            <div className="flex-shrink-0 pt-1">
-              <div className="flex flex-col items-end gap-2">
-                <div
-                  className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-100"
-                  aria-label={
-                    instructor.score === null
-                      ? "점수 없음"
-                      : `점수 ${formatScore(instructor.score)}`
-                  }
-                  role="img"
-                >
-                  <div
-                    className={`h-full rounded-full ${getScoreBarClass(
-                      instructor.score
-                    )}`}
-                    style={{ width: `${getScorePercent(instructor.score)}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 truncate text-[14px] font-semibold leading-5 text-[var(--text-primary)]">
+          <span className="truncate">{instructor.name}</span>
+          {instructor.flag && (
+            <span className="rounded-[4px] bg-[var(--danger)] px-1.5 py-0.5 text-[10px] font-semibold text-white">
+              {instructor.flag}
+            </span>
+          )}
+        </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-700">
-              {formatHours(instructor.total_hours)}
-            </span>
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-700">
-              {formatCourses(instructor.total_courses)}
-            </span>
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-700">
-              {formatFeeLabel(
-                instructor.base_fee_hourly,
-                instructor.is_fulltime
-              )}
-            </span>
+        {subtitleParts.length > 0 && (
+          <div className="mt-1 truncate text-[11px] text-[var(--text-muted)]">
+            {subtitleParts.join(" · ")}
           </div>
+        )}
+      </div>
+
+      <div className="shrink-0 text-right">
+        <div
+          className="mb-1 ml-auto h-[5px] w-12 overflow-hidden rounded-sm bg-[var(--border-light)]"
+          aria-label={
+            instructor.score === null
+              ? "점수 없음"
+              : `점수 ${formatScore(instructor.score)}`
+          }
+          role="img"
+        >
+          <div
+            className={`h-full rounded-sm ${getScoreBarClass(instructor.score)}`}
+            style={{ width: `${getScorePercent(instructor.score)}%` }}
+          />
+        </div>
+
+        <div className="text-[11px] text-[var(--text-muted)]">
+          {formatCourses(instructor.total_courses)} ·{" "}
+          {formatFeeLabel(instructor.base_fee_hourly, instructor.is_fulltime)}
         </div>
       </div>
     </button>

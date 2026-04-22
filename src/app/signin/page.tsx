@@ -25,11 +25,11 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
         <section className="grid w-full overflow-hidden rounded-[32px] border border-gray-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.08)] lg:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-6 bg-gray-950 px-8 py-10 text-white lg:px-12 lg:py-14">
             <p className="text-sm uppercase tracking-[0.24em] text-gray-400">
-              Day1 Instructor DB
+              FastCampus Instructor Dashboard
             </p>
             <div className="space-y-4">
               <h1 className="text-3xl font-semibold leading-tight lg:text-4xl">
-                내부 운영 강사 대시보드
+                패스트캠퍼스 강사 대시보드
               </h1>
               <p className="max-w-xl text-base leading-7 text-gray-300">
                 강사 목록, 상세 정보, 최근 6개월 만족도 조사 결과, 활동 로그, 점수 계산 결과를

@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { cleanupStalePipelineRuns } from "@/lib/pipeline/pipeline-run-helpers";
+import { REFRESH_TRIGGER_HEADER } from "@/lib/cron-auth";
 
 // --- Notion ---
 import {
@@ -1138,6 +1139,7 @@ export async function POST(request: Request) {
   try {
     const url = new URL(request.url);
     const scope = url.searchParams.get("scope");
+    const refreshTriggerOverride = request.headers.get(REFRESH_TRIGGER_HEADER);
     const isTeachingHistoryOnly =
       scope === "contract_sheet" || scope === "teaching_history";
     const isSatisfactionOnly = scope === "satisfaction";
@@ -1145,6 +1147,18 @@ export async function POST(request: Request) {
     const isSnapshotOnly = scope === "snapshot_only";
     const isLightweightOnly =
       scope === null || scope === "all" || scope === "lightweight";
+    const defaultTriggeredBy = isSnapshotOnly
+      ? "api:/api/refresh?scope=snapshot_only"
+      : isSatisfactionOnly
+      ? "api:/api/refresh?scope=satisfaction"
+      : isPostprocessOnly
+      ? "api:/api/refresh?scope=postprocess"
+      : isTeachingHistoryOnly
+      ? "api:/api/refresh?scope=teaching_history"
+      : isLightweightOnly
+      ? "api:/api/refresh?scope=lightweight"
+      : "api:/api/refresh";
+    const triggeredBy = refreshTriggerOverride || defaultTriggeredBy;
 
     const staleCleanup = await cleanupStalePipelineRuns();
 
@@ -1187,17 +1201,7 @@ export async function POST(request: Request) {
             ? "manual_refresh_lightweight"
             : "manual_refresh",
         status: "running",
-        triggeredBy: isSnapshotOnly
-          ? "api:/api/refresh?scope=snapshot_only"
-          : isSatisfactionOnly
-          ? "api:/api/refresh?scope=satisfaction"
-          : isPostprocessOnly
-          ? "api:/api/refresh?scope=postprocess"
-          : isTeachingHistoryOnly
-            ? "api:/api/refresh?scope=teaching_history"
-            : isLightweightOnly
-              ? "api:/api/refresh?scope=lightweight"
-              : "api:/api/refresh",
+        triggeredBy,
         summary: {},
       },
     });

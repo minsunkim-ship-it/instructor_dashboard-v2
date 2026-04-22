@@ -22,6 +22,10 @@ import {
 import { loadCourseIdFallbackRegistry } from "./course-id-fallback";
 import { loadNotionCourseIdFallbackRegistry } from "./notion-course-id-fallback";
 import { sanitizeTeachingHistoryCourseName } from "./notion-comment-course-name";
+import {
+  extractInstructorMentionsFromOpsReportText,
+  extractOpsReportCourseContext,
+} from "./ops-report-text";
 
 const PREFERRED_CONTRACT_WORKSHEET_GID = 158052384;
 const INSTRUCTOR_LOOKUP_BATCH_SIZE = 200;
@@ -276,6 +280,203 @@ function sourceRefEquals(
   );
 }
 
+function toRecentReferenceDate(row: NormalizedContractRow): Date | null {
+  return row.startDate ?? row.endDate ?? row.recordedAt ?? null;
+}
+
+function getOpsReportDateProximityScore(
+  referenceDate: Date | null,
+  activityAt: Date | null
+): number {
+  if (!referenceDate || !activityAt) return 0;
+  const diffDays = Math.abs(referenceDate.getTime() - activityAt.getTime()) /
+    (1000 * 60 * 60 * 24);
+  if (diffDays <= 14) return 30;
+  if (diffDays <= 45) return 20;
+  if (diffDays <= 90) return 10;
+  if (diffDays <= 183) return 5;
+  return 0;
+}
+
+async function loadOpsReportCourseNameFallbacks(args: {
+  rows: NormalizedContractRow[];
+  instructorsByName: ReadonlyMap<string, { id: string }>;
+}): Promise<Map<string, CourseIdFallbackEntry>> {
+  const now = new Date();
+  const sixMonthsAgo = new Date(now);
+  sixMonthsAgo.setUTCMonth(sixMonthsAgo.getUTCMonth() - 6);
+
+  const inputs = args.rows
+    .filter((row) => Boolean(row.name && row.courseId && !row.courseName))
+    .map((row) => {
+      const instructor = row.name ? args.instructorsByName.get(row.name) : null;
+      const referenceDate = toRecentReferenceDate(row);
+      if (!instructor || !referenceDate || referenceDate < sixMonthsAgo) return null;
+      return {
+        key: `${row.courseId}::${instructor.id}`,
+        courseId: row.courseId!,
+        instructorId: instructor.id,
+        referenceDate,
+      };
+    })
+    .filter((value): value is NonNullable<typeof value> => Boolean(value));
+
+  if (inputs.length === 0) {
+    return new Map();
+  }
+
+  const inputByKey = new Map(inputs.map((input) => [input.key, input]));
+  const instructorIdByName = new Map(
+    Array.from(args.instructorsByName.entries()).map(([name, instructor]) => [
+      name,
+      instructor.id,
+    ])
+  );
+  const rows = await prisma.activityImportItem.findMany({
+    where: {
+      sourceType: "slack",
+      isOpsReport: true,
+      activityAt: { gte: sixMonthsAgo },
+    },
+    select: {
+      matchedInstructorId: true,
+      activityAt: true,
+      rawPayload: true,
+    },
+  });
+
+  const bestByKey = new Map<string, CourseIdFallbackEntry>();
+  const bestScoreByKey = new Map<string, number>();
+
+  for (const row of rows) {
+    if (!row.matchedInstructorId) continue;
+    const context = extractOpsReportCourseContext(
+      typeof row.rawPayload === "object" &&
+        row.rawPayload &&
+        !Array.isArray(row.rawPayload) &&
+        typeof (row.rawPayload as Record<string, unknown>).text === "string"
+        ? ((row.rawPayload as Record<string, unknown>).text as string)
+        : null
+    );
+    const courseName = sanitizeTeachingHistoryCourseName(
+      context?.courseName ?? context?.fullTitle ?? null
+    );
+    if (!courseName) continue;
+    const mentionedInstructorIds = new Set<string>();
+    if (row.matchedInstructorId) {
+      mentionedInstructorIds.add(row.matchedInstructorId);
+    }
+    const rawText =
+      typeof row.rawPayload === "object" &&
+      row.rawPayload &&
+      !Array.isArray(row.rawPayload) &&
+      typeof (row.rawPayload as Record<string, unknown>).text === "string"
+        ? ((row.rawPayload as Record<string, unknown>).text as string)
+        : null;
+    for (const name of extractInstructorMentionsFromOpsReportText(rawText)) {
+      const instructorId = instructorIdByName.get(name);
+      if (instructorId) mentionedInstructorIds.add(instructorId);
+    }
+    if (mentionedInstructorIds.size === 0) continue;
+
+    for (const input of inputs) {
+      if (!mentionedInstructorIds.has(input.instructorId)) continue;
+      const score =
+        60 +
+        getOpsReportDateProximityScore(input.referenceDate, row.activityAt);
+      if (score <= (bestScoreByKey.get(input.key) ?? -1)) continue;
+
+      bestScoreByKey.set(input.key, score);
+      bestByKey.set(input.key, {
+        courseName,
+        score,
+        fileName: null,
+        modifiedTime: row.activityAt?.toISOString() ?? null,
+        reportPath: "slack:ops_report",
+        reason: "ops_report_course_name",
+      });
+    }
+  }
+
+  return new Map(
+    Array.from(bestByKey.entries()).filter(([key]) => inputByKey.has(key))
+  );
+}
+
+async function loadExistingTeachingHistoryCourseNameFallbacks(
+  courseIds: string[]
+): Promise<Map<string, CourseIdFallbackEntry>> {
+  const uniqueCourseIds = Array.from(new Set(courseIds.filter(Boolean)));
+  if (uniqueCourseIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = await prisma.teachingHistory.findMany({
+    where: {
+      sourceType: "contract_sheet",
+      courseId: { in: uniqueCourseIds },
+      courseName: { not: null },
+    },
+    select: {
+      courseId: true,
+      courseName: true,
+      startDate: true,
+      endDate: true,
+      createdAt: true,
+    },
+  });
+
+  const countsByCourseId = new Map<
+    string,
+    Map<string, { count: number; latestAt: number }>
+  >();
+
+  for (const row of rows) {
+    const courseId = row.courseId?.trim();
+    const courseName = sanitizeTeachingHistoryCourseName(row.courseName);
+    if (!courseId || !courseName) continue;
+
+    const latestAt = Math.max(
+      row.startDate?.getTime() ?? 0,
+      row.endDate?.getTime() ?? 0,
+      row.createdAt.getTime()
+    );
+    const bucket = countsByCourseId.get(courseId) ?? new Map();
+    const existing = bucket.get(courseName) ?? { count: 0, latestAt: 0 };
+    bucket.set(courseName, {
+      count: existing.count + 1,
+      latestAt: Math.max(existing.latestAt, latestAt),
+    });
+    countsByCourseId.set(courseId, bucket);
+  }
+
+  const registry = new Map<string, CourseIdFallbackEntry>();
+  for (const [courseId, bucket] of countsByCourseId) {
+    const best = Array.from(bucket.entries()).sort((left, right) => {
+      if (left[1].count !== right[1].count) {
+        return right[1].count - left[1].count;
+      }
+      if (left[1].latestAt !== right[1].latestAt) {
+        return right[1].latestAt - left[1].latestAt;
+      }
+      return right[0].length - left[0].length;
+    })[0];
+    if (!best) continue;
+
+    registry.set(courseId, {
+      courseName: best[0],
+      score: 70 + best[1].count,
+      fileName: null,
+      modifiedTime:
+        best[1].latestAt > 0 ? new Date(best[1].latestAt).toISOString() : null,
+      reportPath: "teaching_history:course_id",
+      reason: "existing_course_id_match",
+    });
+  }
+
+  return registry;
+}
+
 /**
  * 정규화된 계약시트 행을 teaching_histories 테이블에 저장한다.
  *
@@ -412,6 +613,14 @@ export async function storeContractRows(
     instructorsByName,
     existingFallbacks: driveCourseIdFallbacks,
     maxDistinctPageIds: MAX_NOTION_FALLBACK_PAGE_FETCHES,
+  });
+  const existingTeachingHistoryCourseIdFallbacks =
+    await loadExistingTeachingHistoryCourseNameFallbacks(
+      Array.from(uniqueMissingCourseIds)
+    );
+  const opsReportCourseNameFallbacks = await loadOpsReportCourseNameFallbacks({
+    rows: validRows,
+    instructorsByName,
   });
 
   await emitProgress({
@@ -686,6 +895,12 @@ export async function storeContractRows(
           ? (
               driveCourseIdFallbacks.get(row.courseId)?.courseName ??
               notionCourseIdFallbacks.get(row.courseId)?.courseName ??
+              existingTeachingHistoryCourseIdFallbacks.get(row.courseId)?.courseName ??
+              (row.name
+                ? opsReportCourseNameFallbacks.get(
+                    `${row.courseId}::${instructorsByName.get(row.name)?.id ?? ""}`
+                  )?.courseName
+                : null) ??
               null
             )
           : null;

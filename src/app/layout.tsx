@@ -4,8 +4,8 @@ import QueryProvider from "@/components/QueryProvider";
 import AuthHeader from "@/components/AuthHeader";
 
 export const metadata: Metadata = {
-  title: "강사 DB",
-  description: "데이원 강사 운영 대시보드",
+  title: "패스트캠퍼스 강사 대시보드",
+  description: "패스트캠퍼스 강사 운영 대시보드",
 };
 
 export default function RootLayout({

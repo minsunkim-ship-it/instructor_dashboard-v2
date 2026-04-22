@@ -7,6 +7,7 @@ const { mergeMemoNonDestructive } = await import(
 const {
   extractMemoLinesFromNotionBlock,
   extractMemoLinesFromNotionComment,
+  extractMemoLinesFromNotionPage,
 } = await import(
   new URL("../src/lib/notion-enrichment.ts", import.meta.url).href
 );
@@ -100,6 +101,19 @@ assertEq(
     "[Notion comment · user:abc-123 · 2026-04-10] 최신버전 프로필 (26.04.10)"
   ),
   "[Notion comment · user:abc-123 · 2026-04-10] 최신버전 프로필 (26.04.10)"
+);
+
+assertEq(
+  "extract page title lines from notion page properties",
+  extractMemoLinesFromNotionPage({
+    properties: {
+      제목: {
+        type: "title",
+        title: [{ plain_text: "현장 운영 체크리스트" }],
+      },
+    },
+  }),
+  ["현장 운영 체크리스트"]
 );
 
 assertEq(

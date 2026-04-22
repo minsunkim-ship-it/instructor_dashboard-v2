@@ -22,6 +22,7 @@ import {
   extractOperationalFeedbackNotesFromImport,
   extractOperationalIntelligencePayload,
   getLegacyOperationalFields,
+  normalizeOperationalPatternLabels,
 } from "@/lib/operational-intelligence";
 import { enrichMemoFromNotionPage } from "@/lib/notion-enrichment";
 import { loadOpsNotesJson } from "@/lib/pipeline/ops-notes-loader";
@@ -629,11 +630,15 @@ export async function GET(
     const storedConfidence = normalizeOperationalConfidence(
       inst.instructorIntelligence?.confidence
     );
+    const normalizedStoredRiskNotes = normalizeOperationalPatternLabels(
+      inst.instructorIntelligence?.riskNotes ?? [],
+      "risk"
+    );
     const mergedBehavioralIntelligence = {
       ...operationalPayload.behavioral_intelligence,
       risk_patterns: dedupeStrings([
         ...operationalPayload.behavioral_intelligence.risk_patterns,
-        ...(inst.instructorIntelligence?.riskNotes ?? []),
+        ...normalizedStoredRiskNotes,
       ]),
       key_question_for_humans:
         operationalPayload.behavioral_intelligence.key_question_for_humans ??
@@ -659,7 +664,7 @@ export async function GET(
       ...legacyOperationalFields.avoid_for,
     ]);
     const riskNotes = dedupeStrings([
-      ...(inst.instructorIntelligence?.riskNotes ?? []),
+      ...normalizedStoredRiskNotes,
       ...legacyOperationalFields.risk_notes,
       ...mergedBehavioralIntelligence.risk_patterns,
     ]);

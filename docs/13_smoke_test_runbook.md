@@ -137,6 +137,29 @@ curl -X POST http://localhost:3000/api/refresh
 - source별 `source_sync_logs` 생성
 - score 재계산 수행
 
+### 3-1. cron trigger 테스트
+
+```bash
+curl -X POST http://localhost:3000/api/refresh/cron \
+  -H "x-cron-secret: YOUR_CRON_SECRET"
+```
+
+기대 결과:
+- HTTP 200 또는 partial
+- secret이 틀리면 HTTP 401
+- Railway cron에서 같은 방식으로 호출 가능
+
+### 3-2. healthcheck 테스트
+
+```bash
+curl http://localhost:3000/api/health
+```
+
+기대 결과:
+- HTTP 200
+- `status = "success"`
+- DB 연결 가능 시 `data.database = "reachable"`
+
 ## 4. 조회 API 테스트
 
 ### 4-1. 목록

@@ -12,6 +12,13 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Large runtime artifacts and operator notes that are not lint targets:
+    ".claude/**",
+    ".omc/**",
+    "data/**",
+    "docs/**",
+    "reports/**",
+    "prisma/dev.db",
   ]),
 ]);
 

@@ -7,15 +7,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { shouldIncludeInInstructorList } from "@/lib/instructor-list-visibility";
+import { parseManualSatisfactionInput } from "@/lib/manual-satisfaction-input";
 import { applySatisfactionImports } from "@/lib/pipeline/satisfaction-applier";
-
-interface SatisfactionBody {
-  score: number;
-  comment?: string;
-  company_name?: string;
-  course_name?: string;
-  response_date?: string;
-}
 
 export async function POST(
   request: Request,
@@ -42,19 +35,19 @@ export async function POST(
       );
     }
 
-    const body = (await request.json()) as SatisfactionBody;
+    const parsedBody = parseManualSatisfactionInput(await request.json());
 
-    // demo parity: score 필수, 1~5 범위
-    if (body.score === undefined || body.score === null || body.score < 1 || body.score > 5) {
+    if (!parsedBody.ok) {
       return NextResponse.json(
         {
           status: "error",
           meta: { request_id: requestId, data_mode: "live", is_fallback: false },
-          errors: [{ code: "INVALID_SATISFACTION_SCORE", message: "만족도 점수는 1~5 범위여야 합니다." }],
+          errors: [parsedBody.error],
         },
         { status: 400 }
       );
     }
+    const body = parsedBody.value;
 
     const pipelineRun = await prisma.pipelineRun.create({
       data: {

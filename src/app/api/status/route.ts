@@ -5,6 +5,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { cleanupStalePipelineRuns } from "@/lib/pipeline/pipeline-run-helpers";
 import {
@@ -25,6 +26,55 @@ const SOURCE_TYPES = [
   "fulltime",
   "ops_notes",
 ] as const;
+
+type LatestSourceSyncRow = {
+  standard_type: string;
+  status: string;
+  finished_at: Date | null;
+  started_at: Date;
+  fetched_count: number;
+  updated_count: number;
+  error_message: string | null;
+};
+
+const STANDARD_SOURCE_TYPE_SQL = Prisma.sql`
+  CASE
+    WHEN "source_type" IN (${Prisma.join(SOURCE_TYPES)}) THEN "source_type"
+    WHEN "source_type" LIKE 'satisfaction%' THEN 'satisfaction'
+    ELSE NULL
+  END
+`;
+
+async function loadLatestSourceSyncRows(): Promise<LatestSourceSyncRow[]> {
+  return prisma.$queryRaw<LatestSourceSyncRow[]>(Prisma.sql`
+    WITH ranked_logs AS (
+      SELECT
+        ${STANDARD_SOURCE_TYPE_SQL} AS standard_type,
+        "status",
+        "finished_at",
+        "started_at",
+        "fetched_count",
+        "updated_count",
+        "error_message",
+        ROW_NUMBER() OVER (
+          PARTITION BY ${STANDARD_SOURCE_TYPE_SQL}
+          ORDER BY "started_at" DESC, "finished_at" DESC NULLS LAST
+        ) AS row_num
+      FROM "source_sync_logs"
+    )
+    SELECT
+      standard_type,
+      status,
+      finished_at,
+      started_at,
+      fetched_count,
+      updated_count,
+      error_message
+    FROM ranked_logs
+    WHERE standard_type IS NOT NULL
+      AND row_num = 1
+  `);
+}
 
 export async function GET() {
   const requestId = `req_${crypto.randomUUID()}`;
@@ -62,22 +112,7 @@ export async function GET() {
         : null;
 
     // 3. 소스별 최신 SourceSyncLog 조회
-    const allSyncLogs = await prisma.sourceSyncLog.findMany({
-      orderBy: [{ startedAt: "desc" }, { finishedAt: "desc" }],
-    });
-
-    // 소스 타입 매핑: DB에 저장된 sourceType → 표준 source_type으로 매핑
-    function mapToStandardSourceType(dbSourceType: string): string | null {
-      // 정확히 일치하는 경우
-      if ((SOURCE_TYPES as readonly string[]).includes(dbSourceType)) {
-        return dbSourceType;
-      }
-      // satisfaction_sheet:xxx → satisfaction
-      if (dbSourceType.startsWith("satisfaction_sheet:") || dbSourceType.startsWith("satisfaction")) {
-        return "satisfaction";
-      }
-      return null;
-    }
+    const latestSourceRows = await loadLatestSourceSyncRows();
 
     const latestBySource = new Map<
       string,
@@ -90,16 +125,13 @@ export async function GET() {
       }
     >();
 
-    for (const log of allSyncLogs) {
-      const standardType = mapToStandardSourceType(log.sourceType);
-      if (!standardType) continue;
-      if (latestBySource.has(standardType)) continue; // 이미 최신 항목이 있음 (finishedAt desc 순)
-      latestBySource.set(standardType, {
-        status: log.status,
-        lastSyncedAt: log.finishedAt?.toISOString() ?? log.startedAt.toISOString(),
-        fetchedCount: log.fetchedCount,
-        updatedCount: log.updatedCount,
-        note: log.errorMessage,
+    for (const row of latestSourceRows) {
+      latestBySource.set(row.standard_type, {
+        status: row.status,
+        lastSyncedAt: row.finished_at?.toISOString() ?? row.started_at.toISOString(),
+        fetchedCount: row.fetched_count,
+        updatedCount: row.updated_count,
+        note: row.error_message,
       });
     }
 

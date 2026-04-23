@@ -1,13 +1,25 @@
 "use client";
 
 import Image from "next/image";
+import { useQuery } from "@tanstack/react-query";
 import { Suspense, useState, useCallback } from "react";
 import InstructorList from "@/components/InstructorList";
 import InstructorDetail from "@/components/InstructorDetail";
 import FallbackBanner from "@/components/FallbackBanner";
+import type { StatusResponse } from "@/types/api";
+
+async function fetchStatus(): Promise<StatusResponse> {
+  const res = await fetch("/api/status");
+  if (!res.ok) throw new Error("상태 조회 실패");
+  return res.json();
+}
 
 export default function Home() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const { data: statusData } = useQuery({
+    queryKey: ["status", "banner"],
+    queryFn: fetchStatus,
+  });
 
   const handleSelectInstructor = useCallback((id: string) => {
     setSelectedId(id);
@@ -15,7 +27,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen">
-      <FallbackBanner isFallback={false} />
+      <FallbackBanner isFallback={statusData?.meta.is_fallback ?? false} />
       <div className="dashboard-shell">
         <div className="dashboard-sidebar">
           <Suspense

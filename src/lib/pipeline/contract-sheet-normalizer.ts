@@ -48,6 +48,9 @@ export interface NormalizedContractRow {
   recordedAt: Date | null;
 }
 
+const YEARLESS_MONTH_DAY_RANGE_RE =
+  /^\s*\d{1,2}\s*[./-]\s*\d{1,2}\s*[~-]\s*\d{1,2}\s*[./-]\s*\d{1,2}\s*$/;
+
 /** 6절: 빈 문자열은 NULL로 치환 */
 function emptyToNull(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
@@ -142,4 +145,71 @@ export function normalizeContractRow(
     timestampRaw: timestamp.raw,
     recordedAt: timestamp.recordedAt,
   };
+}
+
+function isYearlessMonthDayRange(label: string | null): boolean {
+  if (!label) return false;
+  return YEARLESS_MONTH_DAY_RANGE_RE.test(label);
+}
+
+function inferCourseYearHints(
+  rows: NormalizedContractRow[]
+): Map<string, number> {
+  const hints = new Map<string, Map<number, number>>();
+
+  for (const row of rows) {
+    if (!row.courseId) continue;
+    const year =
+      row.startDate?.getUTCFullYear() ??
+      row.endDate?.getUTCFullYear() ??
+      row.recordedAt?.getUTCFullYear() ??
+      null;
+    if (!year) continue;
+
+    const bucket = hints.get(row.courseId) ?? new Map<number, number>();
+    bucket.set(year, (bucket.get(year) ?? 0) + 1);
+    hints.set(row.courseId, bucket);
+  }
+
+  const resolved = new Map<string, number>();
+  for (const [courseId, bucket] of hints.entries()) {
+    const best = Array.from(bucket.entries()).sort((left, right) => {
+      if (left[1] !== right[1]) {
+        return right[1] - left[1];
+      }
+      return right[0] - left[0];
+    })[0];
+    if (best) {
+      resolved.set(courseId, best[0]);
+    }
+  }
+
+  return resolved;
+}
+
+export function normalizeContractRows(
+  rawRows: RawContractRow[]
+): NormalizedContractRow[] {
+  const normalized = rawRows.map(normalizeContractRow);
+  const courseYearHints = inferCourseYearHints(normalized);
+
+  return normalized.map((row) => {
+    if (row.startDate || row.endDate) return row;
+    if (!isYearlessMonthDayRange(row.dateLabel)) return row;
+
+    const inferredYear =
+      (row.courseId ? courseYearHints.get(row.courseId) : undefined) ??
+      row.recordedAt?.getUTCFullYear() ??
+      null;
+    if (!inferredYear) return row;
+
+    const reparsed = parseContractSchedule(row.dateLabel, inferredYear);
+    if (!reparsed.startDate && !reparsed.endDate) return row;
+
+    return {
+      ...row,
+      startDate: reparsed.startDate,
+      endDate: reparsed.endDate,
+    };
+  });
 }

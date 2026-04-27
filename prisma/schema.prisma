@@ -11,7 +11,7 @@ datasource db {
 model Instructor {
   id                   String    @id @default(uuid()) @db.Uuid
   instructorId         String?   @map("instructor_id")
-  name                 String
+  name                 String    @unique
   displayName          String    @map("display_name")
   affiliation          String?
   categories           String[]  @default([])

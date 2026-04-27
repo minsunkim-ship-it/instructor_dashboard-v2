@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { NormalizedInstructorDispatchRow } from "./instructor-dispatch-sheet-normalizer";
+import { buildCanonicalInstructorByNameMap } from "@/lib/instructor-name-canonical";
 
 export interface InstructorDispatchSheetStoreResult {
   appended: number;
@@ -145,10 +146,11 @@ export async function storeInstructorDispatchRows(
     select: {
       id: true,
       name: true,
+      createdAt: true,
     },
   });
 
-  const instructorsByName = new Map(existingInstructors.map((row) => [row.name, row]));
+  const instructorsByName = buildCanonicalInstructorByNameMap(existingInstructors);
   const missingNames = uniqueNames.filter((name) => !instructorsByName.has(name));
 
   if (missingNames.length > 0) {
@@ -171,6 +173,7 @@ export async function storeInstructorDispatchRows(
       select: {
         id: true,
         name: true,
+        createdAt: true,
       },
     });
 

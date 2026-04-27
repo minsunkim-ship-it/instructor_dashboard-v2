@@ -29,6 +29,7 @@ import {
   extractInstructorMentionsFromOpsReportText,
   extractOpsReportCourseContext,
 } from "./ops-report-text";
+import { buildCanonicalInstructorByNameMap } from "@/lib/instructor-name-canonical";
 
 const PREFERRED_CONTRACT_WORKSHEET_GID = 158052384;
 const INSTRUCTOR_LOOKUP_BATCH_SIZE = 200;
@@ -526,7 +527,7 @@ export async function storeContractRows(
     instructorsCreated: result.instructorsCreated,
   });
 
-  const existingInstructors: Array<{ id: string; name: string }> = [];
+  const existingInstructors: Array<{ id: string; name: string; createdAt: Date }> = [];
   for (let i = 0; i < uniqueNames.length; i += INSTRUCTOR_LOOKUP_BATCH_SIZE) {
     const batch = uniqueNames.slice(i, i + INSTRUCTOR_LOOKUP_BATCH_SIZE);
     existingInstructors.push(
@@ -540,13 +541,14 @@ export async function storeContractRows(
           select: {
             id: true,
             name: true,
+            createdAt: true,
           },
         })
       ))
     );
   }
 
-  const instructorsByName = new Map(existingInstructors.map((row) => [row.name, row]));
+  const instructorsByName = buildCanonicalInstructorByNameMap(existingInstructors);
   const missingNames = uniqueNames.filter((name) => !instructorsByName.has(name));
 
   if (missingNames.length > 0) {
@@ -563,7 +565,7 @@ export async function storeContractRows(
       );
     }
 
-    const createdInstructors: Array<{ id: string; name: string }> = [];
+    const createdInstructors: Array<{ id: string; name: string; createdAt: Date }> = [];
     for (let i = 0; i < missingNames.length; i += INSTRUCTOR_LOOKUP_BATCH_SIZE) {
       const batch = missingNames.slice(i, i + INSTRUCTOR_LOOKUP_BATCH_SIZE);
       createdInstructors.push(
@@ -577,6 +579,7 @@ export async function storeContractRows(
             select: {
               id: true,
               name: true,
+              createdAt: true,
             },
           })
         ))

@@ -10,6 +10,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { mergeMemoNonDestructive } from "@/lib/pipeline/memo-utils";
 import type { NormalizedInstructor } from "@/lib/pipeline/normalizer";
+import { buildCanonicalInstructorByNameMap } from "@/lib/instructor-name-canonical";
 
 const LOOKUP_BATCH_SIZE = 500;
 const CREATE_BATCH_SIZE = 200;
@@ -27,7 +28,7 @@ async function syncNotionSourceLinks(
 ): Promise<Array<{ name: string; message: string }>> {
   if (data.length === 0) return [];
 
-  const instructors: Array<{ id: string; name: string }> = [];
+  const instructors: Array<{ id: string; name: string; createdAt: Date }> = [];
   const names = data.map((item) => item.name);
   for (let i = 0; i < names.length; i += LOOKUP_BATCH_SIZE) {
     const batch = names.slice(i, i + LOOKUP_BATCH_SIZE);
@@ -41,14 +42,13 @@ async function syncNotionSourceLinks(
         select: {
           id: true,
           name: true,
+          createdAt: true,
         },
       }))
     );
   }
 
-  const instructorByName = new Map(
-    instructors.map((row) => [row.name, row])
-  );
+  const instructorByName = buildCanonicalInstructorByNameMap(instructors);
   const existingLinks: Array<{ id: string; instructorDbId: string }> = [];
   const instructorIds = instructors.map((row) => row.id);
   for (let i = 0; i < instructorIds.length; i += LOOKUP_BATCH_SIZE) {
@@ -164,6 +164,7 @@ export async function storeInstructors(
   const existingRows: Array<{
     id: string;
     name: string;
+    createdAt: Date;
     displayName: string;
     affiliation: string | null;
     categories: string[];
@@ -189,6 +190,7 @@ export async function storeInstructors(
         select: {
           id: true,
           name: true,
+          createdAt: true,
           displayName: true,
           affiliation: true,
           categories: true,
@@ -205,9 +207,7 @@ export async function storeInstructors(
     );
   }
 
-  const existingByName = new Map(
-    existingRows.map((row) => [row.name, row])
-  );
+  const existingByName = buildCanonicalInstructorByNameMap(existingRows);
 
   const creates: NormalizedInstructor[] = [];
   const updates: Array<{

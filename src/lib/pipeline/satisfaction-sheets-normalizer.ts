@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import { buildCanonicalInstructorByNameMap } from "@/lib/instructor-name-canonical";
 import type { SatisfactionImportItemInput } from "@/lib/pipeline/satisfaction-applier";
 import { normalizeFeedbackNotesInImportItems } from "@/lib/pipeline/feedback-note-llm";
 import type {
@@ -760,10 +761,14 @@ export async function normalizeSatisfactionSheetResults(
     candidateNames.length > 0
       ? await prisma.instructor.findMany({
           where: { name: { in: candidateNames } },
-          select: { id: true, name: true },
+          select: { id: true, name: true, createdAt: true },
         })
       : [];
-  const instructorByName = new Map(instructors.map((row) => [row.name, row.id]));
+  const instructorByName = new Map(
+    Array.from(buildCanonicalInstructorByNameMap(instructors).entries()).map(
+      ([name, row]) => [name, row.id]
+    )
+  );
 
   const items: SatisfactionImportItemInput[] = [];
   for (const draft of draftItems) {

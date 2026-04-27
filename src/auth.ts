@@ -4,7 +4,8 @@ import Google from "next-auth/providers/google";
 const ALLOWED_DOMAIN = "day1company.co.kr";
 
 export function isAuthDisabled(): boolean {
-  return process.env.AUTH_DISABLED === "true";
+  return process.env.NODE_ENV !== "production" &&
+    process.env.AUTH_DISABLED === "true";
 }
 
 export function isAllowedEmail(email: string | null | undefined): boolean {

@@ -31,7 +31,7 @@ function buildApiError(
   );
 }
 
-export default auth((req: AuthProxyRequest) => {
+const proxyWithAuth = auth((req: AuthProxyRequest) => {
   const { nextUrl } = req;
   const { pathname, search, hostname } = nextUrl;
 
@@ -101,6 +101,10 @@ export default auth((req: AuthProxyRequest) => {
 
   return NextResponse.next();
 });
+
+const proxyWithoutAuth = () => NextResponse.next();
+
+export default isAuthDisabled() ? proxyWithoutAuth : proxyWithAuth;
 
 export const config = {
   matcher: [

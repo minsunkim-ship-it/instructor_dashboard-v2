@@ -1,7 +1,16 @@
-import { auth, signOut } from "@/auth";
+import { auth, isAuthDisabled, signOut } from "@/auth";
 
 export default async function AuthHeader() {
-  const session = await auth();
+  if (isAuthDisabled()) {
+    return null;
+  }
+
+  let session = null;
+  try {
+    session = await auth();
+  } catch {
+    return null;
+  }
   const email = session?.user?.email ?? null;
 
   if (!email) return null;

@@ -107,6 +107,22 @@ export interface NotionCollectProgressEvent {
   fetchedRows: number;
 }
 
+export interface NotionCollectorConfig {
+  apiKey: string;
+  databaseId: string;
+}
+
+export function resolveNotionCollectorConfig(): NotionCollectorConfig {
+  const apiKey = getEnvValue("NOTION_API_KEY");
+  const databaseId = getEnvValue("NOTION_DATABASE_ID");
+
+  if (!apiKey) throw new Error("NOTION_API_KEY 환경변수가 설정되지 않았습니다.");
+  if (!databaseId)
+    throw new Error("NOTION_DATABASE_ID 환경변수가 설정되지 않았습니다.");
+
+  return { apiKey, databaseId };
+}
+
 /**
  * Notion DB에서 모든 강사 페이지를 수집한다.
  * 04_data_pipeline.md 5-2-1절 매핑 기준.
@@ -120,12 +136,7 @@ export async function collectFromNotionWithProgress(options?: {
     event: NotionCollectProgressEvent
   ) => Promise<void> | void;
 }): Promise<RawNotionInstructor[]> {
-  const apiKey = getEnvValue("NOTION_API_KEY");
-  const databaseId = getEnvValue("NOTION_DATABASE_ID");
-
-  if (!apiKey) throw new Error("NOTION_API_KEY 환경변수가 설정되지 않았습니다.");
-  if (!databaseId)
-    throw new Error("NOTION_DATABASE_ID 환경변수가 설정되지 않았습니다.");
+  const { apiKey, databaseId } = resolveNotionCollectorConfig();
 
   const headers = {
     Authorization: `Bearer ${apiKey}`,

@@ -48,6 +48,22 @@ export interface GmailCollectResult {
   threads: RawGmailThread[];
   /** 이번 수집이 incremental이었는지 여부. afterEpochSeconds가 없으면 false (full backfill). */
   incremental: boolean;
+  diagnostics: GmailCollectDiagnostics;
+}
+
+export interface GmailCollectDiagnostics {
+  listPagesFetched: number;
+  pageSize: number;
+  maxPages: number;
+  pageCapHit: boolean;
+  nextPageTokenRemaining: boolean;
+  resultSizeEstimate: number | null;
+  threadsListed: number;
+  threadsLoaded: number;
+  threadsDroppedBeforeApply: number;
+  detailFetchFailures: number;
+  detailEmptyThreads: number;
+  fetchComplete: boolean;
 }
 
 /**
@@ -96,6 +112,11 @@ interface GmailThreadGetResponse {
   id: string;
   messages?: GmailMessage[];
 }
+
+type ThreadLoadResult =
+  | { status: "loaded"; thread: RawGmailThread }
+  | { status: "empty"; threadId: string }
+  | { status: "failed"; threadId: string };
 
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
@@ -183,6 +204,9 @@ export async function collectFromGmail(options?: {
 
   const threadIds = new Set<string>();
   const threads: RawGmailThread[] = [];
+  let listPagesFetched = 0;
+  let listResultSizeEstimate: number | null = null;
+  let nextPageTokenRemaining = false;
 
   const mailboxController = new AbortController();
   const mailboxTimeout = setTimeout(() => {
@@ -217,6 +241,9 @@ export async function collectFromGmail(options?: {
           timeoutMs: requestTimeoutMs,
         }
       );
+      listPagesFetched += 1;
+      listResultSizeEstimate =
+        typeof data.resultSizeEstimate === "number" ? data.resultSizeEstimate : null;
 
       if (Array.isArray(data.threads)) {
         for (const thread of data.threads) {
@@ -224,8 +251,12 @@ export async function collectFromGmail(options?: {
         }
       }
 
-      if (!data.nextPageToken) break;
+      if (!data.nextPageToken) {
+        nextPageTokenRemaining = false;
+        break;
+      }
       pageToken = data.nextPageToken;
+      nextPageTokenRemaining = true;
     }
   } finally {
     clearTimeout(mailboxTimeout);
@@ -236,7 +267,7 @@ export async function collectFromGmail(options?: {
   const loadedThreads = await mapWithConcurrency(
     threadEntries,
     threadFetchConcurrency,
-    async (threadId) => {
+    async (threadId): Promise<ThreadLoadResult> => {
       try {
         const t = await gmailGet<GmailThreadGetResponse>(
           accessToken,
@@ -250,7 +281,9 @@ export async function collectFromGmail(options?: {
         );
 
         const messages = t.messages ?? [];
-        if (messages.length === 0) return null;
+        if (messages.length === 0) {
+          return { status: "empty", threadId };
+        }
 
         const representative =
           [...messages]
@@ -265,30 +298,64 @@ export async function collectFromGmail(options?: {
         const to = findHeader(representative.payload?.headers, "To");
 
         return {
-          threadId,
-          accountEmail,
-          mailboxQuery,
-          firstMessageId: representative.id ?? null,
-          lastInternalDateMs: last.internalDate ?? null,
-          subject,
-          snippet: (representative.snippet ?? null)?.slice(0, 300) ?? null,
-          from,
-          to,
-        } satisfies RawGmailThread;
+          status: "loaded",
+          thread: {
+            threadId,
+            accountEmail,
+            mailboxQuery,
+            firstMessageId: representative.id ?? null,
+            lastInternalDateMs: last.internalDate ?? null,
+            subject,
+            snippet: (representative.snippet ?? null)?.slice(0, 300) ?? null,
+            from,
+            to,
+          } satisfies RawGmailThread,
+        };
       } catch {
-        return null;
+        return { status: "failed", threadId };
       }
     }
   );
 
-  for (const thread of loadedThreads) {
-    if (thread) threads.push(thread);
+  let detailFetchFailures = 0;
+  let detailEmptyThreads = 0;
+  for (const result of loadedThreads) {
+    if (result.status === "loaded") {
+      threads.push(result.thread);
+      continue;
+    }
+    if (result.status === "empty") {
+      detailEmptyThreads += 1;
+      continue;
+    }
+    detailFetchFailures += 1;
   }
+
+  const threadsListed = threadEntries.length;
+  const threadsLoaded = threads.length;
+  const threadsDroppedBeforeApply = threadsListed - threadsLoaded;
+  const pageCapHit = nextPageTokenRemaining;
+  const fetchComplete =
+    !pageCapHit && detailFetchFailures === 0 && detailEmptyThreads === 0;
 
   return {
     accountEmail,
     mailboxQuery,
     threads,
     incremental: isIncremental,
+    diagnostics: {
+      listPagesFetched,
+      pageSize,
+      maxPages,
+      pageCapHit,
+      nextPageTokenRemaining,
+      resultSizeEstimate: listResultSizeEstimate,
+      threadsListed,
+      threadsLoaded,
+      threadsDroppedBeforeApply,
+      detailFetchFailures,
+      detailEmptyThreads,
+      fetchComplete,
+    },
   };
 }

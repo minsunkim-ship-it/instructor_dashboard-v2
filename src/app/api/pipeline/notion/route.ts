@@ -9,7 +9,10 @@
  */
 
 import { NextResponse } from "next/server";
-import { collectFromNotion } from "@/lib/pipeline/notion-collector";
+import {
+  collectFromNotion,
+  resolveNotionCollectorConfig,
+} from "@/lib/pipeline/notion-collector";
 import { normalizeNotionData } from "@/lib/pipeline/normalizer";
 import { storeInstructors } from "@/lib/pipeline/store";
 
@@ -17,6 +20,7 @@ export async function POST() {
   const requestId = `req_${crypto.randomUUID()}`;
 
   try {
+    const notionConfig = resolveNotionCollectorConfig();
     // Step 1: Notion 수집 — 04_data_pipeline 4-2절
     const rawData = await collectFromNotion();
 
@@ -31,6 +35,7 @@ export async function POST() {
       meta: {
         request_id: requestId,
         pipeline: "notion_pilot",
+        database_id: notionConfig.databaseId,
       },
       data: {
         fetched: rawData.length,

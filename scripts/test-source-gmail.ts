@@ -16,28 +16,14 @@ import {
 async function loadGmailCollectorCheckpoints(): Promise<GmailMailboxCheckpoint | null> {
   const rows = await loadCheckpoints("gmail");
   const mailboxRow = rows.find((row) => row.scopeKey === "gmail:mailbox");
-  if (mailboxRow) {
-    return {
-      lastInternalDateMs:
-        typeof (mailboxRow.checkpointJson as Record<string, unknown>)?.last_internal_date_ms ===
-        "string"
-          ? String((mailboxRow.checkpointJson as Record<string, unknown>).last_internal_date_ms)
-          : null,
-    };
-  }
-
-  let maxInternalDateMs: string | null = null;
-  for (const row of rows.filter((entry) => entry.scopeKey.startsWith("gmail:target:"))) {
-    const value =
-      typeof (row.checkpointJson as Record<string, unknown>)?.last_internal_date_ms === "string"
-        ? String((row.checkpointJson as Record<string, unknown>).last_internal_date_ms)
-        : null;
-    if (value && (!maxInternalDateMs || value > maxInternalDateMs)) {
-      maxInternalDateMs = value;
-    }
-  }
-
-  return { lastInternalDateMs: maxInternalDateMs };
+  if (!mailboxRow) return null;
+  return {
+    lastInternalDateMs:
+      typeof (mailboxRow.checkpointJson as Record<string, unknown>)?.last_internal_date_ms ===
+      "string"
+        ? String((mailboxRow.checkpointJson as Record<string, unknown>).last_internal_date_ms)
+        : null,
+  };
 }
 
 async function auditGmail(

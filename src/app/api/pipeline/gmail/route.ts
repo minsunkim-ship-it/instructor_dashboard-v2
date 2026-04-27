@@ -81,29 +81,7 @@ async function loadGmailCheckpoint(): Promise<GmailMailboxCheckpoint | null> {
     };
   }
 
-  const legacyRows = await prisma.sourceCheckpoint.findMany({
-    where: {
-      sourceType: "gmail",
-      scopeKey: { startsWith: "gmail:target:" },
-    },
-    select: { checkpointJson: true },
-  });
-
-  let maxInternalDateMs: string | null = null;
-  for (const legacyRow of legacyRows) {
-    const json = legacyRow.checkpointJson as Record<string, unknown>;
-    const value =
-      typeof json.last_internal_date_ms === "string"
-        ? json.last_internal_date_ms
-        : null;
-    if (value && (!maxInternalDateMs || value > maxInternalDateMs)) {
-      maxInternalDateMs = value;
-    }
-  }
-
-  return {
-    lastInternalDateMs: maxInternalDateMs,
-  };
+  return null;
 }
 
 async function saveGmailCheckpoint(
@@ -143,6 +121,25 @@ async function saveGmailCheckpoint(
       lastSyncedAt: new Date(),
     },
   });
+}
+
+function buildFetchDiagnosticsNotes(
+  collect: Awaited<ReturnType<typeof collectFromGmail>>,
+  checkpointAdvanced: boolean
+): string[] {
+  const diagnostics = collect.diagnostics;
+  return [
+    `fetch_complete=${diagnostics.fetchComplete}`,
+    `checkpoint_advanced=${checkpointAdvanced}`,
+    `threads_listed=${diagnostics.threadsListed}`,
+    `threads_loaded=${diagnostics.threadsLoaded}`,
+    `threads_dropped_before_apply=${diagnostics.threadsDroppedBeforeApply}`,
+    `detail_fetch_failures=${diagnostics.detailFetchFailures}`,
+    `detail_empty_threads=${diagnostics.detailEmptyThreads}`,
+    `list_pages_fetched=${diagnostics.listPagesFetched}`,
+    `page_cap_hit=${diagnostics.pageCapHit}`,
+    `next_page_token_remaining=${diagnostics.nextPageTokenRemaining}`,
+  ];
 }
 
 export async function POST(request: NextRequest) {
@@ -198,8 +195,10 @@ export async function POST(request: NextRequest) {
 
     const normalized = normalizeGmailCollect(collect);
     const applyResult = await applyActivities(run.id, [], normalized);
+    const checkpointAdvanced =
+      !isReconcile && !isBackfill && collect.diagnostics.fetchComplete;
 
-    if (!isReconcile && !isBackfill) {
+    if (checkpointAdvanced) {
       await saveGmailCheckpoint(collect.threads);
     }
 
@@ -211,10 +210,28 @@ export async function POST(request: NextRequest) {
       applyResult.items.ambiguous === 0 &&
       applyResult.aggregateUpdates.length === 0;
 
-    const syncStatus: "success" | "partial" =
+    const baseSyncStatus: "success" | "partial" =
       applyResult.items.unmatched > 0 || applyResult.items.ambiguous > 0
         ? "partial"
         : "success";
+    const fetchDiagnosticsNotes = buildFetchDiagnosticsNotes(
+      collect,
+      checkpointAdvanced
+    );
+    const syncStatus: "success" | "partial" =
+      collect.diagnostics.fetchComplete && baseSyncStatus === "success"
+        ? "success"
+        : "partial";
+    const syncErrorParts: string[] = [];
+    if (!collect.diagnostics.fetchComplete) {
+      syncErrorParts.push("incomplete_fetch");
+    }
+    if (filteredOnly) {
+      syncErrorParts.push(`filtered_invalid_items:${applyResult.items.invalid}`);
+    } else if (applyResult.items.invalid > 0) {
+      syncErrorParts.push(`invalid_items:${applyResult.items.invalid}`);
+    }
+    syncErrorParts.push(...fetchDiagnosticsNotes);
 
     await prisma.sourceSyncLog.update({
       where: { id: syncLog.id },
@@ -222,12 +239,7 @@ export async function POST(request: NextRequest) {
         status: syncStatus,
         fetchedCount: collect.threads.length,
         updatedCount: applyResult.aggregateUpdates.length,
-        errorMessage:
-          filteredOnly
-            ? `filtered_invalid_items:${applyResult.items.invalid}`
-            : applyResult.items.invalid > 0
-              ? `invalid_items:${applyResult.items.invalid}`
-            : null,
+        errorMessage: syncErrorParts.join("; "),
         finishedAt: new Date(),
       },
     });
@@ -248,6 +260,17 @@ export async function POST(request: NextRequest) {
       max_pages: maxPages,
       page_size: pageSize,
       threads_fetched: collect.threads.length,
+      fetch_complete: collect.diagnostics.fetchComplete,
+      checkpoint_advanced: checkpointAdvanced,
+      threads_listed: collect.diagnostics.threadsListed,
+      threads_loaded: collect.diagnostics.threadsLoaded,
+      threads_dropped_before_apply: collect.diagnostics.threadsDroppedBeforeApply,
+      detail_fetch_failures: collect.diagnostics.detailFetchFailures,
+      detail_empty_threads: collect.diagnostics.detailEmptyThreads,
+      list_pages_fetched: collect.diagnostics.listPagesFetched,
+      page_cap_hit: collect.diagnostics.pageCapHit,
+      next_page_token_remaining: collect.diagnostics.nextPageTokenRemaining,
+      list_result_size_estimate: collect.diagnostics.resultSizeEstimate,
       activity_items_inserted: applyResult.items.inserted,
       activity_items_updated: applyResult.items.updated,
       matched_count: applyResult.items.matched,

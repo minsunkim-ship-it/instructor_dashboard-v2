@@ -9,6 +9,10 @@ const extensions = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".json"];
 function resolveAliasPath(specifier) {
   if (!specifier.startsWith("@/")) return null;
   const target = path.join(srcRoot, specifier.slice(2));
+  return resolveCandidatePath(target);
+}
+
+function resolveCandidatePath(target) {
   const directFile = fs.existsSync(target) && fs.statSync(target).isFile() ? target : null;
   if (directFile) return directFile;
 
@@ -29,12 +33,30 @@ function resolveAliasPath(specifier) {
   return target;
 }
 
+function resolveRelativePath(specifier, parentURL) {
+  if (!parentURL) return null;
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return null;
+  if (!parentURL.startsWith("file://")) return null;
+  const parentPath = fileURLToPath(parentURL);
+  if (!parentPath.startsWith(projectRoot)) return null;
+  const target = path.resolve(path.dirname(parentPath), specifier);
+  return resolveCandidatePath(target);
+}
+
 export async function resolve(specifier, context, defaultResolve) {
   const resolvedPath = resolveAliasPath(specifier);
   if (resolvedPath) {
     return {
       shortCircuit: true,
       url: pathToFileURL(resolvedPath).href,
+    };
+  }
+
+  const resolvedRelativePath = resolveRelativePath(specifier, context.parentURL);
+  if (resolvedRelativePath) {
+    return {
+      shortCircuit: true,
+      url: pathToFileURL(resolvedRelativePath).href,
     };
   }
 

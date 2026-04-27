@@ -21,7 +21,7 @@ import {
   type ContractSheetCollectProgressEvent,
   type WorksheetCollectResult,
 } from "@/lib/pipeline/contract-sheet-collector";
-import { normalizeContractRow } from "@/lib/pipeline/contract-sheet-normalizer";
+import { normalizeContractRows } from "@/lib/pipeline/contract-sheet-normalizer";
 import {
   type ContractSheetStoreProgress,
   storeContractRows,
@@ -425,7 +425,7 @@ async function processWorksheet(
     normalized: ws.rows.length,
   });
 
-  const normalized = ws.rows.map(normalizeContractRow);
+  const normalized = normalizeContractRows(ws.rows);
   await options?.onStage?.({
     stage: "store_start",
     gid: ws.gid,

@@ -14,13 +14,14 @@ import { REFRESH_TRIGGER_HEADER } from "@/lib/cron-auth";
 // --- Notion ---
 import {
   collectFromNotionWithProgress,
+  resolveNotionCollectorConfig,
 } from "@/lib/pipeline/notion-collector";
 import { normalizeNotionData } from "@/lib/pipeline/normalizer";
 import { storeInstructors } from "@/lib/pipeline/store";
 
 // --- Contract Sheet ---
 import { collectFromContractSheets } from "@/lib/pipeline/contract-sheet-collector";
-import { normalizeContractRow } from "@/lib/pipeline/contract-sheet-normalizer";
+import { normalizeContractRows } from "@/lib/pipeline/contract-sheet-normalizer";
 import {
   storeContractRows,
   recomputeAggregatesForInstructors,
@@ -585,29 +586,7 @@ async function loadGmailCheckpoint(): Promise<GmailMailboxCheckpoint | null> {
     };
   }
 
-  const legacyRows = await prisma.sourceCheckpoint.findMany({
-    where: {
-      sourceType: "gmail",
-      scopeKey: { startsWith: "gmail:target:" },
-    },
-    select: { checkpointJson: true },
-  });
-
-  let maxInternalDateMs: string | null = null;
-  for (const legacyRow of legacyRows) {
-    const json = legacyRow.checkpointJson as Record<string, unknown>;
-    const value =
-      typeof json.last_internal_date_ms === "string"
-        ? json.last_internal_date_ms
-        : null;
-    if (value && (!maxInternalDateMs || value > maxInternalDateMs)) {
-      maxInternalDateMs = value;
-    }
-  }
-
-  return {
-    lastInternalDateMs: maxInternalDateMs,
-  };
+  return null;
 }
 
 /**
@@ -662,9 +641,11 @@ async function saveGmailCheckpoints(
 async function runNotion({
   markProgress,
 }: SourceRunContext): Promise<{ fetched: number; updated: number; message?: string | null }> {
+  const notionConfig = resolveNotionCollectorConfig();
   const collectStartedAt = Date.now();
   await markProgress("collect_start", {
     page_size: 100,
+    database_id: notionConfig.databaseId,
   });
   const rawData = await collectFromNotionWithProgress({
     onProgress: async (event) => {
@@ -686,7 +667,7 @@ async function runNotion({
   return {
     fetched: rawData.length,
     updated: storeResult.created + storeResult.updated,
-    message: `collect_ms=${collectMs}; normalize_store_ms=${normalizeStoreMs}; pages=${Math.ceil(
+    message: `database_id=${notionConfig.databaseId}; collect_ms=${collectMs}; normalize_store_ms=${normalizeStoreMs}; pages=${Math.ceil(
       rawData.length / 100
     )}`,
   };
@@ -727,7 +708,7 @@ async function runContractSheet({
       rows: ws.rows.length,
     });
     totalFetched += ws.fetchedCount;
-    const normalized = ws.rows.map(normalizeContractRow);
+    const normalized = normalizeContractRows(ws.rows);
     const result = await storeContractRows(normalized, {
       onProgress: async (progress) => {
         await markProgress("normalize_store", {
@@ -884,6 +865,7 @@ async function runSlack(
     perPageLimit: 200,
     incrementalMaxPages: 5,
     fullBackfillMaxPages: 10,
+    fullBackfillMinLookbackDays: 183,
     requestTimeoutMs: 10_000,
     channelTimeoutMs: 30_000,
     userLookupConcurrency: 8,
@@ -968,7 +950,10 @@ async function runGmail(
   });
   const normalized = normalizeGmailCollect(collect);
   const applyResult = await applyActivities(runId, [], normalized);
-  await saveGmailCheckpoints(collect.threads);
+  const checkpointAdvanced = collect.diagnostics.fetchComplete;
+  if (checkpointAdvanced) {
+    await saveGmailCheckpoints(collect.threads);
+  }
   const filteredOnly =
     collect.threads.length > 0 &&
     applyResult.items.invalid === collect.threads.length &&
@@ -981,7 +966,8 @@ async function runGmail(
     collect.threads.length > 0 &&
     applyResult.aggregateUpdates.length === 0;
   const notes: string[] = [];
-  let status: SourceRunOutput["status"] = "success";
+  let status: SourceRunOutput["status"] =
+    collect.diagnostics.fetchComplete ? "success" : "partial";
 
   if (reflectionBlocked) {
     status = "partial";
@@ -993,6 +979,24 @@ async function runGmail(
   if (filteredOnly) {
     notes.push(`filtered_invalid_items=${applyResult.items.invalid}`);
   }
+
+  if (!collect.diagnostics.fetchComplete) {
+    notes.push("incomplete_fetch");
+  }
+
+  notes.push(`checkpoint_advanced=${checkpointAdvanced}`);
+  notes.push(`threads_listed=${collect.diagnostics.threadsListed}`);
+  notes.push(`threads_loaded=${collect.diagnostics.threadsLoaded}`);
+  notes.push(
+    `threads_dropped_before_apply=${collect.diagnostics.threadsDroppedBeforeApply}`
+  );
+  notes.push(`detail_fetch_failures=${collect.diagnostics.detailFetchFailures}`);
+  notes.push(`detail_empty_threads=${collect.diagnostics.detailEmptyThreads}`);
+  notes.push(`list_pages_fetched=${collect.diagnostics.listPagesFetched}`);
+  notes.push(`page_cap_hit=${collect.diagnostics.pageCapHit}`);
+  notes.push(
+    `next_page_token_remaining=${collect.diagnostics.nextPageTokenRemaining}`
+  );
 
   notes.push(`mailbox_query=${collect.mailboxQuery}`);
 

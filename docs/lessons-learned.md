@@ -45,11 +45,14 @@
 - 로컬에서 되는 것과 배포에서 되는 것을 분리해서 보지 못했다.
 - `.env.example`에 있는 값과 실제 코드가 읽는 값이 벌어지는 구간이 있었다.
   - 예: 설정 템플릿에는 남아 있지만 실제 런타임은 더 이상 사용하지 않는 변수, 반대로 실제로 필요한 변수인데 운영 문서에 덜 반영된 경우.
+- 같은 source 이름으로 불렀지만, 실제로는 다른 env 해석 경로나 다른 외부 scope를 보고 있는 run을 한동안 같은 것으로 오해했다.
+  - 예: Notion은 `sourceSyncLog`에 한때 `fetchedCount=300`으로 남아 있었고, 현재 collector는 같은 시점 아닌 live source에서 `776`을 읽었다. 응답이 덜 온 문제가 아니라, 그 시점 run이 다른 source scope / 다른 resolved env surface를 보고 있었을 가능성을 먼저 봐야 했다.
 
 ### 왜 못 잡았나
 - 배포 직후 실데이터 API까지 확인하는 절차가 없었다.
 - 필수 env와 외부 연동 자격증명, 외부 경로 의존성을 나눠서 보지 않았다.
 - 재배포/재시작 후 실제 반영 여부를 체크리스트로 강제하지 않았다.
+- sourceSyncLog에 “무슨 source를 봤는지”를 남기지 않아, 같은 sourceType이라도 실제 external scope가 달랐는지 바로 구분할 수 없었다.
 
 ### 다음 기본 규칙
 - 배포 직후 `메인 URL`, `헬스 체크 API`, `실데이터 API`를 반드시 확인한다.
@@ -58,6 +61,11 @@
 - 외부 연동은 env 누락, 권한 누락, 경로 누락을 나눠서 본다.
 - `.env.example`, 문서, 런타임 코드가 같은 env surface를 쓰는지 같이 검증한다.
 - 더 이상 안 쓰는 env는 템플릿과 문서에서 바로 제거한다.
+- 외부 source sync 로그에는 최소한 아래를 남긴다.
+  - resolved external identifier
+  - fetched pages
+  - fetched raw count
+- “응답이 정상 종료됐다”와 “같은 source를 보고 있었다”를 같은 의미로 취급하지 않는다.
 
 ## 3. 외부 source hang과 runtime 종료 보장을 기능보다 늦게 봤다
 

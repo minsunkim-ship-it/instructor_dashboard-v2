@@ -69,6 +69,37 @@ globalThis.fetch = (async () => {
                   "현업 적용형 실습 비중이 높은 과정에 적합합니다. 계정·환경 이슈가 있는 세션은 사전 점검을 더 촘촘히 두는 편이 좋습니다.",
                 key_question_for_humans:
                   "실습 환경 준비와 계정 안내 시점을 한 번 더 확인해두는 편이 좋습니다.",
+                source_refs: {
+                  teaching_style: ["raw-1"],
+                  curriculum_compliance: ["raw-2"],
+                  attitude: ["raw-6"],
+                  recommendation: ["raw-2"],
+                  key_question_for_humans: ["raw-3"],
+                  strength_patterns: [
+                    {
+                      text: "비전공자와 고연령층도 따라오기 쉽게 설명하며 공감대를 만듭니다.",
+                      source_note_ids: ["raw-8"],
+                    },
+                    {
+                      text: "실습과 예시를 충분히 곁들여 배운 내용을 바로 적용해보게 합니다.",
+                      source_note_ids: ["raw-2"],
+                    },
+                    {
+                      text: "반복 회차에서 만족도 상승과 재요청 반응이 함께 확인됩니다.",
+                      source_note_ids: ["raw-4"],
+                    },
+                  ],
+                  risk_patterns: [
+                    {
+                      text: "계정·환경 이슈가 생기면 초반 실습 흐름이 잠시 흔들릴 수 있습니다.",
+                      source_note_ids: ["raw-3"],
+                    },
+                    {
+                      text: "비정기 요청이나 급한 일정 변경에는 회신 속도를 미리 확인할 필요가 있습니다.",
+                      source_note_ids: ["raw-10"],
+                    },
+                  ],
+                },
               }),
             },
           ],
@@ -432,40 +463,34 @@ try {
 
   assert(result.usedLlm === true, "summary helper marks LLM usage");
   assert(
-    result.summary.teaching_style ===
-      "설명을 쉽게 풀고 실습 맥락에 맞춰 학습자를 끌고 가는 편입니다.",
-    "teaching_style is populated from raw-note summary",
+    result.summary.teaching_style !== null &&
+      result.summary.curriculum_compliance !== null &&
+      result.summary.attitude !== null &&
+      result.summary.source_refs.teaching_style.length >= 2 &&
+      result.summary.source_refs.teaching_style.length <= 3 &&
+      result.summary.source_refs.curriculum_compliance.length >= 2 &&
+      result.summary.source_refs.curriculum_compliance.length <= 3 &&
+      result.summary.source_refs.attitude.length >= 2 &&
+      result.summary.source_refs.attitude.length <= 3,
+    "detail fields keep bounded representative source refs when evidence is rich",
     JSON.stringify(result.summary)
   );
   assert(
-    result.summary.curriculum_compliance?.includes("실습과 예시 중심") ===
-      true,
-    "curriculum_compliance is populated",
-    JSON.stringify(result.summary)
-  );
-  assert(
-    result.summary.attitude === "질문 대응과 피드백 반영은 빠른 편으로 보입니다.",
-    "attitude is populated",
-    JSON.stringify(result.summary)
-  );
-  assert(
-    result.summary.strength_patterns.includes(
-      "비전공자와 고연령층도 따라오기 쉽게 설명하며 공감대를 만듭니다."
-    ) &&
+    result.summary.strength_patterns.length >= 1 &&
       result.summary.strength_patterns.includes(
-        "실습과 예시를 충분히 곁들여 배운 내용을 바로 적용해보게 합니다."
-      ),
-    "strength_patterns are populated from differentiated collected reactions",
+        "비전공자와 고연령층도 따라오기 쉽게 설명하며 공감대를 만듭니다."
+      ) &&
+      result.summary.strength_patterns.length <= 2,
+    "strength_patterns keep differentiated reactions while pruning overlap",
     JSON.stringify(result.summary)
   );
   assert(
-    result.summary.risk_patterns.includes(
-      "계정·환경 이슈가 생기면 초반 실습 흐름이 잠시 흔들릴 수 있습니다."
-    ) &&
+    result.summary.risk_patterns.length >= 1 &&
       result.summary.risk_patterns.includes(
         "비정기 요청이나 급한 일정 변경에는 회신 속도를 미리 확인할 필요가 있습니다."
-      ),
-    "risk_patterns are populated from differentiated collected cautions",
+      ) &&
+      result.summary.risk_patterns.length <= 2,
+    "risk_patterns keep differentiated cautions while pruning overlap",
     JSON.stringify(result.summary)
   );
   assert(
@@ -478,6 +503,120 @@ try {
       "실습 환경 준비와 계정 안내 시점을 한 번 더 확인해두는 편이 좋습니다.",
     "key_question_for_humans is populated by LLM summary",
     JSON.stringify(result.summary)
+  );
+  assert(
+    result.summary.source_refs.teaching_style.length >= 2 &&
+      result.summary.source_refs.recommendation.length >= 3,
+    "field-level source refs expand beyond sparse LLM output when evidence allows",
+    JSON.stringify(result.summary.source_refs)
+  );
+  assert(
+    result.summary.source_refs.strength_patterns.some(
+      (item) =>
+        item.text ===
+          "반복 회차에서 만족도 상승과 재요청 반응이 함께 확인됩니다." &&
+        item.source_note_ids.includes("raw-4") &&
+        item.source_note_ids.includes("raw-5")
+    ) &&
+      result.summary.source_refs.risk_patterns.some(
+        (item) =>
+          item.text ===
+            "비정기 요청이나 급한 일정 변경에는 회신 속도를 미리 확인할 필요가 있습니다." &&
+          item.source_note_ids.includes("raw-10") &&
+          item.source_note_ids.includes("raw-11")
+      ),
+    "pattern-level source refs expand beyond sparse LLM output when evidence allows",
+    JSON.stringify(result.summary.source_refs)
+  );
+  assert(
+    new Set([
+      ...result.summary.source_refs.teaching_style,
+      ...result.summary.source_refs.curriculum_compliance,
+      ...result.summary.source_refs.attitude,
+      ...result.summary.source_refs.recommendation,
+      ...result.summary.source_refs.key_question_for_humans,
+      ...result.summary.source_refs.strength_patterns.flatMap(
+        (item) => item.source_note_ids
+      ),
+      ...result.summary.source_refs.risk_patterns.flatMap(
+        (item) => item.source_note_ids
+      ),
+    ]).size >= 4,
+    "overall source coverage is widened when many relevant notes exist",
+    JSON.stringify(result.summary.source_refs)
+  );
+
+  const extractedWithInferredRefs = extractOperationalIntelligencePayload({
+    operational_intelligence_phase1: {
+      raw_operational_notes: rawNotes,
+      classified_notes: classifiedNotes,
+      human_followups: humanFollowups,
+      behavioral_intelligence: {
+        teaching_style:
+          "비전공자와 고연령층도 이해하기 쉽게 풀어 설명하는 편입니다.",
+        curriculum_compliance: null,
+        attitude: "질문 대응과 현장 대처는 침착한 편입니다.",
+        risk_patterns: [
+          "비정기 요청이나 급한 일정 변경에는 회신 속도를 미리 확인할 필요가 있습니다.",
+        ],
+        strength_patterns: ["비전공자·고연령층 공감대 형성"],
+        recommendation: "현업 적용형 실습 중심 과정에 적합합니다.",
+        data_richness: "moderate",
+        confidence: "medium",
+        key_question_for_humans:
+          "실습 환경 준비와 계정 안내 시점을 한 번 더 확인해두는 편이 좋습니다.",
+      },
+    },
+  });
+
+  assert(
+    extractedWithInferredRefs.behavioral_intelligence.source_refs.teaching_style
+      .length > 0 &&
+      extractedWithInferredRefs.behavioral_intelligence.source_refs.recommendation
+        .length > 0,
+    "stored summaries without source refs infer field-level note sources on read",
+    JSON.stringify(extractedWithInferredRefs.behavioral_intelligence.source_refs)
+  );
+  assert(
+    extractedWithInferredRefs.behavioral_intelligence.source_refs.strength_patterns[0]
+      ?.source_note_ids.length > 0 &&
+      extractedWithInferredRefs.behavioral_intelligence.source_refs.risk_patterns[0]
+        ?.source_note_ids.length > 0,
+    "stored summaries without source refs infer pattern-level note sources on read",
+    JSON.stringify(extractedWithInferredRefs.behavioral_intelligence.source_refs)
+  );
+
+  const extractedWithOverSplitRiskPatterns = extractOperationalIntelligencePayload({
+    operational_intelligence_phase1: {
+      raw_operational_notes: rawNotes,
+      classified_notes: classifiedNotes,
+      human_followups: humanFollowups,
+      behavioral_intelligence: {
+        teaching_style: null,
+        curriculum_compliance: null,
+        attitude: null,
+        risk_patterns: [
+          "초반 진행 속도가 빠름",
+          "실습·전체 시간이 부족하다는 반응",
+          "온라인 환경에서 질문·실습 흐름이 끊김",
+        ],
+        strength_patterns: [],
+        recommendation: null,
+        data_richness: "moderate",
+        confidence: "medium",
+        key_question_for_humans: null,
+      },
+    },
+  });
+
+  assert(
+    extractedWithOverSplitRiskPatterns.behavioral_intelligence.risk_patterns.length <=
+      2 &&
+      !extractedWithOverSplitRiskPatterns.behavioral_intelligence.risk_patterns.includes(
+        "온라인 환경에서 질문·실습 흐름이 끊김"
+      ),
+    "over-split risk patterns backed by the same sparse evidence are pruned on read",
+    JSON.stringify(extractedWithOverSplitRiskPatterns.behavioral_intelligence)
   );
 } finally {
   globalThis.fetch = originalFetch;

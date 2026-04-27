@@ -13,6 +13,7 @@ import {
   sumGroupedTeachingHistoryHours,
 } from "@/lib/teaching-history-display";
 import { dedupeFeeHistoryItems } from "@/lib/fee-history-dedupe";
+import { stripGoogleLinks } from "@/lib/google-link-sanitizer";
 import { extractNotionPropertyTextList } from "@/lib/notion-property-utils";
 import {
   extractOperationalIntelligencePayload,
@@ -37,6 +38,84 @@ export interface StoredFallbackSnapshot {
   status_data: StatusData;
 }
 
+function sanitizeInstructorDetailData(
+  detail: InstructorDetailData
+): InstructorDetailData {
+  const teachingHistory = Array.isArray(detail.teaching_history)
+    ? detail.teaching_history.map((item) => {
+        if (!item || typeof item !== "object") return item;
+        const record = item as Record<string, unknown>;
+
+        return {
+          ...record,
+          fee_extra:
+            "fee_extra" in record
+              ? stripGoogleLinks(record.fee_extra as string | null | undefined)
+              : undefined,
+          special_notes:
+            "special_notes" in record
+              ? stripGoogleLinks(record.special_notes as string | null | undefined)
+              : undefined,
+        };
+      })
+    : detail.teaching_history;
+  const behavioralSourceRefs =
+    detail.behavioral_intelligence?.source_refs &&
+    typeof detail.behavioral_intelligence.source_refs === "object"
+      ? detail.behavioral_intelligence.source_refs
+      : null;
+
+  return {
+    ...detail,
+    memo: stripGoogleLinks(detail.memo),
+    behavioral_intelligence: {
+      ...detail.behavioral_intelligence,
+      source_refs: {
+        teaching_style: Array.isArray(behavioralSourceRefs?.teaching_style)
+          ? behavioralSourceRefs.teaching_style
+          : [],
+        curriculum_compliance: Array.isArray(
+          behavioralSourceRefs?.curriculum_compliance
+        )
+          ? behavioralSourceRefs.curriculum_compliance
+          : [],
+        attitude: Array.isArray(behavioralSourceRefs?.attitude)
+          ? behavioralSourceRefs.attitude
+          : [],
+        recommendation: Array.isArray(behavioralSourceRefs?.recommendation)
+          ? behavioralSourceRefs.recommendation
+          : [],
+        key_question_for_humans: Array.isArray(
+          behavioralSourceRefs?.key_question_for_humans
+        )
+          ? behavioralSourceRefs.key_question_for_humans
+          : [],
+        strength_patterns: Array.isArray(behavioralSourceRefs?.strength_patterns)
+          ? behavioralSourceRefs.strength_patterns
+          : [],
+        risk_patterns: Array.isArray(behavioralSourceRefs?.risk_patterns)
+          ? behavioralSourceRefs.risk_patterns
+          : [],
+      },
+    },
+    teaching_history: teachingHistory,
+  };
+}
+
+function sanitizeStoredFallbackSnapshot(
+  snapshot: StoredFallbackSnapshot
+): StoredFallbackSnapshot {
+  return {
+    ...snapshot,
+    details: Object.fromEntries(
+      Object.entries(snapshot.details).map(([id, detail]) => [
+        id,
+        sanitizeInstructorDetailData(detail),
+      ])
+    ),
+  };
+}
+
 export async function readStoredFallbackSnapshot(): Promise<StoredFallbackSnapshot | null> {
   try {
     const raw = await readFile(SNAPSHOT_PATH, "utf-8");
@@ -54,7 +133,7 @@ export async function readStoredFallbackSnapshot(): Promise<StoredFallbackSnapsh
       return null;
     }
 
-    return parsed;
+    return sanitizeStoredFallbackSnapshot(parsed);
   } catch {
     return null;
   }
@@ -68,7 +147,11 @@ export async function writeStoredFallbackSnapshot(
   snapshot: StoredFallbackSnapshot
 ): Promise<void> {
   await mkdir(path.dirname(SNAPSHOT_PATH), { recursive: true });
-  await writeFile(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2), "utf-8");
+  await writeFile(
+    SNAPSHOT_PATH,
+    JSON.stringify(sanitizeStoredFallbackSnapshot(snapshot), null, 2),
+    "utf-8"
+  );
 }
 
 export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnapshot> {
@@ -154,12 +237,12 @@ export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnaps
         end_date: h.endDate?.toISOString().split("T")[0] ?? null,
         date_label: h.dateLabel,
         deal_fee_hourly: h.dealFeeHourly,
-        fee_extra: h.feeExtra,
+        fee_extra: stripGoogleLinks(h.feeExtra),
         total_hours: h.totalHours !== null ? Number(h.totalHours) : null,
         total_sessions: h.totalSessions,
         contract_type: h.contractType,
         detail_type: h.detailType,
-        special_notes: h.specialNotes,
+        special_notes: stripGoogleLinks(h.specialNotes),
         source_type: h.sourceType,
       }));
 
@@ -190,7 +273,7 @@ export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnaps
         },
         specialties: inst.specialties,
         profile_summary: inst.profileSummary,
-        memo: inst.memoRaw,
+        memo: stripGoogleLinks(inst.memoRaw),
         notion_memo_diagnostics: {
           source_linked: false,
           notion_page_id: null,

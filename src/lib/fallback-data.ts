@@ -33,6 +33,15 @@ const EMPTY_BEHAVIORAL_INTELLIGENCE = {
   confidence: "low" as const,
   confidence_reason: null,
   key_question_for_humans: null,
+  source_refs: {
+    teaching_style: [],
+    curriculum_compliance: [],
+    attitude: [],
+    recommendation: [],
+    key_question_for_humans: [],
+    strength_patterns: [],
+    risk_patterns: [],
+  },
 };
 
 const EMPTY_NOTION_MEMO_DIAGNOSTICS: InstructorDetailData["notion_memo_diagnostics"] = {

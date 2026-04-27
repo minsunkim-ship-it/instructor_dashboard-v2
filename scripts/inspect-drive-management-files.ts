@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import process from "node:process";
 import { exchangeGoogleUserAccessToken, googleApiGet } from "@/lib/google-user-oauth";
+import { stripGoogleLinks } from "@/lib/google-link-sanitizer";
 import { loadDotEnv } from "./lib/audit-helpers.ts";
 
 const execFileAsync = promisify(execFile);
@@ -50,6 +51,12 @@ function selectInterestingTabs(sheetTitles: string[]): string[] {
   return picked.slice(0, 3);
 }
 
+function sanitizePreviewRows(rows: string[]): string[] {
+  return rows
+    .map((row) => stripGoogleLinks(row))
+    .filter((row): row is string => Boolean(row));
+}
+
 async function loadGoogleSheetPreview(
   accessToken: string,
   spreadsheetId: string,
@@ -69,7 +76,8 @@ async function loadGoogleSheetPreview(
         .slice(0, 8)
         .map((row) => row.join(" | ").trim())
         .filter(Boolean);
-      previews.push({ tab, previewRows });
+      const sanitizedPreviewRows = sanitizePreviewRows(previewRows);
+      previews.push({ tab, previewRows: sanitizedPreviewRows });
     } catch {
       previews.push({ tab, previewRows: [] });
     }
@@ -167,7 +175,7 @@ async function main() {
           resolvedSheetTitles = xlsx.sheetTitles;
           preview = Object.entries(xlsx.previewRowsBySheet).map(([tab, previewRows]) => ({
             tab,
-            previewRows,
+            previewRows: sanitizePreviewRows(previewRows),
           }));
         } catch {
           preview = [];

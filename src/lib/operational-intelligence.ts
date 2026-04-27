@@ -7,6 +7,8 @@ import {
 } from "@/lib/pipeline/ops-notes-loader";
 import type {
   BehavioralIntelligence,
+  BehavioralIntelligenceSourceRefs,
+  BehavioralPatternSourceRef,
   ClassifiedOperationalNote,
   HumanFollowup,
   OperationalDataRichness,
@@ -21,10 +23,12 @@ import type {
 const SOURCE_SUMMARY_KEY = "operational_intelligence_phase1";
 const SPEC_REF = "docs/15_operational_intelligence_classification_spec.md";
 const PROMPT_VERSION = "docs15-phase1-hybrid-v2";
+const STORAGE_PROJECTION_VERSION = "ops-intel-storage-v2";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_OPERATIONAL_INTELLIGENCE_MODEL = "gpt-5.2";
 const LLM_BATCH_SIZE = 40;
 const OPERATIONAL_INTELLIGENCE_CONCURRENCY = 8;
+const BEHAVIORAL_SUMMARY_NOTE_LIMIT = 40;
 
 const DATA_GAP_KEYWORDS = [
   "미기재",
@@ -154,6 +158,23 @@ const FOLLOWUP_KEYWORDS = [
   "확인 불가",
 ];
 
+const AVOID_DIRECTIVE_KEYWORDS = [
+  /섭외\s*지양/,
+  /섭외지양/,
+  /재섭외\s*지양/,
+  /비추천/,
+  /추천하지\s*않/,
+  /지양/,
+];
+
+const RECOMMEND_DIRECTIVE_KEYWORDS = [
+  /섭외\s*추천/,
+  /재섭외\s*추천/,
+  /우선\s*섭외/,
+  /추천/,
+  /강추/,
+];
+
 const MEANINGLESS_FEEDBACK_MARKERS = new Set([
   "미기재",
   "미작성",
@@ -262,6 +283,7 @@ type BehavioralSummaryFields = Pick<
   | "strength_patterns"
   | "recommendation"
   | "key_question_for_humans"
+  | "source_refs"
 >;
 
 interface GenerateOperationalIntelligenceOptions {
@@ -354,6 +376,18 @@ function getSourceRefField(
   return null;
 }
 
+function createEmptyBehavioralSourceRefs(): BehavioralIntelligenceSourceRefs {
+  return {
+    teaching_style: [],
+    curriculum_compliance: [],
+    attitude: [],
+    recommendation: [],
+    key_question_for_humans: [],
+    strength_patterns: [],
+    risk_patterns: [],
+  };
+}
+
 function createEmptyBehavioralIntelligence(): BehavioralIntelligence {
   return {
     teaching_style: null,
@@ -367,6 +401,7 @@ function createEmptyBehavioralIntelligence(): BehavioralIntelligence {
     confidence: "low",
     confidence_reason: null,
     key_question_for_humans: null,
+    source_refs: createEmptyBehavioralSourceRefs(),
   };
 }
 
@@ -1156,6 +1191,68 @@ function createEmptyBehavioralSummary(): BehavioralSummaryFields {
     strength_patterns: [],
     recommendation: null,
     key_question_for_humans: null,
+    source_refs: createEmptyBehavioralSourceRefs(),
+  };
+}
+
+function getBehavioralPatternSourceRefSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      text: { type: "string" },
+      source_note_ids: {
+        type: "array",
+        items: { type: "string" },
+      },
+    },
+    required: ["text", "source_note_ids"],
+  };
+}
+
+function getBehavioralSourceRefsSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      teaching_style: {
+        type: "array",
+        items: { type: "string" },
+      },
+      curriculum_compliance: {
+        type: "array",
+        items: { type: "string" },
+      },
+      attitude: {
+        type: "array",
+        items: { type: "string" },
+      },
+      recommendation: {
+        type: "array",
+        items: { type: "string" },
+      },
+      key_question_for_humans: {
+        type: "array",
+        items: { type: "string" },
+      },
+      strength_patterns: {
+        type: "array",
+        items: getBehavioralPatternSourceRefSchema(),
+      },
+      risk_patterns: {
+        type: "array",
+        items: getBehavioralPatternSourceRefSchema(),
+      },
+    },
+    required: [
+      "teaching_style",
+      "curriculum_compliance",
+      "attitude",
+      "recommendation",
+      "key_question_for_humans",
+      "strength_patterns",
+      "risk_patterns",
+    ],
   };
 }
 
@@ -1177,6 +1274,7 @@ function getBehavioralSummarySchema(): Record<string, unknown> {
       },
       recommendation: { type: "string" },
       key_question_for_humans: { type: "string" },
+      source_refs: getBehavioralSourceRefsSchema(),
     },
     required: [
       "teaching_style",
@@ -1186,6 +1284,7 @@ function getBehavioralSummarySchema(): Record<string, unknown> {
       "strength_patterns",
       "recommendation",
       "key_question_for_humans",
+      "source_refs",
     ],
   };
 }
@@ -1211,7 +1310,15 @@ function buildBehavioralSummaryPrompt(args: {
     "If two candidate themes are both true, prefer the one that better distinguishes this instructor from others.",
     "Prefer wording that stays close to collected reactions. Avoid abstract evaluator language such as operational maturity, sharpness, or strong adaptability unless the raw notes explicitly say so.",
     "Structured signals like repeated recent courses or satisfaction counts can support confidence, but should not be surfaced as strength_patterns or risk_patterns by themselves.",
-    "Do not mention note ids, source systems, raw note wording, or that you are summarizing notes.",
+    "Read all evidence notes provided below before writing the summary.",
+    "Use the broader evidence set for reasoning even if source_refs later shows only representative citations.",
+    "User-facing text fields must not mention note ids, source systems, raw note wording, or that you are summarizing notes.",
+    "Return source_refs for every non-empty field and pattern using only raw_note_id values from the evidence notes below.",
+    "source_refs are representative citations for display, not an exhaustive list of every supporting note you considered.",
+    "source_refs.strength_patterns and source_refs.risk_patterns must contain one entry per returned pattern text with the same text value.",
+    "Prefer 3-6 representative raw_note_id values when evidence is rich. Use only 1-2 when the claim is genuinely supported by very sparse evidence.",
+    "If there are multiple relevant evidence notes, do not let the whole summary depend on the same 1-2 raw_note_id values.",
+    "Do not cite structured signals alone. Every source_refs entry must point to raw evidence notes.",
     "Return JSON only.",
     "",
     "Fields:",
@@ -1231,6 +1338,7 @@ function buildBehavioralSummaryPrompt(args: {
         slack_activity_count: args.signals.slackActivityCount,
         total_courses: args.signals.totalCourses,
         recent_courses_6mo: args.signals.recentCourses6mo,
+        evidence_note_count: args.notes.length,
         data_richness: args.dataRichness,
         confidence: args.confidence,
         risk_patterns: args.riskPatterns,
@@ -1298,7 +1406,7 @@ function buildFallbackBehavioralSummary(args: {
     recommendation = negativeNotes[0];
   }
 
-  return {
+  const summary: BehavioralSummaryFields = {
     teaching_style: null,
     curriculum_compliance: null,
     attitude: null,
@@ -1306,7 +1414,16 @@ function buildFallbackBehavioralSummary(args: {
     strength_patterns: args.strengthPatterns,
     recommendation,
     key_question_for_humans: buildKeyQuestionForHumans(args.humanFollowups),
+    source_refs: createEmptyBehavioralSourceRefs(),
   };
+
+  const sourceRefs = sanitizeBehavioralSourceRefs({
+    value: null,
+    summary,
+    notes: args.notes,
+  });
+
+  return alignBehavioralSummaryWithSourceRefs(summary, sourceRefs, args.notes);
 }
 
 function sanitizeBehavioralPatternList(
@@ -1324,6 +1441,765 @@ function sanitizeBehavioralPatternList(
         .filter(Boolean)
     )
   ).slice(0, 3);
+}
+
+const SOURCE_REF_TOKEN_STOPWORDS = new Set([
+  "있습니다",
+  "있음",
+  "합니다",
+  "하는",
+  "대한",
+  "필요",
+  "보완",
+  "관리",
+  "운영",
+  "확인",
+  "위한",
+  "강사",
+  "수업",
+  "강의",
+  "과정",
+  "반응",
+  "중심",
+  "실습",
+  "설명",
+  "대응",
+  "진행",
+]);
+
+const BEHAVIORAL_NOVELTY_STOPWORDS = new Set([
+  ...SOURCE_REF_TOKEN_STOPWORDS,
+  "좋음",
+  "좋고",
+  "좋아",
+  "유익",
+  "도움",
+  "반응",
+  "느낌",
+  "많아",
+  "많고",
+  "높음",
+  "높고",
+  "빠름",
+  "빠르고",
+  "부족",
+  "부족함",
+  "친절",
+  "쉬움",
+  "쉽고",
+]);
+
+type BehavioralSourceRefField =
+  keyof Pick<
+    BehavioralIntelligenceSourceRefs,
+    | "teaching_style"
+    | "curriculum_compliance"
+    | "attitude"
+    | "recommendation"
+    | "key_question_for_humans"
+  >;
+
+type BehavioralSourceSelectionKind =
+  | BehavioralSourceRefField
+  | "risk_pattern"
+  | "strength_pattern";
+
+type ScoredBehavioralSourceNote = {
+  rawNoteId: string;
+  score: number;
+  sortKey: string;
+  bundleKey: string;
+};
+
+type ScoredBehavioralPatternRef = {
+  ref: BehavioralPatternSourceRef;
+  positiveBundleKeys: string[];
+  totalScore: number;
+  topScore: number;
+};
+
+function getBehavioralSourceRefTargetCount(
+  kind: BehavioralSourceSelectionKind
+): number {
+  switch (kind) {
+    case "recommendation":
+    case "risk_pattern":
+    case "strength_pattern":
+      return 5;
+    case "key_question_for_humans":
+      return 3;
+    default:
+      return 3;
+  }
+}
+
+function buildClassificationResults(
+  rawNotes: RawOperationalNote[],
+  classifiedNotes: ClassifiedOperationalNote[]
+): ClassificationResult[] {
+  const classificationByRawId = new Map(
+    classifiedNotes.map((item) => [item.raw_note_id, item] as const)
+  );
+
+  return rawNotes.map((raw) => ({
+    raw,
+    classified:
+      classificationByRawId.get(raw.id) ?? {
+        raw_note_id: raw.id,
+        family: "unknown" as const,
+        owner: "unknown" as const,
+        polarity: "neutral" as const,
+        auto_confidence: "low" as const,
+        needs_followup: false,
+        why_flagged: "missing_classification",
+      },
+  }));
+}
+
+function tokenizeBehavioralSourceRefText(text: string): string[] {
+  return Array.from(
+    new Set(
+      normalizeKeywordText(text)
+        .split(/[^0-9a-zA-Z가-힣]+/u)
+        .map((token) => token.trim())
+        .filter(
+          (token) =>
+            token.length >= 2 && !SOURCE_REF_TOKEN_STOPWORDS.has(token)
+        )
+    )
+  );
+}
+
+function tokenizeBehavioralNoveltyText(text: string): string[] {
+  return Array.from(
+    new Set(
+      normalizeKeywordText(text)
+        .split(/[^0-9a-zA-Z가-힣]+/u)
+        .map((token) => token.trim())
+        .filter(
+          (token) =>
+            token.length >= 2 && !BEHAVIORAL_NOVELTY_STOPWORDS.has(token)
+        )
+    )
+  );
+}
+
+function sanitizeSourceNoteIds(
+  value: unknown,
+  availableNoteIds: Set<string>
+): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Set(
+      value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter((item) => item && availableNoteIds.has(item))
+    )
+  ).slice(0, 6);
+}
+
+function pickDiverseSourceNoteIds(args: {
+  candidates: ScoredBehavioralSourceNote[];
+  targetCount: number;
+  usedNoteIds?: Set<string>;
+}): string[] {
+  const selected: string[] = [];
+  const usedBundles = new Set<string>();
+  const appendFromPool = (pool: ScoredBehavioralSourceNote[]): void => {
+    for (const candidate of pool) {
+      if (selected.length >= args.targetCount) return;
+      if (selected.includes(candidate.rawNoteId)) continue;
+      if (usedBundles.has(candidate.bundleKey)) continue;
+      selected.push(candidate.rawNoteId);
+      usedBundles.add(candidate.bundleKey);
+    }
+
+    for (const candidate of pool) {
+      if (selected.length >= args.targetCount) return;
+      if (selected.includes(candidate.rawNoteId)) continue;
+      selected.push(candidate.rawNoteId);
+    }
+  };
+
+  if (args.usedNoteIds && args.usedNoteIds.size > 0) {
+    appendFromPool(
+      args.candidates.filter((candidate) => !args.usedNoteIds?.has(candidate.rawNoteId))
+    );
+  }
+
+  appendFromPool(args.candidates);
+
+  return selected;
+}
+
+function mergeBehavioralSourceNoteIds(args: {
+  existing: string[];
+  recommended: string[];
+  kind: BehavioralSourceSelectionKind;
+}): string[] {
+  return Array.from(new Set([...args.existing, ...args.recommended])).slice(
+    0,
+    getBehavioralSourceRefTargetCount(args.kind)
+  );
+}
+
+function scoreBehavioralSourceCandidates(args: {
+  text: string | null;
+  notes: ClassificationResult[];
+  kind: BehavioralSourceSelectionKind;
+}): ScoredBehavioralSourceNote[] {
+  if (!args.text) return [];
+
+  const relevantNotes = args.notes.filter((item) => {
+    if (!isBehavioralJudgmentRelevant(item.raw, item.classified)) {
+      return false;
+    }
+
+    if (args.kind === "risk_pattern") {
+      return (
+        item.classified.owner === "instructor" &&
+        item.classified.polarity === "negative"
+      );
+    }
+
+    if (args.kind === "strength_pattern") {
+      return (
+        item.classified.owner === "instructor" &&
+        ["positive", "mixed"].includes(item.classified.polarity)
+      );
+    }
+
+    return true;
+  });
+  const targetTokens = tokenizeBehavioralSourceRefText(args.text);
+
+  return relevantNotes
+    .map((item) => {
+      const noteText = normalizeKeywordText(item.raw.raw_text);
+      let score = 0;
+
+      for (const token of targetTokens) {
+        if (noteText.includes(token)) {
+          score += token.length >= 4 ? 2 : 1;
+        }
+      }
+
+      if (args.kind === "risk_pattern") {
+        if (
+          item.classified.owner === "instructor" &&
+          item.classified.polarity === "negative"
+        ) {
+          score += 3;
+        }
+      } else if (args.kind === "strength_pattern") {
+        if (
+          item.classified.owner === "instructor" &&
+          ["positive", "mixed"].includes(item.classified.polarity)
+        ) {
+          score += 3;
+        }
+      } else if (args.kind === "teaching_style") {
+        if (item.classified.family === "delivery_quality") score += 2;
+      } else if (args.kind === "curriculum_compliance") {
+        if (
+          [
+            "curriculum_compliance",
+            "material_delivery",
+            "delivery_quality",
+          ].includes(item.classified.family)
+        ) {
+          score += 2;
+        }
+      } else if (args.kind === "attitude") {
+        if (
+          [
+            "responsiveness_or_schedule",
+            "positive_signal",
+            "environment_issue",
+          ].includes(item.classified.family)
+        ) {
+          score += 2;
+        }
+      } else if (args.kind === "recommendation") {
+        if (item.classified.owner === "instructor") score += 1;
+      } else if (args.kind === "key_question_for_humans") {
+        if (item.classified.needs_followup) score += 3;
+        if (item.classified.polarity === "negative") score += 1;
+      }
+
+      return {
+        rawNoteId: item.raw.id,
+        score,
+        sortKey: item.raw.observed_at ?? item.raw.ingested_at,
+        bundleKey: getOperationalEvidenceBundleKey(item.raw),
+      };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.sortKey.localeCompare(a.sortKey);
+    });
+}
+
+function selectSourceNoteIdsForBehavioralText(args: {
+  text: string | null;
+  notes: ClassificationResult[];
+  kind: BehavioralSourceSelectionKind;
+  usedNoteIds?: Set<string>;
+}): string[] {
+  const scored = scoreBehavioralSourceCandidates(args);
+  const targetCount = getBehavioralSourceRefTargetCount(args.kind);
+  const positiveScored = scored.filter((item) => item.score > 0);
+  const pool = positiveScored.length > 0 ? positiveScored : scored;
+
+  return pickDiverseSourceNoteIds({
+    candidates: pool,
+    targetCount,
+    usedNoteIds: args.usedNoteIds,
+  });
+}
+
+function getBehavioralSourceCoverageTarget(
+  notes: ClassificationResult[]
+): number {
+  const relevantBundleCount = new Set(
+    notes
+      .filter((item) => isBehavioralJudgmentRelevant(item.raw, item.classified))
+      .map((item) => getOperationalEvidenceBundleKey(item.raw))
+  ).size;
+
+  if (relevantBundleCount >= 4) return 4;
+  if (relevantBundleCount >= 3) return 3;
+  return 0;
+}
+
+function collectBehavioralSourceNoteIds(
+  sourceRefs: BehavioralIntelligenceSourceRefs
+): string[] {
+  return Array.from(
+    new Set([
+      ...sourceRefs.teaching_style,
+      ...sourceRefs.curriculum_compliance,
+      ...sourceRefs.attitude,
+      ...sourceRefs.recommendation,
+      ...sourceRefs.key_question_for_humans,
+      ...sourceRefs.strength_patterns.flatMap((item) => item.source_note_ids),
+      ...sourceRefs.risk_patterns.flatMap((item) => item.source_note_ids),
+    ])
+  );
+}
+
+function enforceBehavioralSourceCoverage(args: {
+  sourceRefs: BehavioralIntelligenceSourceRefs;
+  summary: BehavioralSummaryFields;
+  notes: ClassificationResult[];
+}): BehavioralIntelligenceSourceRefs {
+  const coverageTarget = getBehavioralSourceCoverageTarget(args.notes);
+  const next: BehavioralIntelligenceSourceRefs = {
+    ...args.sourceRefs,
+    strength_patterns: args.sourceRefs.strength_patterns.map((item) => ({
+      ...item,
+      source_note_ids: [...item.source_note_ids],
+    })),
+    risk_patterns: args.sourceRefs.risk_patterns.map((item) => ({
+      ...item,
+      source_note_ids: [...item.source_note_ids],
+    })),
+  };
+
+  if (coverageTarget === 0) {
+    return next;
+  }
+
+  const getUsedNoteIds = (): Set<string> =>
+    new Set(collectBehavioralSourceNoteIds(next));
+  const hasEnoughCoverage = (): boolean =>
+    getUsedNoteIds().size >= coverageTarget;
+
+  const expandField = (
+    field: BehavioralSourceRefField,
+    text: string | null
+  ): void => {
+    if (!text || hasEnoughCoverage()) return;
+    next[field] = mergeBehavioralSourceNoteIds({
+      existing: next[field],
+      recommended: selectSourceNoteIdsForBehavioralText({
+        text,
+        notes: args.notes,
+        kind: field,
+        usedNoteIds: getUsedNoteIds(),
+      }),
+      kind: field,
+    });
+  };
+
+  const expandPatternList = (
+    kind: "risk" | "strength",
+    patterns: BehavioralPatternSourceRef[]
+  ): BehavioralPatternSourceRef[] =>
+    patterns.map((pattern) => {
+      if (hasEnoughCoverage()) return pattern;
+
+      return {
+        ...pattern,
+        source_note_ids: mergeBehavioralSourceNoteIds({
+          existing: pattern.source_note_ids,
+          recommended: selectSourceNoteIdsForBehavioralText({
+            text: pattern.text,
+            notes: args.notes,
+            kind: kind === "risk" ? "risk_pattern" : "strength_pattern",
+            usedNoteIds: getUsedNoteIds(),
+          }),
+          kind: kind === "risk" ? "risk_pattern" : "strength_pattern",
+        }),
+      };
+    });
+
+  expandField("recommendation", args.summary.recommendation);
+  next.strength_patterns = expandPatternList("strength", next.strength_patterns);
+  next.risk_patterns = expandPatternList("risk", next.risk_patterns);
+  expandField("teaching_style", args.summary.teaching_style);
+  expandField(
+    "curriculum_compliance",
+    args.summary.curriculum_compliance
+  );
+  expandField("attitude", args.summary.attitude);
+  expandField(
+    "key_question_for_humans",
+    args.summary.key_question_for_humans
+  );
+
+  return next;
+}
+
+function sanitizeBehavioralPatternSourceRefs(args: {
+  value: unknown;
+  patterns: string[];
+  notes: ClassificationResult[];
+  kind: "risk" | "strength";
+}): BehavioralPatternSourceRef[] {
+  const availableNoteIds = new Set(args.notes.map((item) => item.raw.id));
+  const refs = Array.isArray(args.value) ? args.value : [];
+  const refByText = new Map<string, BehavioralPatternSourceRef>();
+
+  for (const item of refs) {
+    const record = asRecord(item);
+    const text =
+      typeof record.text === "string" ? normalizeText(record.text) : "";
+    if (!text) continue;
+
+    refByText.set(text.toLowerCase(), {
+      text,
+      source_note_ids: sanitizeSourceNoteIds(
+        record.source_note_ids,
+        availableNoteIds
+      ),
+    });
+  }
+
+  const scoredRefs: ScoredBehavioralPatternRef[] = args.patterns.map((pattern) => {
+    const normalizedPattern = normalizeText(pattern);
+    const existing = refByText.get(normalizedPattern.toLowerCase());
+    const kind =
+      args.kind === "risk" ? "risk_pattern" : "strength_pattern";
+    const candidates = scoreBehavioralSourceCandidates({
+      text: normalizedPattern,
+      notes: args.notes,
+      kind,
+    });
+    const recommended = pickDiverseSourceNoteIds({
+      candidates: candidates.filter((item) => item.score > 0),
+      targetCount: getBehavioralSourceRefTargetCount(kind),
+    });
+    const source_note_ids = mergeBehavioralSourceNoteIds({
+      existing: existing?.source_note_ids ?? [],
+      recommended,
+      kind,
+    });
+    const candidateById = new Map(
+      candidates.map((item) => [item.rawNoteId, item] as const)
+    );
+    const positiveBundleKeys = Array.from(
+      new Set(
+        source_note_ids
+          .map((id) => candidateById.get(id))
+          .filter((item): item is ScoredBehavioralSourceNote => Boolean(item))
+          .filter((item) => item.score > 0)
+          .map((item) => item.bundleKey)
+      )
+    );
+    const selectedScores = source_note_ids
+      .map((id) => candidateById.get(id)?.score ?? 0)
+      .filter((score) => score > 0);
+
+    return {
+      ref: {
+        text: normalizedPattern,
+        source_note_ids,
+      },
+      positiveBundleKeys,
+      totalScore: selectedScores.reduce((sum, score) => sum + score, 0),
+      topScore: Math.max(0, ...selectedScores),
+    };
+  });
+
+  const coveredBundles = new Set<string>();
+  const seenSignatures = new Set<string>();
+
+  return scoredRefs
+    .filter((item) => item.topScore >= 2 && item.positiveBundleKeys.length > 0)
+    .sort((a, b) => {
+      if (b.positiveBundleKeys.length !== a.positiveBundleKeys.length) {
+        return b.positiveBundleKeys.length - a.positiveBundleKeys.length;
+      }
+      if (b.totalScore !== a.totalScore) {
+        return b.totalScore - a.totalScore;
+      }
+      return b.topScore - a.topScore;
+    })
+    .filter((item) => {
+      const signature = item.positiveBundleKeys.slice().sort().join("::");
+      if (signature && seenSignatures.has(signature)) {
+        return false;
+      }
+      const addsNovelBundle = item.positiveBundleKeys.some(
+        (bundleKey) => !coveredBundles.has(bundleKey)
+      );
+      if (!addsNovelBundle && coveredBundles.size > 0) {
+        return false;
+      }
+      seenSignatures.add(signature);
+      item.positiveBundleKeys.forEach((bundleKey) => coveredBundles.add(bundleKey));
+      return true;
+    })
+    .slice(0, 3)
+    .map((item) => item.ref);
+}
+
+function alignBehavioralPatternsWithSourceRefs(
+  patterns: string[],
+  refs: BehavioralPatternSourceRef[]
+): string[] {
+  if (refs.length === 0) {
+    return patterns;
+  }
+
+  const allowedTexts = new Set(
+    refs.map((item) => normalizeComparableText(item.text))
+  );
+
+  return patterns.filter((pattern) =>
+    allowedTexts.has(normalizeComparableText(pattern))
+  );
+}
+
+function normalizeComparableText(value: string): string {
+  return normalizeText(value).toLowerCase();
+}
+
+function getBehavioralSourceBundleKeys(args: {
+  sourceNoteIds: string[];
+  notes: ClassificationResult[];
+}): string[] {
+  const rawById = new Map(args.notes.map((item) => [item.raw.id, item.raw] as const));
+
+  return Array.from(
+    new Set(
+      args.sourceNoteIds
+        .map((sourceNoteId) => rawById.get(sourceNoteId))
+        .filter((raw): raw is RawOperationalNote => Boolean(raw))
+        .map((raw) => getOperationalEvidenceBundleKey(raw))
+    )
+  );
+}
+
+function pruneLowNoveltyBehavioralField(args: {
+  text: string | null;
+  sourceNoteIds: string[];
+  baselineBundleKeys: Set<string>;
+  baselineTexts: string[];
+  notes: ClassificationResult[];
+}): { text: string | null; sourceNoteIds: string[] } {
+  if (!args.text || args.sourceNoteIds.length === 0) {
+    return {
+      text: args.text,
+      sourceNoteIds: args.sourceNoteIds,
+    };
+  }
+
+  if (args.baselineBundleKeys.size === 0) {
+    return {
+      text: args.text,
+      sourceNoteIds: args.sourceNoteIds,
+    };
+  }
+
+  const bundleKeys = getBehavioralSourceBundleKeys({
+    sourceNoteIds: args.sourceNoteIds,
+    notes: args.notes,
+  });
+  const novelBundleCount = bundleKeys.filter(
+    (bundleKey) => !args.baselineBundleKeys.has(bundleKey)
+  ).length;
+  const fieldTokens = tokenizeBehavioralNoveltyText(args.text);
+  const baselineTokens = new Set(
+    args.baselineTexts.flatMap((text) => tokenizeBehavioralNoveltyText(text))
+  );
+  const overlapRatio =
+    fieldTokens.length === 0
+      ? 0
+      : fieldTokens.filter((token) => baselineTokens.has(token)).length /
+        fieldTokens.length;
+
+  if (bundleKeys.length <= 2 && novelBundleCount <= 1) {
+    return {
+      text: null,
+      sourceNoteIds: [],
+    };
+  }
+
+  if (args.sourceNoteIds.length <= 2 && overlapRatio >= 0.45) {
+    return {
+      text: null,
+      sourceNoteIds: [],
+    };
+  }
+
+  return {
+    text: args.text,
+    sourceNoteIds: args.sourceNoteIds,
+  };
+}
+
+function alignBehavioralSummaryWithSourceRefs(
+  summary: BehavioralSummaryFields,
+  sourceRefs: BehavioralIntelligenceSourceRefs,
+  notes: ClassificationResult[]
+): BehavioralSummaryFields {
+  const alignedStrengthPatterns = alignBehavioralPatternsWithSourceRefs(
+    summary.strength_patterns,
+    sourceRefs.strength_patterns
+  );
+  const alignedRiskPatterns = alignBehavioralPatternsWithSourceRefs(
+    summary.risk_patterns,
+    sourceRefs.risk_patterns
+  );
+  const baselineBundleKeys = new Set(
+    [
+      ...sourceRefs.strength_patterns.flatMap((item) => item.source_note_ids),
+      ...sourceRefs.risk_patterns.flatMap((item) => item.source_note_ids),
+    ].flatMap((sourceNoteId) =>
+      getBehavioralSourceBundleKeys({
+        sourceNoteIds: [sourceNoteId],
+        notes,
+      })
+    )
+  );
+  const baselineTexts = [...alignedStrengthPatterns, ...alignedRiskPatterns];
+  const teachingStyle = pruneLowNoveltyBehavioralField({
+    text: summary.teaching_style,
+    sourceNoteIds: sourceRefs.teaching_style,
+    baselineBundleKeys,
+    baselineTexts,
+    notes,
+  });
+  const curriculumCompliance = pruneLowNoveltyBehavioralField({
+    text: summary.curriculum_compliance,
+    sourceNoteIds: sourceRefs.curriculum_compliance,
+    baselineBundleKeys,
+    baselineTexts,
+    notes,
+  });
+  const attitude = pruneLowNoveltyBehavioralField({
+    text: summary.attitude,
+    sourceNoteIds: sourceRefs.attitude,
+    baselineBundleKeys,
+    baselineTexts,
+    notes,
+  });
+  const alignedSourceRefs: BehavioralIntelligenceSourceRefs = {
+    ...sourceRefs,
+    teaching_style: teachingStyle.sourceNoteIds,
+    curriculum_compliance: curriculumCompliance.sourceNoteIds,
+    attitude: attitude.sourceNoteIds,
+  };
+
+  return {
+    ...summary,
+    teaching_style: teachingStyle.text,
+    curriculum_compliance: curriculumCompliance.text,
+    attitude: attitude.text,
+    strength_patterns: alignedStrengthPatterns,
+    risk_patterns: alignedRiskPatterns,
+    source_refs: alignedSourceRefs,
+  };
+}
+
+function sanitizeBehavioralSourceRefs(args: {
+  value: unknown;
+  summary: BehavioralSummaryFields;
+  notes: ClassificationResult[];
+}): BehavioralIntelligenceSourceRefs {
+  const availableNoteIds = new Set(args.notes.map((item) => item.raw.id));
+  const record = asRecord(args.value);
+
+  const sanitizeField = (
+    field: BehavioralSourceRefField,
+    text: string | null
+  ): string[] => {
+    const existing = sanitizeSourceNoteIds(record[field], availableNoteIds);
+    if (!text) {
+      return existing;
+    }
+
+    return mergeBehavioralSourceNoteIds({
+      existing,
+      recommended: selectSourceNoteIdsForBehavioralText({
+        text,
+        notes: args.notes,
+        kind: field,
+      }),
+      kind: field,
+    });
+  };
+
+  const sourceRefs = {
+    teaching_style: sanitizeField(
+      "teaching_style",
+      args.summary.teaching_style
+    ),
+    curriculum_compliance: sanitizeField(
+      "curriculum_compliance",
+      args.summary.curriculum_compliance
+    ),
+    attitude: sanitizeField("attitude", args.summary.attitude),
+    recommendation: sanitizeField(
+      "recommendation",
+      args.summary.recommendation
+    ),
+    key_question_for_humans: sanitizeField(
+      "key_question_for_humans",
+      args.summary.key_question_for_humans
+    ),
+    strength_patterns: sanitizeBehavioralPatternSourceRefs({
+      value: record.strength_patterns,
+      patterns: args.summary.strength_patterns,
+      notes: args.notes,
+      kind: "strength",
+    }),
+    risk_patterns: sanitizeBehavioralPatternSourceRefs({
+      value: record.risk_patterns,
+      patterns: args.summary.risk_patterns,
+      notes: args.notes,
+      kind: "risk",
+    }),
+  };
+
+  return enforceBehavioralSourceCoverage({
+    sourceRefs,
+    summary: args.summary,
+    notes: args.notes,
+  });
 }
 
 export async function summarizeBehavioralIntelligenceFromEvidence(args: {
@@ -1345,30 +2221,14 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
   summary: BehavioralSummaryFields;
   usedLlm: boolean;
 }> {
-  const classificationByRawId = new Map(
-    args.classifiedNotes.map((item) => [item.raw_note_id, item] as const)
-  );
-  const notes = args.rawNotes
-    .map((raw) => ({
-      raw,
-      classified:
-        classificationByRawId.get(raw.id) ?? {
-          raw_note_id: raw.id,
-          family: "unknown" as const,
-          owner: "unknown" as const,
-          polarity: "neutral" as const,
-          auto_confidence: "low" as const,
-          needs_followup: false,
-          why_flagged: "missing_classification",
-        },
-    }))
+  const notes = buildClassificationResults(args.rawNotes, args.classifiedNotes)
     .filter((item) => isBehavioralJudgmentRelevant(item.raw, item.classified))
     .sort((a, b) => {
       const aDate = a.raw.observed_at ?? a.raw.ingested_at;
       const bDate = b.raw.observed_at ?? b.raw.ingested_at;
       return bDate.localeCompare(aDate);
     })
-    .slice(0, 24);
+    .slice(0, BEHAVIORAL_SUMMARY_NOTE_LIMIT);
 
   if (notes.length === 0) {
     return {
@@ -1441,36 +2301,44 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
       parsed.strength_patterns,
       "strength"
     );
+    const summary: BehavioralSummaryFields = {
+      teaching_style: normalizeText(
+        typeof parsed.teaching_style === "string" ? parsed.teaching_style : null
+      ) || null,
+      curriculum_compliance: normalizeText(
+        typeof parsed.curriculum_compliance === "string"
+          ? parsed.curriculum_compliance
+          : null
+      ) || null,
+      attitude: normalizeText(
+        typeof parsed.attitude === "string" ? parsed.attitude : null
+      ) || null,
+      risk_patterns: llmRiskPatterns.length > 0 ? llmRiskPatterns : args.riskPatterns,
+      strength_patterns:
+        llmStrengthPatterns.length > 0
+          ? llmStrengthPatterns
+          : args.strengthPatterns,
+      recommendation: normalizeText(
+        typeof parsed.recommendation === "string"
+          ? parsed.recommendation
+          : null
+      ) || null,
+      key_question_for_humans: normalizeText(
+        typeof parsed.key_question_for_humans === "string"
+          ? parsed.key_question_for_humans
+          : null
+      ) || null,
+      source_refs: createEmptyBehavioralSourceRefs(),
+    };
+
+    const sourceRefs = sanitizeBehavioralSourceRefs({
+      value: parsed.source_refs,
+      summary,
+      notes,
+    });
 
     return {
-      summary: {
-        teaching_style: normalizeText(
-          typeof parsed.teaching_style === "string" ? parsed.teaching_style : null
-        ) || null,
-        curriculum_compliance: normalizeText(
-          typeof parsed.curriculum_compliance === "string"
-            ? parsed.curriculum_compliance
-            : null
-        ) || null,
-        attitude: normalizeText(
-          typeof parsed.attitude === "string" ? parsed.attitude : null
-        ) || null,
-        risk_patterns: llmRiskPatterns.length > 0 ? llmRiskPatterns : args.riskPatterns,
-        strength_patterns:
-          llmStrengthPatterns.length > 0
-            ? llmStrengthPatterns
-            : args.strengthPatterns,
-        recommendation: normalizeText(
-          typeof parsed.recommendation === "string"
-            ? parsed.recommendation
-            : null
-        ) || null,
-        key_question_for_humans: normalizeText(
-          typeof parsed.key_question_for_humans === "string"
-            ? parsed.key_question_for_humans
-            : null
-        ) || null,
-      },
+      summary: alignBehavioralSummaryWithSourceRefs(summary, sourceRefs, notes),
       usedLlm: true,
     };
   } catch {
@@ -2821,6 +3689,7 @@ function buildEvidenceHash(
   const hash = createHash("sha1");
   hash.update(
     JSON.stringify({
+      storage_projection_version: STORAGE_PROJECTION_VERSION,
       instructor_id: instructor.id,
       total_courses: instructor.totalCourses,
       recent_courses_6mo: instructor.recentCourses6mo,
@@ -2911,6 +3780,7 @@ async function buildPayloadForInstructor(
     ),
     key_question_for_humans:
       behavioralSummaryResult.summary.key_question_for_humans,
+    source_refs: behavioralSummaryResult.summary.source_refs,
   };
 
   return {
@@ -3032,12 +3902,13 @@ export async function generateOperationalIntelligence(
     upsertCandidates,
     OPERATIONAL_INTELLIGENCE_CONCURRENCY,
     async (entry) => {
+      const legacyFields = getLegacyOperationalFields(entry.payload);
       await withPrismaRetry(() =>
         prisma.instructorIntelligence.upsert({
           where: { instructorDbId: entry.instructor.id },
           update: {
-            recommendedFor: [],
-            avoidFor: [],
+            recommendedFor: legacyFields.recommended_for,
+            avoidFor: legacyFields.avoid_for,
             riskNotes: entry.payload.behavioral_intelligence.risk_patterns,
             opsCheckNote:
               entry.payload.behavioral_intelligence.key_question_for_humans,
@@ -3052,8 +3923,8 @@ export async function generateOperationalIntelligence(
           },
           create: {
             instructorDbId: entry.instructor.id,
-            recommendedFor: [],
-            avoidFor: [],
+            recommendedFor: legacyFields.recommended_for,
+            avoidFor: legacyFields.avoid_for,
             riskNotes: entry.payload.behavioral_intelligence.risk_patterns,
             opsCheckNote:
               entry.payload.behavioral_intelligence.key_question_for_humans,
@@ -3138,6 +4009,10 @@ export function extractOperationalIntelligencePayload(
   const humanFollowups = Array.isArray(candidate.human_followups)
     ? (candidate.human_followups as HumanFollowup[])
     : [];
+  const classifications = buildClassificationResults(
+    rawOperationalNotes,
+    classifiedNotes
+  );
   const behavioralIntelligence =
     candidate.behavioral_intelligence &&
     typeof candidate.behavioral_intelligence === "object"
@@ -3174,45 +4049,60 @@ export function extractOperationalIntelligencePayload(
       ...behavioralIntelligence,
       ...(() => {
         const evidenceProfile = buildEvidenceProfile(
-          rawOperationalNotes.map((raw) => ({
-            raw,
-            classified:
-              classifiedNotes.find((note) => note.raw_note_id === raw.id) ?? {
-                raw_note_id: raw.id,
-                family: "unknown" as const,
-                owner: "unknown" as const,
-                polarity: "neutral" as const,
-                auto_confidence: "low" as const,
-                needs_followup: false,
-                why_flagged: "missing_classification",
-              },
-          }))
+          classifications
+        );
+        const summary: BehavioralSummaryFields = {
+          teaching_style: behavioralIntelligence.teaching_style,
+          curriculum_compliance: behavioralIntelligence.curriculum_compliance,
+          attitude: behavioralIntelligence.attitude,
+          risk_patterns: behavioralIntelligence.risk_patterns,
+          strength_patterns: behavioralIntelligence.strength_patterns,
+          recommendation: behavioralIntelligence.recommendation,
+          key_question_for_humans:
+            behavioralIntelligence.key_question_for_humans,
+          source_refs: createEmptyBehavioralSourceRefs(),
+        };
+        const sourceRefs = sanitizeBehavioralSourceRefs({
+          value: asRecord(candidate.behavioral_intelligence).source_refs,
+          summary,
+          notes: classifications,
+        });
+        const alignedSummary = alignBehavioralSummaryWithSourceRefs(
+          summary,
+          sourceRefs,
+          classifications
         );
 
         return {
-      data_richness_reason:
-        normalizedDataRichnessReason ||
-        buildDataRichnessReason(
-          behavioralIntelligence.data_richness,
-          {
-            curatedOpsNoteCount: stats.curatedOpsNoteCount,
-            meaningfulFeedbackCount: stats.meaningfulFeedbackCount,
-          },
-          {
-            strengthPatterns: behavioralIntelligence.strength_patterns,
-            evidenceProfile,
-          }
-        ),
-      confidence_reason:
-        normalizedConfidenceReason ||
-        buildConfidenceReason(
-          behavioralIntelligence.data_richness,
-          behavioralIntelligence.confidence,
-          humanFollowups,
-          behavioralIntelligence.risk_patterns,
-          behavioralIntelligence.strength_patterns,
-          evidenceProfile
-        ),
+          data_richness_reason:
+            normalizedDataRichnessReason ||
+            buildDataRichnessReason(
+              behavioralIntelligence.data_richness,
+              {
+                curatedOpsNoteCount: stats.curatedOpsNoteCount,
+                meaningfulFeedbackCount: stats.meaningfulFeedbackCount,
+              },
+              {
+                strengthPatterns: behavioralIntelligence.strength_patterns,
+                evidenceProfile,
+              }
+            ),
+          confidence_reason:
+            normalizedConfidenceReason ||
+            buildConfidenceReason(
+              behavioralIntelligence.data_richness,
+              behavioralIntelligence.confidence,
+              humanFollowups,
+              alignedSummary.risk_patterns,
+              alignedSummary.strength_patterns,
+              evidenceProfile
+            ),
+          teaching_style: alignedSummary.teaching_style,
+          curriculum_compliance: alignedSummary.curriculum_compliance,
+          attitude: alignedSummary.attitude,
+          risk_patterns: alignedSummary.risk_patterns,
+          strength_patterns: alignedSummary.strength_patterns,
+          source_refs: alignedSummary.source_refs,
         };
       })(),
     },
@@ -3227,8 +4117,38 @@ export function getLegacyOperationalFields(
   risk_notes: string[];
 } {
   return {
-    recommended_for: [],
-    avoid_for: [],
+    recommended_for: extractOperationalDirectiveLines(
+      payload,
+      RECOMMEND_DIRECTIVE_KEYWORDS,
+      AVOID_DIRECTIVE_KEYWORDS
+    ),
+    avoid_for: extractOperationalDirectiveLines(
+      payload,
+      AVOID_DIRECTIVE_KEYWORDS,
+      RECOMMEND_DIRECTIVE_KEYWORDS
+    ),
     risk_notes: payload.behavioral_intelligence.risk_patterns,
   };
+}
+
+function extractOperationalDirectiveLines(
+  payload: OperationalIntelligencePayload,
+  includePatterns: RegExp[],
+  excludePatterns: RegExp[]
+): string[] {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+
+  for (const note of payload.raw_operational_notes) {
+    const text = normalizeText(note.raw_text);
+    if (!text) continue;
+    if (!includePatterns.some((pattern) => pattern.test(text))) continue;
+    if (excludePatterns.some((pattern) => pattern.test(text))) continue;
+    if (seen.has(text)) continue;
+    seen.add(text);
+    lines.push(text);
+    if (lines.length >= 5) break;
+  }
+
+  return lines;
 }

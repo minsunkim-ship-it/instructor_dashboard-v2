@@ -7,9 +7,9 @@ import { prisma } from "@/lib/prisma";
 import {
   calculateTeachingHistoryTotalPaid,
   countGroupedTeachingHistories,
-  dedupeTeachingHistories,
   normalizeCompanyKey,
   sumGroupedTeachingHistoryHours,
+  dedupeTeachingHistories,
 } from "@/lib/teaching-history-display";
 import { dedupeFeeHistoryItems } from "@/lib/fee-history-dedupe";
 import {
@@ -17,6 +17,7 @@ import {
   getFallbackInstructorDetail,
 } from "@/lib/fallback-data";
 import { readStoredFallbackSnapshot } from "@/lib/fallback-snapshot";
+import { stripGoogleLinks } from "@/lib/google-link-sanitizer";
 import { shouldIncludeInInstructorList } from "@/lib/instructor-list-visibility";
 import { extractNotionPropertyTextList } from "@/lib/notion-property-utils";
 import {
@@ -31,6 +32,19 @@ import type {
   NotionMemoDiagnostics,
   OperationalEvidenceSnapshot,
 } from "@/types/api";
+
+function sanitizeTeachingHistoryTextFields<
+  T extends {
+    fee_extra?: string | null;
+    special_notes?: string | null;
+  },
+>(items: T[]): T[] {
+  return items.map((item) => ({
+    ...item,
+    fee_extra: stripGoogleLinks(item.fee_extra),
+    special_notes: stripGoogleLinks(item.special_notes),
+  }));
+}
 
 type MatchedSatisfactionImportRow = {
   id: string;
@@ -478,6 +492,8 @@ export async function GET(
     });
     const feeHistory = dedupeFeeHistoryItems(inst.feeHistories);
     const teachingHistoryVisible = teachingHistory.slice(0, teachingHistoryLimit);
+    const sanitizedTeachingHistoryVisible =
+      sanitizeTeachingHistoryTextFields(teachingHistoryVisible);
     const teachingHistoryRemainingCount = Math.max(
       0,
       teachingHistory.length - teachingHistoryVisible.length
@@ -574,12 +590,18 @@ export async function GET(
       inst.instructorIntelligence?.riskNotes ?? [],
       "risk"
     );
+    const hasSourceBackedRiskPatterns =
+      operationalPayload.behavioral_intelligence.source_refs.risk_patterns
+        .length > 0;
+    const mergedRiskPatterns = hasSourceBackedRiskPatterns
+      ? operationalPayload.behavioral_intelligence.risk_patterns
+      : dedupeStrings([
+          ...operationalPayload.behavioral_intelligence.risk_patterns,
+          ...normalizedStoredRiskNotes,
+        ]);
     const mergedBehavioralIntelligence = {
       ...operationalPayload.behavioral_intelligence,
-      risk_patterns: dedupeStrings([
-        ...operationalPayload.behavioral_intelligence.risk_patterns,
-        ...normalizedStoredRiskNotes,
-      ]),
+      risk_patterns: mergedRiskPatterns,
       key_question_for_humans:
         operationalPayload.behavioral_intelligence.key_question_for_humans ??
         inst.instructorIntelligence?.opsCheckNote ??
@@ -603,11 +625,13 @@ export async function GET(
       ...(inst.instructorIntelligence?.avoidFor ?? []),
       ...legacyOperationalFields.avoid_for,
     ]);
-    const riskNotes = dedupeStrings([
-      ...normalizedStoredRiskNotes,
-      ...legacyOperationalFields.risk_notes,
-      ...mergedBehavioralIntelligence.risk_patterns,
-    ]);
+    const riskNotes = hasSourceBackedRiskPatterns
+      ? mergedBehavioralIntelligence.risk_patterns
+      : dedupeStrings([
+          ...normalizedStoredRiskNotes,
+          ...legacyOperationalFields.risk_notes,
+          ...mergedBehavioralIntelligence.risk_patterns,
+        ]);
     const rawTeachingCompanies = Array.from(
       new Set(
         teachingHistoryAll
@@ -767,7 +791,7 @@ export async function GET(
         },
         specialties: inst.specialties,
         profile_summary: inst.profileSummary,
-        memo: memoRaw,
+        memo: stripGoogleLinks(memoRaw),
         notion_memo_diagnostics: notionMemoDiagnostics,
         is_fulltime: isFulltime,
         is_practice_coach: inst.isPracticeCoach,
@@ -817,7 +841,7 @@ export async function GET(
               is_current: f.isCurrent,
               is_special_amount: f.isSpecialAmount,
             })),
-        teaching_history: teachingHistoryVisible,
+        teaching_history: sanitizedTeachingHistoryVisible,
         teaching_history_remaining_count: teachingHistoryRemainingCount,
       },
     };

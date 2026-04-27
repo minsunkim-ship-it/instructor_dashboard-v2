@@ -30,6 +30,21 @@ export type OperationalDataRichness =
   | "sparse"
   | "minimal";
 
+export interface BehavioralPatternSourceRef {
+  text: string;
+  source_note_ids: string[];
+}
+
+export interface BehavioralIntelligenceSourceRefs {
+  teaching_style: string[];
+  curriculum_compliance: string[];
+  attitude: string[];
+  recommendation: string[];
+  key_question_for_humans: string[];
+  strength_patterns: BehavioralPatternSourceRef[];
+  risk_patterns: BehavioralPatternSourceRef[];
+}
+
 export interface RawOperationalNote {
   id: string;
   instructor_id: string;
@@ -77,6 +92,7 @@ export interface BehavioralIntelligence {
   confidence: OperationalNoteConfidence;
   confidence_reason: string | null;
   key_question_for_humans: string | null;
+  source_refs: BehavioralIntelligenceSourceRefs;
 }
 
 export interface OperationalIntelligencePayload {

@@ -12,6 +12,7 @@
 import { prisma } from "@/lib/prisma";
 import { parseBaseFeeFromFeeNote } from "./fee-utils";
 import { isPracticeCoachHistory } from "./practice-coach-utils";
+import { parseAmountFromFeeNote } from "./fee-note-parser";
 
 const SPECIAL_AMOUNT_KEYWORDS = [
   "콘텐츠",
@@ -174,27 +175,6 @@ function computeMedianLocal(values: number[]): number | null {
     return (sorted[mid - 1] + sorted[mid]) / 2;
   }
   return sorted[mid];
-}
-
-/**
- * Notion feeNote에서 금액을 파싱한다.
- * "만원" 단위 숫자를 원 단위로 변환하거나, 숫자만 있으면 그대로 반환.
- * 파싱 실패 시 null.
- */
-function parseAmountFromFeeNote(feeNote: string): number | null {
-  // "20만원", "20만" 패턴
-  const manwonMatch = feeNote.match(/(\d+(?:\.\d+)?)\s*만\s*원?/);
-  if (manwonMatch) {
-    return Math.round(parseFloat(manwonMatch[1]) * 10000);
-  }
-  // "200,000원", "200000" 등 순수 숫자 패턴
-  const numMatch = feeNote.match(/(\d{1,3}(?:,?\d{3})+|\d+)\s*원?/);
-  if (numMatch) {
-    const cleaned = numMatch[1].replace(/,/g, "");
-    const val = parseInt(cleaned, 10);
-    if (!isNaN(val) && val > 0) return val;
-  }
-  return null;
 }
 
 function buildTeachingHistoryContext(

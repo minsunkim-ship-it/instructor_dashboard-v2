@@ -16,6 +16,8 @@ import {
   getTeachingHistoryDisplayTitle,
   type TeachingHistoryDisplayItem,
 } from "@/lib/teaching-history-display";
+import { getCurrentFeeTimelineIndex } from "@/lib/fee-history-timeline";
+import { extractDisplayLinesWithoutGoogleLinks } from "@/lib/google-link-sanitizer";
 
 // --- Fetch helpers ---
 
@@ -153,6 +155,14 @@ type NotionCommentCard = {
   text: string;
 };
 
+type OperationalSourceCitation = {
+  id: string;
+  sourceTitle: string;
+  sourceMeta: string;
+  observedAt: string | null;
+  text: string;
+};
+
 const NOTION_COMMENT_SECTION_ID = "notion-comment-experience";
 
 function collapseOperationalNoteGroups(
@@ -220,6 +230,108 @@ function OperationalMemoCard({
         {text}
       </p>
     </article>
+  );
+}
+
+function sanitizeOperationalSourceText(text: string): string {
+  return extractDisplayLinesWithoutGoogleLinks(text).join("\n").trim();
+}
+
+function buildOperationalSourceContext(
+  note: InstructorDetailData["raw_operational_notes"][number]
+): string | null {
+  const context = [note.client_name, note.course_name, note.round_label]
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .join(" · ");
+
+  return context || null;
+}
+
+function getOperationalSourceTitle(
+  note: InstructorDetailData["raw_operational_notes"][number]
+): string {
+  const sourceRef = note.source_ref ?? {};
+  const sourceTitleCandidates = [
+    typeof sourceRef.subject === "string" ? sourceRef.subject : null,
+    typeof sourceRef.section_title === "string" ? sourceRef.section_title : null,
+    typeof sourceRef.title === "string" ? sourceRef.title : null,
+    note.course_name,
+  ]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+
+  const primary = sourceTitleCandidates[0] ?? "";
+  const secondaryCandidates = [note.round_label, note.client_name]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean)
+    .filter((value) => !primary.includes(value));
+
+  const title = [primary, ...secondaryCandidates].filter(Boolean).join(" · ");
+  return title || buildOperationalSourceContext(note) || formatOperationalSource(note.source_type);
+}
+
+function buildOperationalSourceCitations(
+  data: InstructorDetailData,
+  sourceNoteIds: string[]
+): OperationalSourceCitation[] {
+  const noteById = new Map(data.raw_operational_notes.map((note) => [note.id, note]));
+
+  return Array.from(new Set(sourceNoteIds))
+    .map((sourceNoteId) => noteById.get(sourceNoteId))
+    .filter(
+      (
+        note
+      ): note is InstructorDetailData["raw_operational_notes"][number] =>
+        Boolean(note)
+    )
+    .filter((note) => note.source_type !== "notion_comment")
+    .map((note) => ({
+      id: note.id,
+      sourceTitle: getOperationalSourceTitle(note),
+      sourceMeta: formatOperationalSource(note.source_type),
+      observedAt: getOperationalNoteDate(note),
+      text: sanitizeOperationalSourceText(note.raw_text),
+    }))
+    .filter((item) => item.text.length > 0);
+}
+
+function OperationalSourceRefs({
+  data,
+  sourceNoteIds,
+  title = "대표 출처",
+}: {
+  data: InstructorDetailData;
+  sourceNoteIds: string[];
+  title?: string;
+}) {
+  const citations = buildOperationalSourceCitations(data, sourceNoteIds);
+  if (citations.length === 0) return null;
+
+  return (
+    <details className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+      <summary className="cursor-pointer text-[11px] font-semibold text-slate-600">
+        {title} {citations.length}건
+      </summary>
+      <div className="mt-2 space-y-2">
+        {citations.map((citation) => (
+          <div
+            key={citation.id}
+            className="rounded-md border border-slate-200 bg-white px-3 py-2"
+          >
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+              <span className="font-semibold text-slate-700">
+                {citation.sourceTitle}
+              </span>
+              <span>{citation.sourceMeta}</span>
+              <span>{formatDate(citation.observedAt)}</span>
+            </div>
+            <p className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-slate-700">
+              {citation.text}
+            </p>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -588,14 +700,9 @@ function shouldHideContractNote(note: string): boolean {
 function extractVisibleContractNotes(
   ...values: Array<string | null | undefined>
 ): string[] {
-  return values
-    .flatMap((value) =>
-      (value ?? "")
-        .split(/\n+/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-    )
-    .filter((note) => !shouldHideContractNote(note));
+  return extractDisplayLinesWithoutGoogleLinks(...values).filter(
+    (note) => !shouldHideContractNote(note)
+  );
 }
 
 // Feature J: 출처 라벨 정규화 (내부 source_type → 화면 라벨)
@@ -610,6 +717,51 @@ const FEE_SOURCE_LABELS: Record<string, string> = {
 
 function formatFeeSource(sourceType: string): string {
   return FEE_SOURCE_LABELS[sourceType] ?? sourceType;
+}
+
+const OPERATIONAL_SOURCE_LABELS: Record<string, string> = {
+  curated_ops: "운영 메모",
+  notion_comment: "노션 comment",
+  slack_highlight: "슬랙",
+  teaching_feedback_qualitative: "강의 피드백",
+  teaching_feedback_ops: "운영 피드백",
+};
+
+function formatOperationalSource(sourceType: string): string {
+  return OPERATIONAL_SOURCE_LABELS[sourceType] ?? sourceType;
+}
+
+function getBehavioralPatternSourceIds(
+  patternRefs: InstructorDetailData["behavioral_intelligence"]["source_refs"]["risk_patterns"],
+  text: string
+): string[] {
+  const normalizedText = normalizeComparableText(text);
+  return (
+    patternRefs.find(
+      (item) => normalizeComparableText(item.text) === normalizedText
+    )?.source_note_ids ?? []
+  );
+}
+
+function collectOpsIntelligenceSourceNoteIds(args: {
+  recommendationSourceNoteIds: string[];
+  detailItems: Array<{ sourceNoteIds: string[] }>;
+  strengths: string[];
+  risks: string[];
+  behavioral: InstructorDetailData["behavioral_intelligence"];
+}): string[] {
+  return Array.from(
+    new Set([
+      ...args.recommendationSourceNoteIds,
+      ...args.detailItems.flatMap((item) => item.sourceNoteIds),
+      ...args.strengths.flatMap((item) =>
+        getBehavioralPatternSourceIds(args.behavioral.source_refs.strength_patterns, item)
+      ),
+      ...args.risks.flatMap((item) =>
+        getBehavioralPatternSourceIds(args.behavioral.source_refs.risk_patterns, item)
+      ),
+    ])
+  );
 }
 
 function extractTeachingFeeNotes(
@@ -785,6 +937,7 @@ function buildFeeHistoryDateGroups(
   referenceItems: FeeHistoryItem[]
 ): FeeHistoryDateGroup[] {
   const groups = new Map<string, FeeHistoryDateGroup>();
+  const currentTimelineIndex = getCurrentFeeTimelineIndex(timeline);
 
   const ensureGroup = (sortKey: string, label: string) => {
     const existing = groups.get(sortKey);
@@ -811,7 +964,7 @@ function buildFeeHistoryDateGroups(
     group.timelineItems.push({
       item,
       changeAmount: previous ? item.amount - previous.amount : 0,
-      isCurrentSegment: index === timeline.length - 1,
+      isCurrentSegment: index === currentTimelineIndex,
     });
   });
 
@@ -910,7 +1063,8 @@ function FeeTrendChart({ timeline }: { timeline: CollapsedFeeHistoryItem[] }) {
       : Math.max(10000, Math.round((maxAmount - minAmount) * 0.2));
   const chartMax = maxAmount + amountPadding;
   const chartMin = Math.max(0, minAmount - amountPadding);
-  const currentItem = timeline[timeline.length - 1];
+  const currentTimelineIndex = getCurrentFeeTimelineIndex(timeline);
+  const currentItem = timeline[currentTimelineIndex];
   const range = Math.max(1, chartMax - chartMin);
   const plotRight = width - paddingRight - labelGutter;
   const usableWidth = plotRight - paddingLeft;
@@ -1047,11 +1201,11 @@ function FeeTrendChart({ timeline }: { timeline: CollapsedFeeHistoryItem[] }) {
         />
         {points.map((point, index) => {
           const { x, y } = point;
-          const isLastPoint = index === points.length - 1;
+          const isCurrentPoint = index === currentTimelineIndex;
 
           return (
             <g key={`${point.item.start_key}-${point.item.amount}-${index}`}>
-              {isLastPoint && (
+              {isCurrentPoint && (
                 <circle
                   cx={x}
                   cy={y}
@@ -1061,7 +1215,12 @@ function FeeTrendChart({ timeline }: { timeline: CollapsedFeeHistoryItem[] }) {
                   strokeWidth="2"
                 />
               )}
-              <circle cx={x} cy={y} r={isLastPoint ? 5.5 : 4.5} fill="#2563EB" />
+              <circle
+                cx={x}
+                cy={y}
+                r={isCurrentPoint ? 5.5 : 4.5}
+                fill="#2563EB"
+              />
             </g>
           );
         })}
@@ -1617,17 +1776,22 @@ function OpsIntelligenceSection({
     {
       title: "강의 스타일",
       body: behavioral.teaching_style,
+      sourceNoteIds: behavioral.source_refs.teaching_style,
     },
     {
       title: "커리큘럼 준수",
       body: behavioral.curriculum_compliance,
+      sourceNoteIds: behavioral.source_refs.curriculum_compliance,
     },
     {
       title: "애티튜드",
       body: behavioral.attitude,
+      sourceNoteIds: behavioral.source_refs.attitude,
     },
   ].filter(
-    (item): item is { title: string; body: string } =>
+    (
+      item
+    ): item is { title: string; body: string; sourceNoteIds: string[] } =>
       Boolean(item.body && item.body.trim())
   );
   const hasTags = data.recommended_for.length > 0 || data.avoid_for.length > 0;
@@ -1638,6 +1802,13 @@ function OpsIntelligenceSection({
         ? "text-[var(--primary)]"
         : "text-[var(--text-muted)]";
   const hasNotionComments = notionCommentCards.length > 0;
+  const opsSummarySourceNoteIds = collectOpsIntelligenceSourceNoteIds({
+    recommendationSourceNoteIds: behavioral.source_refs.recommendation,
+    detailItems,
+    strengths,
+    risks,
+    behavioral,
+  });
 
   return (
     <section>
@@ -1686,7 +1857,7 @@ function OpsIntelligenceSection({
             {strengths.length > 0 ? (
               strengths.slice(0, 3).map((item) => (
                 <div key={item} className="intel-pattern intel-strength">
-                  {item}
+                  <div>{item}</div>
                 </div>
               ))
             ) : (
@@ -1700,7 +1871,7 @@ function OpsIntelligenceSection({
             {risks.length > 0 ? (
               risks.slice(0, 3).map((item) => (
                 <div key={item} className="intel-pattern intel-risk-high">
-                  {item}
+                  <div>{item}</div>
                 </div>
               ))
             ) : (
@@ -1721,6 +1892,11 @@ function OpsIntelligenceSection({
             ))}
           </div>
         )}
+
+        <OperationalSourceRefs
+          data={data}
+          sourceNoteIds={opsSummarySourceNoteIds}
+        />
 
         {hasNotionComments && (
           <div
@@ -2220,10 +2396,7 @@ function FeeHistorySection({
 // --- H. Operations Memo Section ---
 
 function MemoSection({ data }: { data: InstructorDetailData }) {
-  const visibleMemo = (data.memo ?? "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
+  const visibleMemo = extractDisplayLinesWithoutGoogleLinks(data.memo)
     .filter((line) => !line.startsWith("[Notion comment ·"))
     .filter(
       (line) =>

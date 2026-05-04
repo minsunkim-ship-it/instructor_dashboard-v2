@@ -322,7 +322,7 @@ function buildOperationalEvidenceSnapshots(args: {
   satisfactionImportRows: MatchedSatisfactionImportRow[];
 }): OperationalEvidenceSnapshot[] {
   const sheetRows = args.satisfactionImportRows.filter((row) =>
-    ["sheet_summary", "google_forms"].includes(row.sourceType)
+    ["sheet_summary", "google_forms", "drive_satisfaction"].includes(row.sourceType)
   );
   const gmailRows = args.satisfactionImportRows.filter(
     (row) => row.sourceType === "gmail_summary"
@@ -661,7 +661,7 @@ export async function GET(
       where: {
         instructorDbId: inst.id,
         sourceType: {
-          in: ["sheet_summary", "google_forms", "gmail_summary"],
+          in: ["sheet_summary", "google_forms", "gmail_summary", "drive_satisfaction"],
         },
       },
       select: {
@@ -699,7 +699,7 @@ export async function GET(
             await prisma.satisfactionImportItem.findMany({
               where: {
                 sourceType: {
-                  in: ["sheet_summary", "google_forms", "gmail_summary"],
+                  in: ["sheet_summary", "google_forms", "gmail_summary", "drive_satisfaction"],
                 },
                 OR: satisfactionImportSearchClauses,
               },

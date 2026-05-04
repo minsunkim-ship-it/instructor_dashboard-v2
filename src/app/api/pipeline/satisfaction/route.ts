@@ -10,11 +10,17 @@ import {
   collectSatisfactionFromGmail,
   type SatisfactionGmailCheckpoint,
 } from "@/lib/pipeline/satisfaction-gmail-collector";
+import {
+  DRIVE_SATISFACTION_SOURCE_KEY,
+  collectSatisfactionFromDrive,
+  type DriveSatisfactionCheckpoint,
+} from "@/lib/pipeline/satisfaction-drive-collector";
 import { normalizeSatisfactionGmailResults } from "@/lib/pipeline/satisfaction-gmail-normalizer";
 import {
   normalizeSatisfactionSheetResults,
   type SatisfactionSourceSummary,
 } from "@/lib/pipeline/satisfaction-sheets-normalizer";
+import { normalizeSatisfactionDriveResults } from "@/lib/pipeline/satisfaction-drive-normalizer";
 import { applySatisfactionImports } from "@/lib/pipeline/satisfaction-applier";
 
 export const dynamic = "force-dynamic";
@@ -75,9 +81,60 @@ async function saveSatisfactionGmailCheckpoints(
   });
 }
 
+async function loadDriveSatisfactionCheckpoint(): Promise<DriveSatisfactionCheckpoint | null> {
+  const row = await prisma.sourceCheckpoint.findUnique({
+    where: {
+      sourceType_scopeKey: {
+        sourceType: "drive_satisfaction",
+        scopeKey: "allDrives",
+      },
+    },
+  });
+  if (!row) return null;
+  const json = row.checkpointJson as Record<string, unknown>;
+  return {
+    lastModifiedTime:
+      typeof json.last_modified_time === "string"
+        ? json.last_modified_time
+        : null,
+  };
+}
+
+async function saveDriveSatisfactionCheckpoint(
+  files: Array<{ modifiedTime: string }>
+): Promise<void> {
+  let latest: string | null = null;
+  for (const file of files) {
+    if (!latest || file.modifiedTime > latest) {
+      latest = file.modifiedTime;
+    }
+  }
+  if (!latest) return;
+
+  await prisma.sourceCheckpoint.upsert({
+    where: {
+      sourceType_scopeKey: {
+        sourceType: "drive_satisfaction",
+        scopeKey: "allDrives",
+      },
+    },
+    create: {
+      sourceType: "drive_satisfaction",
+      scopeKey: "allDrives",
+      checkpointJson: { last_modified_time: latest },
+      lastSyncedAt: new Date(),
+    },
+    update: {
+      checkpointJson: { last_modified_time: latest },
+      lastSyncedAt: new Date(),
+    },
+  });
+}
+
 const SATISFACTION_PIPELINE_SOURCE_KEYS = [
   ...ACCESSIBLE_SATISFACTION_SHEET_SOURCES.map((source) => source.key),
   GMAIL_SATISFACTION_SOURCE_KEY,
+  DRIVE_SATISFACTION_SOURCE_KEY,
 ] as const;
 
 type SatisfactionPipelineSourceKey =
@@ -118,10 +175,13 @@ export async function POST(request: NextRequest) {
   const includeKeys = parseIncludeKeys(request.nextUrl.searchParams.get("include"));
   const includeGmail =
     !includeKeys || includeKeys.includes(GMAIL_SATISFACTION_SOURCE_KEY);
+  const includeDrive =
+    !includeKeys || includeKeys.includes(DRIVE_SATISFACTION_SOURCE_KEY);
   const sheetIncludeKeys =
     includeKeys?.filter(
       (key): key is (typeof ACCESSIBLE_SATISFACTION_SHEET_SOURCES)[number]["key"] =>
-        key !== GMAIL_SATISFACTION_SOURCE_KEY
+        key !== GMAIL_SATISFACTION_SOURCE_KEY &&
+        key !== DRIVE_SATISFACTION_SOURCE_KEY
     ) ?? undefined;
   const gmailMaxPages = parsePositiveInt(request.nextUrl.searchParams.get("gmailMaxPages"));
   const gmailPageSize = parsePositiveInt(request.nextUrl.searchParams.get("gmailPageSize"));
@@ -132,6 +192,8 @@ export async function POST(request: NextRequest) {
   const gmailStartDate = request.nextUrl.searchParams.get("gmailStartDate")?.trim() || undefined;
   const gmailEndDate = request.nextUrl.searchParams.get("gmailEndDate")?.trim() || undefined;
   const gmailReconcile = request.nextUrl.searchParams.get("gmailMode") === "reconcile";
+  const driveStartDate = request.nextUrl.searchParams.get("driveStartDate")?.trim() || undefined;
+  const driveEndDate = request.nextUrl.searchParams.get("driveEndDate")?.trim() || undefined;
 
   const run = await prisma.pipelineRun.create({
     data: {
@@ -181,6 +243,25 @@ export async function POST(request: NextRequest) {
       allSourceSummaries.push(gmailNormalized.sourceSummary);
       gmailSkippedSamples =
         gmailNormalized.skippedSamples as unknown as Prisma.InputJsonArray;
+    }
+
+    if (includeDrive) {
+      const driveCheckpoint =
+        driveStartDate || driveEndDate
+          ? null
+          : await loadDriveSatisfactionCheckpoint();
+      const driveCollected = await collectSatisfactionFromDrive({
+        startDate: driveStartDate,
+        endDate: driveEndDate,
+        checkpoint: driveCheckpoint,
+      });
+      const driveNormalized = await normalizeSatisfactionDriveResults(driveCollected);
+      allItems.push(...driveNormalized.items);
+      allSourceSummaries.push(driveNormalized.sourceSummary);
+
+      if (driveCollected.files.length > 0) {
+        await saveDriveSatisfactionCheckpoint(driveCollected.files);
+      }
     }
 
     const applyResult = await applySatisfactionImports({
@@ -233,6 +314,8 @@ export async function POST(request: NextRequest) {
       gmail_start_date: gmailStartDate ?? null,
       gmail_end_date: gmailEndDate ?? null,
       gmail_detail_concurrency: gmailDetailConcurrency ?? null,
+      drive_start_date: driveStartDate ?? null,
+      drive_end_date: driveEndDate ?? null,
       raw_rows_fetched: allSourceSummaries.reduce(
         (sum, summary) => sum + summary.fetchedRows,
         0

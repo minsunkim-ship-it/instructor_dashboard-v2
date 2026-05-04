@@ -23,6 +23,9 @@
 # misc
 .DS_Store
 *.pem
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # debug
 npm-debug.log*
@@ -44,4 +47,11 @@ next-env.d.ts
 edu-base-*.json
 *-service-account*.json
 client_secret_*.json
+.omc/
 .omx/
+
+# local database snapshots and generated audit artifacts
+data/*.db
+prisma/*.db
+reports/*.json
+reports/*.tsv

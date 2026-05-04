@@ -733,3 +733,18 @@
   - `docs/08_decision_log.md`
 - 구현 반영:
   - `src/lib/score-recalculator.ts`
+
+### 2026-04-28
+
+#### 다른 개발자 로컬로 실행 환경을 옮기는 handoff 런북 추가
+- 결정:
+  - 한 개발자 로컬에서 다른 개발자 로컬로 `instructor_db`를 옮길 때는 "내 `.env` 복사"가 아니라 "실행 구조 + 재설정 항목 + 모드별 검증 기준"을 전달하는 방식으로 정리한다.
+  - handoff 절차는 `demo-local`, `dev-live-lite`, `dev-full` 3단계로 구분한다.
+  - 개인 OAuth refresh token, 개인 Gmail/Sheets 접근 권한, 개인 로컬 절대경로는 전달 대상이 아니라 대상 개발자 기준 재설정 항목으로 명시한다.
+- 배경:
+  - 현재 저장소는 `AUTH_DISABLED`, mock seed, source별 smoke test, live source env surface가 모두 존재하지만, 이를 "다른 사람 로컬로 옮기는 절차" 관점으로 한 문서에 묶은 runbook이 없었다.
+  - 그 결과 코드 이전, 로컬 DB 준비, Google login, Gmail/Sheets/Slack/Notion 권한 재설정이 한 번에 섞여 handoff 비용이 커질 위험이 있었다.
+- 반영 문서:
+  - `docs/00_docs_index.md`
+  - `docs/08_decision_log.md`
+  - `docs/16_local_handoff_runbook.md`

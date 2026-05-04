@@ -1,0 +1,40 @@
+{
+  "name": "sheet-row-ops",
+  "version": "0.1.0",
+  "description": "Diagnose Google Drive sheet row ingestion, synchronization, and date-shape issues for instructor DB workflows.",
+  "author": {
+    "name": "OpenAI Codex",
+    "email": "support@openai.com",
+    "url": "https://openai.com/"
+  },
+  "homepage": "https://openai.com/",
+  "repository": "https://openai.com/",
+  "license": "MIT",
+  "keywords": [
+    "google-sheets",
+    "data-pipeline",
+    "operations",
+    "auditing",
+    "backoffice"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Sheet Row Ops",
+    "shortDescription": "Diagnose and recover Google Sheet row sync issues",
+    "longDescription": "Use Sheet Row Ops to audit Google Drive sheet row coverage, distinguish missing data from parsing and synchronization issues, and run the targeted recovery commands for instructor DB sheet pipelines.",
+    "developerName": "OpenAI Codex",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://openai.com/",
+    "privacyPolicyURL": "https://openai.com/policies/privacy-policy/",
+    "termsOfServiceURL": "https://openai.com/policies/terms-of-use/",
+    "defaultPrompt": [
+      "Audit Google Drive sheet rows, classify the issue type, and run the minimum recovery path"
+    ],
+    "screenshots": [],
+    "brandColor": "#0F766E"
+  }
+}

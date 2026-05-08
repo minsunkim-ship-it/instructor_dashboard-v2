@@ -85,7 +85,7 @@ function parseFileName(fileName: string): FileNameMetadata {
   if (!companyName) {
     const underscoreMatch = name.match(/^(.+?)_(.+)$/);
     if (underscoreMatch) {
-      let left = underscoreMatch[1].trim();
+      const left = underscoreMatch[1].trim();
       if (PLATFORM_NAMES.includes(left)) {
         const rest = underscoreMatch[2].trim();
         const innerUnderscore = rest.match(/^(.+?)_(.+)$/);

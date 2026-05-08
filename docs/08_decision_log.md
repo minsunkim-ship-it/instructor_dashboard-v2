@@ -768,3 +768,17 @@
   - `docs/00_docs_index.md`
   - `docs/08_decision_log.md`
   - `docs/17_coolify_migration_runbook.md`
+
+#### Salesmap snapshot 배포 경로를 GitHub 포함 방식으로 정정
+- 결정:
+  - Coolify 배포의 기본 Salesmap snapshot 경로는 GitHub에 포함된 `data/salesmap_latest.db`를 Docker image에 같이 넣는 방식으로 둔다.
+  - `.dockerignore`는 `data/*.db`를 기본 제외하되 canonical 파일인 `data/salesmap_latest.db`만 예외 허용한다.
+  - 기본 `SALESMAP_SNAPSHOT_PATH`는 `/app/data/salesmap_latest.db`로 둔다.
+- 배경:
+  - 현재 운영 흐름은 Salesmap snapshot을 별도 persistent storage에 업로드하는 방식이 아니라 GitHub 파일에서 받아오는 구조다.
+  - 전체 SQLite snapshot을 무제한 포함하지 않기 위해 canonical 파일 하나만 예외 처리한다.
+- 반영 문서:
+  - `.dockerignore`
+  - `.env.example`
+  - `docs/08_decision_log.md`
+  - `docs/17_coolify_migration_runbook.md`

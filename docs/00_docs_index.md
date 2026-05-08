@@ -21,6 +21,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 14. `14_wave1_preflight_checklist.md`
 15. `15_operational_intelligence_classification_spec.md`
 16. `16_local_handoff_runbook.md`
+17. `17_coolify_migration_runbook.md`
 
 ## Source of Truth Priority
 - 정책 충돌 시: `01_core_policy.md`
@@ -38,6 +39,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - Group 시작 전 / T5 진입 전 실행 체크리스트 확인: `14_wave1_preflight_checklist.md`
 - 운영 인텔리전스 분류 규칙 확인: `15_operational_intelligence_classification_spec.md`
 - 다른 개발자 로컬로 실행 환경을 옮길 때는 `16_local_handoff_runbook.md`
+- Railway에서 Coolify 셀프호스팅으로 옮길 때는 `17_coolify_migration_runbook.md`
 
 ## Current Execution Plan
 
@@ -172,6 +174,10 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - 한 개발자 로컬에서 다른 개발자 로컬로 `instructor_db` 실행 환경을 옮길 때 필요한 준비물, 재설정 항목, 모드별 검증 기준을 정의한다.
 - 코드 공유와 인증/권한 재설정을 분리해 설명하며, `demo-local`, `dev-live-lite`, `dev-full` handoff 절차를 포함한다.
 
+### `17_coolify_migration_runbook.md`
+- Railway에서 Coolify 셀프호스팅 환경으로 앱과 PostgreSQL 데이터를 이전할 때 필요한 절차를 정의한다.
+- Dockerfile build pack, PostgreSQL dump/restore, Coolify 환경변수, OAuth redirect, Salesmap snapshot, health check, cron, rollback 기준을 포함한다.
+
 ## Legacy Reference
 
 - `구현명세서_v2.md`는 참고용 legacy 문서로만 사용한다.
@@ -196,6 +202,7 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - Group 1~3 시작 전과 `T5` 시작 전에는 `14_wave1_preflight_checklist.md`를 확인한다.
 - 운영 인텔리전스 분류 또는 검토 큐 구현 전에는 `15_operational_intelligence_classification_spec.md`를 확인한다.
 - 다른 개발자 로컬에서 앱을 다시 띄우거나 인증/권한 handoff를 준비할 때는 `16_local_handoff_runbook.md`를 확인한다.
+- Railway에서 Coolify로 배포 환경을 이전할 때는 `17_coolify_migration_runbook.md`를 확인한다.
 
 ## Update Rule
 - 정책이 바뀌면 먼저 `01_core_policy.md`를 수정한다.
@@ -211,5 +218,6 @@ Claude Code와 Codex는 이 문서를 먼저 읽고, 이후 필요한 문서를 
 - Wave 1 실행 체크리스트 항목이 바뀌면 `14_wave1_preflight_checklist.md`를 수정한다.
 - 운영 인텔리전스 분류 규칙이나 review queue 정책이 바뀌면 `15_operational_intelligence_classification_spec.md`를 수정한다.
 - 로컬 handoff 절차, 모드 구분, 공유 가능 항목/재설정 항목이 바뀌면 `16_local_handoff_runbook.md`를 수정한다.
+- Coolify migration 절차, Docker 배포 구조, 운영 DB 이전 기준이 바뀌면 `17_coolify_migration_runbook.md`를 수정한다.
 - `구현명세서_v2.md`는 참고만 하고 수정하지 않는다.
 - 중요한 변경은 `08_decision_log.md`에 반드시 남긴다.

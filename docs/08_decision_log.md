@@ -748,3 +748,23 @@
   - `docs/00_docs_index.md`
   - `docs/08_decision_log.md`
   - `docs/16_local_handoff_runbook.md`
+
+### 2026-05-08
+
+#### Railway에서 Coolify 셀프호스팅으로 이전하는 배포 경로 추가
+- 결정:
+  - Coolify 이전은 `Dockerfile` build pack을 기본 경로로 삼는다.
+  - Next.js standalone output을 사용하되, `data/**` JSON과 `prisma/**` runtime files는 명시적으로 runtime image에 복사한다.
+  - `.dockerignore`로 로컬 `.env`, Google credential JSON, SQLite snapshot DB, report artifacts를 Docker build context에서 제외한다.
+  - PostgreSQL 이전은 Railway external URL에서 `pg_dump --format=custom --no-acl --no-owner`로 export하고 Coolify PostgreSQL에 `pg_restore --clean --if-exists --no-owner --no-acl`로 restore하는 방식을 기준으로 한다.
+- 배경:
+  - 저장소에는 Next standalone 설정이 이미 있으나, Railway/Coolify 이전에 필요한 Docker image와 secret-safe build context가 없었다.
+  - Salesmap SQLite snapshot과 fallback JSON처럼 파일 시스템을 참조하는 runtime dependency가 있어 Next standalone tracing만 믿으면 운영 컨테이너에서 누락될 수 있다.
+  - 운영 DB에는 Prisma migration 파일이 없으므로 restore 후 `npx prisma db push`로 현재 schema와 정합성을 확인하는 절차가 필요하다.
+- 반영 문서:
+  - `Dockerfile`
+  - `.dockerignore`
+  - `.env.example`
+  - `docs/00_docs_index.md`
+  - `docs/08_decision_log.md`
+  - `docs/17_coolify_migration_runbook.md`

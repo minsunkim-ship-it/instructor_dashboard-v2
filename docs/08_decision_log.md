@@ -775,6 +775,7 @@
   - 기본 `SALESMAP_SNAPSHOT_PATH`는 `/app/runtime/salesmap_latest.db`로 둔다.
   - release API URL은 `https://api.github.com/repos/sabinanfranz/data_analysis_ai/releases/tags/salesmap-db-latest`를 사용한다.
   - 다운로드 스크립트는 release asset digest와 SQLite integrity check를 통과한 파일만 교체한다.
+  - GitHub release API가 `403`을 반환하면 direct asset URL로 fallback하고, `GITHUB_TOKEN`이 있으면 API와 asset 다운로드 모두 인증 요청으로 수행한다.
 - 배경:
   - Salesmap snapshot은 현재 앱 저장소 파일이 아니라 `sabinanfranz/data_analysis_ai`의 release asset에서 배포된다.
   - asset 크기가 약 443MB이므로 앱 이미지에 포함하지 않고 persistent storage로 관리하는 편이 rebuild 비용과 이미지 크기 측면에서 낫다.

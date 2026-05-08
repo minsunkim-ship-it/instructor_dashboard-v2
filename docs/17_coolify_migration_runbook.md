@@ -139,6 +139,8 @@ GOOGLE_CONTRACTS_SPREADSHEET_ID=""
 SALESMAP_SNAPSHOT_PATH="/app/runtime/salesmap_latest.db"
 SALESMAP_RELEASE_API_URL="https://api.github.com/repos/sabinanfranz/data_analysis_ai/releases/tags/salesmap-db-latest"
 SALESMAP_RELEASE_ASSET_NAME="salesmap_latest.db"
+SALESMAP_RELEASE_DOWNLOAD_URL="https://github.com/sabinanfranz/data_analysis_ai/releases/download/salesmap-db-latest/salesmap_latest.db"
+GITHUB_TOKEN=""
 
 SLACK_BOT_TOKEN=""
 SLACK_WORKSPACE_ID=""
@@ -168,6 +170,8 @@ SATISFACTION_FEEDBACK_LLM_MODEL=""
 - `/app/runtime`은 Coolify persistent storage로 mount한다.
 - `SALESMAP_RELEASE_API_URL`은 Salesmap DB release tag API를 가리킨다.
 - `SALESMAP_RELEASE_ASSET_NAME`은 release asset 이름인 `salesmap_latest.db`를 사용한다.
+- `SALESMAP_RELEASE_DOWNLOAD_URL`은 release API가 rate limit 등으로 실패할 때 사용하는 direct asset URL이다.
+- `GITHUB_TOKEN`은 선택값이다. GitHub API/download가 `403`을 반환하면 fine-grained token을 넣어 인증 요청으로 바꾼다.
 
 ## 6. Salesmap snapshot 처리
 
@@ -186,6 +190,7 @@ Application env는 아래처럼 둔다.
 SALESMAP_SNAPSHOT_PATH="/app/runtime/salesmap_latest.db"
 SALESMAP_RELEASE_API_URL="https://api.github.com/repos/sabinanfranz/data_analysis_ai/releases/tags/salesmap-db-latest"
 SALESMAP_RELEASE_ASSET_NAME="salesmap_latest.db"
+SALESMAP_RELEASE_DOWNLOAD_URL="https://github.com/sabinanfranz/data_analysis_ai/releases/download/salesmap-db-latest/salesmap_latest.db"
 ```
 
 Coolify scheduled task는 App container에서 아래 command를 실행한다.
@@ -194,7 +199,9 @@ Coolify scheduled task는 App container에서 아래 command를 실행한다.
 sh /app/scripts/update-salesmap-snapshot.sh
 ```
 
-이 스크립트는 release API에서 `salesmap_latest.db` asset URL과 digest를 읽고, 임시 파일로 다운로드한 뒤 `sha256`과 SQLite `PRAGMA integrity_check`를 통과할 때만 atomic move로 교체한다.
+이 스크립트는 release API에서 `salesmap_latest.db` asset URL과 digest를 읽고, 임시 파일로 다운로드한 뒤 `sha256`과 SQLite `PRAGMA integrity_check`를 통과할 때만 atomic move로 교체한다. release API가 `403` 등으로 실패하면 direct asset URL로 fallback하며, 이 경우 digest 검증은 생략되고 SQLite integrity check는 계속 수행된다.
+
+GitHub가 `403`을 계속 반환하면 Application env에 `GITHUB_TOKEN`을 추가한다. public release rate limit 회피 용도라면 fine-grained token에 별도 repo write 권한은 필요 없다.
 
 초기 배포 직후에는 scheduled task를 수동으로 한 번 실행해서 `/app/runtime/salesmap_latest.db`를 먼저 만든다.
 

@@ -8,6 +8,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_OPTIONS=--use-openssl-ca
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV EXTRA_CA_CERT_PATH=/app/runtime/extra-ca.crt
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \

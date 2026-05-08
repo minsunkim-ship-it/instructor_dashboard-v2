@@ -777,10 +777,12 @@
   - 다운로드 스크립트는 release asset digest와 SQLite integrity check를 통과한 파일만 교체한다.
   - GitHub release API가 `403`을 반환하면 direct asset URL로 fallback하고, `GITHUB_TOKEN`이 있으면 API와 asset 다운로드 모두 인증 요청으로 수행한다.
   - Docker entrypoint는 앱 서버 시작 전 `/app/runtime` ownership을 보정하고, 앱 서버 프로세스만 `node` 유저로 낮춰 실행한다.
+  - Docker entrypoint는 `/app/runtime/extra-ca.crt`가 있으면 system CA store에 추가해 Fortinet 같은 outbound TLS inspection 환경을 지원한다.
 - 배경:
   - Salesmap snapshot은 현재 앱 저장소 파일이 아니라 `sabinanfranz/data_analysis_ai`의 release asset에서 배포된다.
   - asset 크기가 약 443MB이므로 앱 이미지에 포함하지 않고 persistent storage로 관리하는 편이 rebuild 비용과 이미지 크기 측면에서 낫다.
   - Coolify volume mount가 root-owned로 붙는 경우 scheduled task가 `node` 유저로는 snapshot을 쓸 수 없었다.
+  - 운영 서버에서 Slack 인증서 issuer가 Fortinet CA로 나타나 Node outbound TLS 검증이 실패했다.
 - 반영 문서:
   - `Dockerfile`
   - `.dockerignore`

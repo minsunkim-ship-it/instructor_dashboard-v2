@@ -141,6 +141,7 @@ SALESMAP_RELEASE_API_URL="https://api.github.com/repos/sabinanfranz/data_analysi
 SALESMAP_RELEASE_ASSET_NAME="salesmap_latest.db"
 SALESMAP_RELEASE_DOWNLOAD_URL="https://github.com/sabinanfranz/data_analysis_ai/releases/download/salesmap-db-latest/salesmap_latest.db"
 GITHUB_TOKEN=""
+EXTRA_CA_CERT_PATH="/app/runtime/extra-ca.crt"
 
 SLACK_BOT_TOKEN=""
 SLACK_WORKSPACE_ID=""
@@ -172,6 +173,7 @@ SATISFACTION_FEEDBACK_LLM_MODEL=""
 - `SALESMAP_RELEASE_ASSET_NAME`은 release asset 이름인 `salesmap_latest.db`를 사용한다.
 - `SALESMAP_RELEASE_DOWNLOAD_URL`은 release API가 rate limit 등으로 실패할 때 사용하는 direct asset URL이다.
 - `GITHUB_TOKEN`은 선택값이다. GitHub API/download가 `403`을 반환하면 fine-grained token을 넣어 인증 요청으로 바꾼다.
+- `EXTRA_CA_CERT_PATH`는 Fortinet 같은 outbound TLS inspection 장비가 있을 때 root CA PEM 파일 경로로 사용한다. 기본값은 `/app/runtime/extra-ca.crt`다.
 
 ## 6. Salesmap snapshot 처리
 
@@ -204,6 +206,24 @@ Docker image는 앱 서버 시작 시 `/app/runtime` ownership을 자동 보정�
 이 스크립트는 release API에서 `salesmap_latest.db` asset URL과 digest를 읽고, 임시 파일로 다운로드한 뒤 `sha256`과 SQLite `PRAGMA integrity_check`를 통과할 때만 atomic move로 교체한다. release API가 `403` 등으로 실패하면 direct asset URL로 fallback하며, 이 경우 digest 검증은 생략되고 SQLite integrity check는 계속 수행된다.
 
 GitHub가 `403`을 계속 반환하면 Application env에 `GITHUB_TOKEN`을 추가한다. public release rate limit 회피 용도라면 fine-grained token에 별도 repo write 권한은 필요 없다.
+
+## 6-1. Fortinet TLS inspection이 있는 서버
+
+Slack/Google/GitHub 호출에서 `unable to verify the first certificate`가 나고 `openssl s_client` issuer가 Fortinet으로 보이면 서버 outbound HTTPS가 TLS inspection을 받고 있는 상태다.
+
+운영에서 `NODE_TLS_REJECT_UNAUTHORIZED=0`을 사용하지 않는다. 대신 Fortinet root CA PEM 파일을 Coolify persistent storage에 넣는다.
+
+```text
+/app/runtime/extra-ca.crt
+```
+
+컨테이너 entrypoint는 시작 시 이 파일이 있으면 `/usr/local/share/ca-certificates/instructor-extra-ca.crt`로 복사하고 `update-ca-certificates`를 실행한 뒤 앱 서버를 시작한다.
+
+적용 후 redeploy하고 App terminal에서 확인한다.
+
+```bash
+node -e "fetch('https://slack.com/api/auth.test',{headers:{Authorization:'Bearer '+process.env.SLACK_BOT_TOKEN}}).then(r=>r.text()).then(console.log)"
+```
 
 초기 배포 직후에는 scheduled task를 수동으로 한 번 실행해서 `/app/runtime/salesmap_latest.db`를 먼저 만든다.
 

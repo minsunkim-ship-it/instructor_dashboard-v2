@@ -38,9 +38,11 @@ COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/data ./data
 COPY --from=builder --chown=node:node /app/prisma ./prisma
+COPY --from=builder --chown=node:node /app/scripts/update-salesmap-snapshot.sh ./scripts/update-salesmap-snapshot.sh
 
 RUN mkdir -p /app/runtime \
-  && chown node:node /app/runtime
+  && chown node:node /app/runtime \
+  && chmod +x /app/scripts/update-salesmap-snapshot.sh
 
 USER node
 

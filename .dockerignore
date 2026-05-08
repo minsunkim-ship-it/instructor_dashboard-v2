@@ -23,7 +23,6 @@ edu-base-*.json
 GOOGLE_SERVICE_ACCOUNT_JSON*
 
 data/*.db
-!data/salesmap_latest.db
 prisma/*.db
 reports/
 

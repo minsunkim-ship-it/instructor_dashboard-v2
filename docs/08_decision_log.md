@@ -769,16 +769,19 @@
   - `docs/08_decision_log.md`
   - `docs/17_coolify_migration_runbook.md`
 
-#### Salesmap snapshot 배포 경로를 GitHub 포함 방식으로 정정
+#### Salesmap snapshot 배포 경로를 GitHub release 다운로드 방식으로 정정
 - 결정:
-  - Coolify 배포의 기본 Salesmap snapshot 경로는 GitHub에 포함된 `data/salesmap_latest.db`를 Docker image에 같이 넣는 방식으로 둔다.
-  - `.dockerignore`는 `data/*.db`를 기본 제외하되 canonical 파일인 `data/salesmap_latest.db`만 예외 허용한다.
-  - 기본 `SALESMAP_SNAPSHOT_PATH`는 `/app/data/salesmap_latest.db`로 둔다.
+  - Coolify 배포의 Salesmap snapshot 경로는 GitHub release asset `salesmap_latest.db`를 주기적으로 다운로드해 persistent storage에 저장하는 방식으로 둔다.
+  - 기본 `SALESMAP_SNAPSHOT_PATH`는 `/app/runtime/salesmap_latest.db`로 둔다.
+  - release API URL은 `https://api.github.com/repos/sabinanfranz/data_analysis_ai/releases/tags/salesmap-db-latest`를 사용한다.
+  - 다운로드 스크립트는 release asset digest와 SQLite integrity check를 통과한 파일만 교체한다.
 - 배경:
-  - 현재 운영 흐름은 Salesmap snapshot을 별도 persistent storage에 업로드하는 방식이 아니라 GitHub 파일에서 받아오는 구조다.
-  - 전체 SQLite snapshot을 무제한 포함하지 않기 위해 canonical 파일 하나만 예외 처리한다.
+  - Salesmap snapshot은 현재 앱 저장소 파일이 아니라 `sabinanfranz/data_analysis_ai`의 release asset에서 배포된다.
+  - asset 크기가 약 443MB이므로 앱 이미지에 포함하지 않고 persistent storage로 관리하는 편이 rebuild 비용과 이미지 크기 측면에서 낫다.
 - 반영 문서:
+  - `Dockerfile`
   - `.dockerignore`
   - `.env.example`
   - `docs/08_decision_log.md`
   - `docs/17_coolify_migration_runbook.md`
+  - `scripts/update-salesmap-snapshot.sh`

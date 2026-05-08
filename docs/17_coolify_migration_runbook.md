@@ -33,7 +33,7 @@
 - 앱 포트: `3000`
 - 헬스체크 경로: `/api/health`
 - DB schema 관리: 현재 저장소는 Prisma migration 파일이 없으므로, 초기 이전/스키마 정합성 확인은 `npx prisma db push` 기준
-- Salesmap SQLite snapshot: 기본은 GitHub에 포함된 `data/salesmap_latest.db`를 이미지에 같이 넣고 `SALESMAP_SNAPSHOT_PATH=/app/data/salesmap_latest.db`로 연결
+- Salesmap SQLite snapshot: GitHub release asset에서 주기적으로 다운로드해 Coolify persistent storage에 보관하고 `SALESMAP_SNAPSHOT_PATH=/app/runtime/salesmap_latest.db`로 연결
 
 ## 2. 이전 전 준비
 
@@ -136,7 +136,9 @@ NOTION_DATABASE_ID=""
 
 GOOGLE_CONTRACTS_SPREADSHEET_ID=""
 
-SALESMAP_SNAPSHOT_PATH="/app/data/salesmap_latest.db"
+SALESMAP_SNAPSHOT_PATH="/app/runtime/salesmap_latest.db"
+SALESMAP_RELEASE_API_URL="https://api.github.com/repos/sabinanfranz/data_analysis_ai/releases/tags/salesmap-db-latest"
+SALESMAP_RELEASE_ASSET_NAME="salesmap_latest.db"
 
 SLACK_BOT_TOKEN=""
 SLACK_WORKSPACE_ID=""
@@ -162,27 +164,39 @@ SATISFACTION_FEEDBACK_LLM_MODEL=""
 - `AUTH_URL`은 실제 접속 origin과 정확히 일치시킨다.
 - production에서는 `AUTH_DISABLED=true`를 넣어도 코드상 인증 우회가 켜지지 않는다.
 - `GOOGLE_SERVICE_ACCOUNT_JSON`은 현재 계약시트 canonical 경로가 아니므로 새 배포 기본값에 넣지 않는다.
-- 기본 배포에서는 `SALESMAP_SNAPSHOT_PATH=/app/data/salesmap_latest.db`를 사용한다. 단, GitHub에 DB snapshot을 올리지 않는 운영으로 바꾸면 persistent storage 경로를 사용한다.
+- `SALESMAP_SNAPSHOT_PATH=/app/runtime/salesmap_latest.db`를 사용한다.
+- `/app/runtime`은 Coolify persistent storage로 mount한다.
+- `SALESMAP_RELEASE_API_URL`은 Salesmap DB release tag API를 가리킨다.
+- `SALESMAP_RELEASE_ASSET_NAME`은 release asset 이름인 `salesmap_latest.db`를 사용한다.
 
 ## 6. Salesmap snapshot 처리
 
-기본 운영은 GitHub에 포함된 `data/salesmap_latest.db`를 Docker image에 같이 넣는다.
-`.dockerignore`는 다른 SQLite snapshot은 계속 제외하되, 이 canonical 파일만 예외로 허용한다.
+운영 snapshot은 GitHub release asset에서 다운로드하고 Coolify persistent storage에 보관한다.
 
-```dotenv
-SALESMAP_SNAPSHOT_PATH="/app/data/salesmap_latest.db"
+Coolify App에서 storage를 추가한다.
+
+```text
+Storages → Add
+Mount path: /app/runtime
 ```
 
-GitHub에 DB snapshot을 올리지 않는 운영으로 바꿀 경우에만 아래 중 하나로 배치한다.
-
-- Coolify persistent storage를 `/app/runtime`에 mount하고 `salesmap_latest.db`를 업로드
-- 서버의 bind mount를 `/app/runtime`으로 연결
-
-그 경우 환경변수는 아래처럼 바꾼다.
+Application env는 아래처럼 둔다.
 
 ```dotenv
 SALESMAP_SNAPSHOT_PATH="/app/runtime/salesmap_latest.db"
+SALESMAP_RELEASE_API_URL="https://api.github.com/repos/sabinanfranz/data_analysis_ai/releases/tags/salesmap-db-latest"
+SALESMAP_RELEASE_ASSET_NAME="salesmap_latest.db"
 ```
+
+Coolify scheduled task는 App container에서 아래 command를 실행한다.
+
+```bash
+sh /app/scripts/update-salesmap-snapshot.sh
+```
+
+이 스크립트는 release API에서 `salesmap_latest.db` asset URL과 digest를 읽고, 임시 파일로 다운로드한 뒤 `sha256`과 SQLite `PRAGMA integrity_check`를 통과할 때만 atomic move로 교체한다.
+
+초기 배포 직후에는 scheduled task를 수동으로 한 번 실행해서 `/app/runtime/salesmap_latest.db`를 먼저 만든다.
 
 Salesmap을 당장 쓰지 않을 경우 이 source는 smoke test에서 제외하고, Notion/Sheets/Fulltime/Ops Notes로 먼저 go-live를 검증한다.
 

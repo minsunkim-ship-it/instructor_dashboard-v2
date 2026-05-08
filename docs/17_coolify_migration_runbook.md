@@ -199,6 +199,8 @@ Coolify scheduled task는 App container에서 아래 command를 실행한다.
 sh /app/scripts/update-salesmap-snapshot.sh
 ```
 
+Docker image는 앱 서버 시작 시 `/app/runtime` ownership을 자동 보정한 뒤 서버 프로세스만 `node` 유저로 낮춰 실행한다. Coolify scheduled task는 기본 컨테이너 유저인 root로 실행되므로 별도 서버 host `chown` 없이 persistent storage에 쓸 수 있다.
+
 이 스크립트는 release API에서 `salesmap_latest.db` asset URL과 digest를 읽고, 임시 파일로 다운로드한 뒤 `sha256`과 SQLite `PRAGMA integrity_check`를 통과할 때만 atomic move로 교체한다. release API가 `403` 등으로 실패하면 direct asset URL로 fallback하며, 이 경우 digest 검증은 생략되고 SQLite integrity check는 계속 수행된다.
 
 GitHub가 `403`을 계속 반환하면 Application env에 `GITHUB_TOKEN`을 추가한다. public release rate limit 회피 용도라면 fine-grained token에 별도 repo write 권한은 필요 없다.

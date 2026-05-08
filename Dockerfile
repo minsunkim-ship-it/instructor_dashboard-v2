@@ -10,6 +10,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    gosu \
     openssl \
     sqlite3 \
   && rm -rf /var/lib/apt/lists/*
@@ -39,16 +40,16 @@ COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/data ./data
 COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/scripts/update-salesmap-snapshot.sh ./scripts/update-salesmap-snapshot.sh
+COPY --from=builder --chown=root:root /app/scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
 
 RUN mkdir -p /app/runtime \
   && chown node:node /app/runtime \
-  && chmod +x /app/scripts/update-salesmap-snapshot.sh
-
-USER node
+  && chmod +x /app/scripts/update-salesmap-snapshot.sh /app/scripts/docker-entrypoint.sh
 
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${PORT:-3000}/api/health" || exit 1
 
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["node", "server.js"]

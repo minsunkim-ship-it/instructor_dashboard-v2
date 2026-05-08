@@ -5,6 +5,9 @@ FROM node:22-bookworm-slim AS base
 WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_OPTIONS=--use-openssl-ca
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -13,6 +16,7 @@ RUN apt-get update \
     gosu \
     openssl \
     sqlite3 \
+  && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 FROM base AS deps

@@ -31,7 +31,7 @@
 ## 1. 저장소 선택
 
 ### 1-1. 기본 저장소
-- 기본 저장소는 Railway DB를 사용한다.
+- 기본 저장소는 Coolify PostgreSQL을 사용한다.
 - DB 엔진은 PostgreSQL을 전제로 한다.
 - ORM은 Prisma를 사용한다.
 

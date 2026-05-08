@@ -791,3 +791,20 @@
   - `docs/17_coolify_migration_runbook.md`
   - `scripts/update-salesmap-snapshot.sh`
   - `scripts/docker-entrypoint.sh`
+
+#### 현재 운영 배포 기준 문서의 Railway 표현을 Coolify로 전환
+- 결정:
+  - 정책/아키텍처/데이터 모델/파이프라인 문서에서 현재 운영 저장소와 배포처를 Coolify PostgreSQL 및 Coolify application으로 표기한다.
+  - 과거 의사결정 로그와 Railway에서 Coolify로 옮기는 migration runbook의 Railway 언급은 이력과 rollback 문맥으로 유지한다.
+- 배경:
+  - 운영 배포가 Railway에서 Coolify self-hosted로 이전되었고, 현재 Source of Truth 문서 일부가 Railway를 현재 운영처처럼 설명하고 있었다.
+- 반영 문서:
+  - `docs/01_core_policy.md`
+  - `docs/02_system_architecture.md`
+  - `docs/03_data_model.md`
+  - `docs/04_data_pipeline.md`
+  - `docs/09_work_split.md`
+  - `docs/11_wave1_tasks.md`
+  - `docs/12_solo_launch_readiness.md`
+  - `docs/13_smoke_test_runbook.md`
+  - `src/app/api/pipeline/notion/route.ts`

@@ -147,7 +147,7 @@ curl -X POST http://localhost:3000/api/refresh/cron \
 기대 결과:
 - HTTP 200 또는 partial
 - secret이 틀리면 HTTP 401
-- Railway cron에서 같은 방식으로 호출 가능
+- Coolify scheduled task 또는 외부 cron에서 같은 방식으로 호출 가능
 
 ### 3-2. healthcheck 테스트
 

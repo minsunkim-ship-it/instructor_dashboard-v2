@@ -62,7 +62,7 @@
 ## 4. Track A. 데이터 저장소 및 스키마
 
 ### 4-1. 책임 범위
-- Railway PostgreSQL 스키마 설계 및 생성
+- PostgreSQL 스키마 설계 및 생성
 - Prisma schema 설계 및 관리
 - Prisma migration 생성 및 적용
 - 엔티티 테이블 생성
@@ -265,7 +265,7 @@
 ### 13-1. Track A 선행 완료 기준
 
 - `prisma/schema.prisma`에 `03_data_model.md`의 전체 엔티티가 반영되어 있어야 한다.
-- Railway PostgreSQL에 스키마가 적용되어 있어야 한다.
+- 운영 PostgreSQL에 스키마가 적용되어 있어야 한다.
 - Prisma 클라이언트 생성(`prisma generate`)이 성공해야 한다.
 - Track A가 위 기준을 충족한 이후에만 Track B, C, D가 시작할 수 있다.
 

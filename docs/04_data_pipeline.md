@@ -53,7 +53,7 @@
 11. 운영 인텔리전스 통합
 12. 점수 계산
 13. 검증 및 자동 수정
-14. Railway DB 저장
+14. PostgreSQL DB 저장
 15. 마지막 정상 데이터 갱신
 16. 실패 시 fallback 처리
 
@@ -699,7 +699,7 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 
 ## 17. 저장 단계
 
-- 최종 마스터 레코드는 Railway DB에 저장한다.
+- 최종 마스터 레코드는 Coolify PostgreSQL에 저장한다.
 - 저장 대상 테이블은 최소 아래를 포함한다.
   - `instructors`
   - `teaching_histories`
@@ -779,7 +779,7 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 - `prisma/seed.ts`로 적재한 샘플 강사 5건이 남아 있으면 파일럿 적재 전에 비우고, 실데이터만 기준으로 다시 적재한다.
 - Notion 파이프라인 파일럿도 `pipeline_runs` 1건과 소스별 `source_sync_logs`를 실제로 기록한다.
 - 파일럿에서 단일 소스만 수집하더라도 실행 상태, 수집 건수, 반영 건수, 실패 메시지는 로그 테이블에 남겨 디버깅 기준으로 사용한다.
-- 풀 수집 결과를 Railway DB에 적재하고 이를 첫 마스터 데이터로 사용한다.
+- 풀 수집 결과를 Coolify PostgreSQL에 적재하고 이를 첫 마스터 데이터로 사용한다.
 
 ### 21-2. 운영 중 실행
 - 수동 새로고침을 지원한다.
@@ -793,7 +793,7 @@ v1에서 사용하는 세일즈맵 원천은 env `SALESMAP_SNAPSHOT_PATH`로 주
 
 파이프라인의 최종 산출물은 아래 두 가지다.
 
-- Railway DB에 저장된 최신 마스터 데이터
+- Coolify PostgreSQL에 저장된 최신 마스터 데이터
 - fallback용 마지막 정상 데이터 및 정적 baseline
 
 프론트엔드와 API는 이 산출물을 기준으로 동작한다.

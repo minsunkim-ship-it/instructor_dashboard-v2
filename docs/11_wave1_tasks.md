@@ -65,7 +65,7 @@ Wave 1은 Must-have(데모 가능한 MVP)와 Should-have(운영에 가까운 제
 ### T1. 스키마 보강
 
 - 상태: 에이전트 구현 완료, 검증 필요
-- 설명: `03_data_model.md`에 정의된 7개 누락 모델을 Prisma 스키마에 추가하고 Railway DB에 반영한다.
+- 설명: `03_data_model.md`에 정의된 7개 누락 모델을 Prisma 스키마에 추가하고 운영 PostgreSQL에 반영한다.
 - 주의:
   - 현재 `prisma/schema.prisma`는 baseline 반영이 끝난 상태다.
   - Wave 1 병렬 실행에서는 schema를 다시 수정하지 않고, 검증만 수행한다.

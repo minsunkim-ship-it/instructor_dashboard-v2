@@ -55,7 +55,7 @@
 - DB 접근 ORM은 Prisma를 사용한다.
 
 ### 2-3. 데이터 저장소
-- 기본 저장소: Railway PostgreSQL
+- 기본 저장소: Coolify PostgreSQL
 - 마스터 데이터, 이력 데이터, 설정 데이터, 검증 로그, 파이프라인 실행 로그를 저장한다.
 - 애플리케이션은 Prisma를 통해 PostgreSQL 스키마, 마이그레이션, 쿼리 접근을 관리한다.
 
@@ -74,7 +74,7 @@
 - 프론트엔드 웹 앱
 - API 레이어
 - 데이터 파이프라인 레이어
-- Railway PostgreSQL
+- Coolify PostgreSQL
 - 외부 데이터 소스
 - fallback 데이터 리소스
 
@@ -85,7 +85,7 @@ flowchart LR
   U["Internal User"] --> FE["Web App (React)"]
   FE --> AUTH["Google Login / Domain Check"]
   FE --> API["Application API"]
-  API --> DB["Railway PostgreSQL"]
+  API --> DB["Coolify PostgreSQL"]
   API --> PIPE["Data Pipeline / Refresh Flow"]
   PIPE --> DB
   PIPE --> SRC1["Contract Sheet"]
@@ -107,7 +107,7 @@ flowchart LR
 - 만족도 작성 UI와 새로고침 UI를 제공한다.
 
 ### 5-2. API 레이어
-- 프론트엔드 요청을 받아 Railway DB 기준으로 데이터를 반환한다.
+- 프론트엔드 요청을 받아 Coolify PostgreSQL 기준으로 데이터를 반환한다.
 - fallback 여부와 데이터 상태를 응답 meta에 포함한다.
 - 만족도 작성과 새로고침 요청을 처리한다.
 - 소스별 파이프라인 실행은 운영/관리용 내부 API로 분리할 수 있다.
@@ -117,9 +117,9 @@ flowchart LR
 - 강사 동일인 판정 및 병합을 수행한다.
 - 검증 및 자동 수정 로직을 적용한다.
 - 점수를 계산한다.
-- 최종 마스터 데이터를 Railway DB에 저장한다.
+- 최종 마스터 데이터를 Coolify PostgreSQL에 저장한다.
 
-### 5-4. Railway PostgreSQL
+### 5-4. Coolify PostgreSQL
 - 서비스의 Source of Record 역할을 한다.
 - 최신 마스터 데이터와 실행 로그를 저장한다.
 - 마지막 정상 저장 데이터를 유지한다.
@@ -131,12 +131,12 @@ flowchart LR
 ## 6. 배포 환경
 
 ### 6-1. 애플리케이션 배포
-- 웹 앱과 API는 Railway에 배포한다.
+- 웹 앱과 API는 Coolify self-hosted application으로 배포한다.
 - 프론트엔드와 API는 동일 서비스 도메인 또는 동일 프로젝트 배포 환경 아래에서 운영한다.
 
 ### 6-2. 데이터 저장소 배포
-- PostgreSQL은 Railway에서 운영한다.
-- 운영 데이터와 로그 데이터는 Railway DB에 저장한다.
+- PostgreSQL은 Coolify PostgreSQL resource에서 운영한다.
+- 운영 데이터와 로그 데이터는 Coolify PostgreSQL에 저장한다.
 
 ### 6-3. 파이프라인 실행 방식
 - 이번 버전은 수동 새로고침을 기본 실행 경로로 제공한다.
@@ -172,15 +172,15 @@ flowchart LR
 - Google OAuth 또는 Google 로그인 연동
 
 ### 8-3. 배포/운영 의존성
-- Railway 애플리케이션 배포 환경
-- Railway PostgreSQL
+- Coolify application deployment
+- Coolify PostgreSQL
 
 ## 9. 데이터 흐름
 
 ### 9-1. 일반 조회 흐름
 1. 사용자가 웹 앱에 로그인한다.
 2. 프론트엔드가 API를 호출한다.
-3. API는 Railway DB의 마스터 데이터를 읽는다.
+3. API는 Coolify PostgreSQL의 마스터 데이터를 읽는다.
 4. 데이터가 정상이면 live 또는 stored 모드로 응답한다.
 5. 문제가 있으면 fallback 정책에 따라 응답한다.
 

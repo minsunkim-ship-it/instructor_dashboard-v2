@@ -5,7 +5,7 @@
  * 04_data_pipeline.md 2절 전체 흐름 중 아래만 구현:
  *   2. 소스별 데이터 수집 (Notion만)
  *   3. 소스별 정규화
- *  11. Railway DB 저장 (instructors 테이블만)
+ *  11. PostgreSQL DB 저장 (instructors 테이블만)
  */
 
 import { NextResponse } from "next/server";

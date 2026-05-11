@@ -55,3 +55,6 @@ data/*.db
 prisma/*.db
 reports/*.json
 reports/*.tsv
+
+# Local snapshot — 강사 데이터 포함 (외부 공개 X)
+data/last-good-snapshot.json

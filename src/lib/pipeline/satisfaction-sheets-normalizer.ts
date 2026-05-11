@@ -3,9 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { buildCanonicalInstructorByNameMap } from "@/lib/instructor-name-canonical";
 import type { SatisfactionImportItemInput } from "@/lib/pipeline/satisfaction-applier";
 import { normalizeFeedbackNotesInImportItems } from "@/lib/pipeline/feedback-note-llm";
-import type {
-  SatisfactionSheetCollectResult,
-  SatisfactionSheetSourceDefinition,
+import {
+  shouldForcePendingReviewForSourceKind,
+  type SatisfactionSheetCollectResult,
+  type SatisfactionSheetSourceDefinition,
 } from "@/lib/pipeline/satisfaction-sheets-collector";
 
 interface DraftSatisfactionItem {
@@ -1145,34 +1146,13 @@ async function resolveInstructorByCourseAndDate(
   }
   const targetDate = new Date(`${responseDateStr}T00:00:00.000Z`);
 
-  // L0 — catalog expectedInstructors super-priority (사용자가 plan에 명시한 다중 강사 정보).
-  // 이 시트의 모든 응답을 명시된 강사 전원에게 분배. 회사명/일정 mismatch가 있어도 신뢰 우선.
-  // 예: 동국제강 시트는 박상훈 강의 데이터가 노션에 잘못 저장됐어도 expectedInstructors로 회복.
-  if (args.expectedInstructors && args.expectedInstructors.length > 0) {
-    const expectedNames = args.expectedInstructors.map((n) => n.trim()).filter((n) => n.length > 0);
-    if (expectedNames.length > 0) {
-      const expectedRows = await prisma.instructor.findMany({
-        where: { name: { in: expectedNames } },
-        select: { id: true, name: true, isPracticeCoach: true },
-      });
-      const expectedIds = expectedRows
-        .filter((h) => !h.isPracticeCoach)
-        .map((h) => h.id);
-      if (expectedIds.length >= 1) {
-        // Expert P0-2: 단일 강사일 때만 auto-accept. 다중 강사면 pending_review.
-        // 다중 강사 시트의 응답이 모든 강사에 동일 평균으로 분배되는 왜곡 차단.
-        return {
-          instructorIds: expectedIds,
-          resolutionLevel: "L0",
-          resolutionBasis:
-            expectedIds.length === 1
-              ? "catalog_expected_instructor_single"
-              : "catalog_expected_instructors_multi_pending",
-          shouldAutoAccept: expectedIds.length === 1,
-        };
-      }
-    }
-  }
+  // Expert P0-2: L0 super-priority 제거.
+  // 변경 전: expectedInstructors가 있으면 L1 평가 전에 즉시 매칭 (단일은 auto-accept).
+  // 변경 후: expectedInstructors는 candidate set 생성 용도만. L4 fallback에서만 사용.
+  // 이유:
+  //   - 전문가 권고 (line 374-378): "expectedInstructors는 candidate set 생성에만 사용. 자동 반영 금지."
+  //   - L1 일정 매칭 기회 보존: e.g., 박상훈만 동국제강 일정 매칭되면 L1 단일 auto-accept 가능.
+  //   - 다중 강사 시트(satisfactionLevel=course)는 일정 기반 L1/L2 매칭 후 pending이 정확.
 
   // L1 — companyName/courseName 정규화 매칭 + 일정 포함 (companyAliases 포함)
   const companyContains: string[] = [];
@@ -1455,7 +1435,12 @@ export async function normalizeSatisfactionSheetResults(
     if (resolution && resolution.instructorIds.length > 0) {
       // Expert P0-2/P0-3 정책: shouldAutoAccept=true 만 SatisfactionRecord로 가는 경로 진입.
       // shouldAutoAccept=false면 ImportItem만 생성, suggested_instructor_id 비움 → applier가 pending_review로 적재.
-      const shouldAutoAccept = resolution.shouldAutoAccept;
+      // Expert P0-7: unknown sourceKind 시트의 매칭은 항상 pending (운영자 검토 강제).
+      const definition = catalogByKey.get(draft.sourceKey);
+      const forcePending = shouldForcePendingReviewForSourceKind(
+        definition?.sourceKind
+      );
+      const shouldAutoAccept = resolution.shouldAutoAccept && !forcePending;
       for (const instructorId of resolution.instructorIds) {
         const instructorName = instructorNameById.get(instructorId) ?? "";
         const sessionOrDate =

@@ -49,16 +49,65 @@ export interface SatisfactionSheetSourceDefinition {
     | "lecture_management_sheet"
     | "syncup_sheet"
     | "unknown";
+  /**
+   * Expert P0-7 추가 필수 필드 — 만족도 시트의 평가 단위 명시.
+   *  - course: 과정 전체 만족도 (강사별 평균 반영 금지)
+   *  - session: 차수/세션별 만족도 (session-instructor mapping 있을 때만 강사 반영)
+   *  - instructor: 강사 만족도 (강사별 평균 반영 가능)
+   *  - unknown: 미분류 (pending_review)
+   */
+  satisfactionLevel?: "course" | "session" | "instructor" | "unknown";
+  /**
+   * Expert P0-7 추가 필수 필드 — instructor 매칭 모드 명시.
+   *  - auto_single: 단일 강사 + catalog hint 일치 시 auto-accept
+   *  - session_mapping: 차수별 강사 mapping 후 매칭 (별도 mapping table 필요)
+   *  - course_level: 강사별 매칭 없이 course-level 만족도로만 저장
+   *  - manual_per_response: 응답마다 운영자 매핑 (pending_review 기본)
+   */
+  instructorMappingMode?:
+    | "auto_single"
+    | "session_mapping"
+    | "course_level"
+    | "manual_per_response";
+  /**
+   * Expert P0-7 추가 필수 필드 — catalog entry 검증 상태.
+   *  - verified: 운영자가 검증한 정식 source
+   *  - candidate: 자동 발견 후보 (B 트랙 결과), 운영자 검토 필요
+   *  - deprecated: 사용 중단 (disabled=true와 별도, 폐기 사유 명시)
+   */
+  validationStatus?: "verified" | "candidate" | "deprecated";
   /** 시트별 운영 메모 (빈 템플릿 가능성 등). */
   note?: string;
 }
 
-/** sourceKind가 만족도 파이프라인 처리 대상인지 판별. */
+/**
+ * sourceKind가 만족도 파이프라인 처리 대상인지 판별.
+ * Expert P0-7 차단 규칙:
+ *   - google_forms_response: 수집 가능
+ *   - survey_summary: 수집 가능
+ *   - lecture_management_sheet / syncup_sheet: 수집 금지 (만족도 시트 아님)
+ *   - unknown: 수집 허용 (운영자 검토 위해), 매칭은 pending_review 강제
+ *   - undefined: backward compat — 기존 동작 유지
+ */
 export function isSatisfactionCompatibleSourceKind(
   kind: SatisfactionSheetSourceDefinition["sourceKind"]
 ): boolean {
-  if (kind === undefined) return true; // 미지정은 기존 동작 유지
-  return kind === "google_forms_response" || kind === "survey_summary";
+  if (kind === undefined) return true;
+  return (
+    kind === "google_forms_response" ||
+    kind === "survey_summary" ||
+    kind === "unknown" // 수집은 하되 매칭 단계에서 pending 처리
+  );
+}
+
+/**
+ * Expert P0-7: unknown sourceKind는 수집은 하되 매칭은 항상 pending.
+ * Normalizer가 shouldAutoAccept=false 강제할 때 사용.
+ */
+export function shouldForcePendingReviewForSourceKind(
+  kind: SatisfactionSheetSourceDefinition["sourceKind"]
+): boolean {
+  return kind === "unknown";
 }
 
 export interface SatisfactionSheetCollectResult {

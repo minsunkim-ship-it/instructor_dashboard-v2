@@ -1790,10 +1790,15 @@ export async function normalizeSatisfactionGmailResults(
           accessToken: await getAccessToken(),
         });
         if (fallback) {
+          // Expert P0-3: gmail fallback 매칭(회사+과정 substring/registry prefix/teaching history)은
+          // L3 substring auto-accept와 본질적으로 동일 → applier에 suggested_instructor_id 채우지 않음.
+          // candidateName/instructor_name은 검토용 hint로 노출, 매칭은 pending_review로 처리.
           item.candidateName = fallback.instructorHint;
           normalizedPayload.instructor_name = fallback.instructorHint;
-          normalizedPayload.suggested_instructor_id = fallback.suggestedInstructorId;
-          normalizedPayload.resolution_basis = fallback.resolutionBasis;
+          normalizedPayload.fallback_suggested_instructor_id =
+            fallback.suggestedInstructorId;
+          normalizedPayload.resolution_basis = `pending:${fallback.resolutionBasis}`;
+          normalizedPayload.should_auto_accept = false;
           if ((fallback.driveSheetNotes?.length ?? 0) > 0) {
             item.rawPayload.drive_sheet_notes = fallback.driveSheetNotes;
           }

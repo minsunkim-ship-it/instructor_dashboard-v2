@@ -43,6 +43,7 @@ async function collectEvidence(name: string): Promise<InstructorEvidence | null>
     include: {
       sourceLinks: {
         select: { sourceType: true, externalKey: true },
+        where: { externalKey: { not: null } },
       },
       teachingHistories: {
         select: { sourceRef: true, createdAt: true },
@@ -81,7 +82,9 @@ async function collectEvidence(name: string): Promise<InstructorEvidence | null>
     createdAt: inst.createdAt,
     teachingHistoryCount: inst._count.teachingHistories,
     satisfactionRecordCount: inst._count.satisfactionRecords,
-    sourceLinks: inst.sourceLinks,
+    sourceLinks: inst.sourceLinks.filter(
+      (l): l is { sourceType: string; externalKey: string } => l.externalKey !== null
+    ),
     recentTeachingCompanies: recentCompanies,
   };
 }

@@ -279,38 +279,43 @@ function buildRecentSatisfactionHistory(args: {
     companyName: string | null;
     courseName: string | null;
     score: number;
+    respondentCount?: number;
+    sourceType?: string;
+    sourceKey?: string | null;
+    resolutionLevel?: string | null;
+    resolutionBasis?: string | null;
+    sessionLabel?: string | null;
+    registryKey?: string | null;
   }>;
 }): Array<{
   observed_at: string | null;
   company_name: string | null;
   course_name: string | null;
   session_label: string | null;
+  score: number;
+  respondent_count: number;
+  source_type: string | null;
+  source_key: string | null;
+  resolution_level: string | null;
+  resolution_basis: string | null;
+  registry_key: string | null;
 }> {
-  return Array.from(
-    args.rows.reduce((map, row) => {
-      if (!row.observedAt) {
-        return map;
-      }
-      const key =
-        [row.observedAt, row.companyName ?? "", row.courseName ?? "", row.score].join("::");
-
-      if (!map.has(key)) {
-        map.set(key, {
-          observed_at: row.observedAt,
-          company_name: row.companyName,
-          course_name: row.courseName,
-          session_label: null,
-        });
-      }
-      return map;
-    }, new Map<string, {
-      observed_at: string | null;
-      company_name: string | null;
-      course_name: string | null;
-      session_label: string | null;
-    }>())
-  )
-    .map(([, item]) => item)
+  // P0-5: summary와 동일 row set 사용. 모든 record 1:1 노출 (dedupe 안 함 — 평균 근거 추적).
+  return args.rows
+    .filter((row) => row.observedAt !== null)
+    .map((row) => ({
+      observed_at: row.observedAt,
+      company_name: row.companyName,
+      course_name: row.courseName,
+      session_label: row.sessionLabel ?? null,
+      score: row.score,
+      respondent_count: row.respondentCount ?? 1,
+      source_type: row.sourceType ?? null,
+      source_key: row.sourceKey ?? null,
+      resolution_level: row.resolutionLevel ?? null,
+      resolution_basis: row.resolutionBasis ?? null,
+      registry_key: row.registryKey ?? null,
+    }))
     .sort((a, b) => (b.observed_at ?? "").localeCompare(a.observed_at ?? ""));
 }
 
@@ -322,7 +327,7 @@ function buildOperationalEvidenceSnapshots(args: {
   satisfactionImportRows: MatchedSatisfactionImportRow[];
 }): OperationalEvidenceSnapshot[] {
   const sheetRows = args.satisfactionImportRows.filter((row) =>
-    ["sheet_summary", "google_forms", "drive_satisfaction"].includes(row.sourceType)
+    ["sheet_summary", "google_forms"].includes(row.sourceType)
   );
   const gmailRows = args.satisfactionImportRows.filter(
     (row) => row.sourceType === "gmail_summary"
@@ -463,7 +468,7 @@ export async function GET(
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setUTCMonth(sixMonthsAgo.getUTCMonth() - 6);
 
-    const teachingHistoryAll = inst.teachingHistories.map((h) => ({
+    const teachingHistoryAllRaw = inst.teachingHistories.map((h) => ({
       id: h.id,
       company_name: h.companyName,
       course_name: h.courseName,
@@ -480,6 +485,42 @@ export async function GET(
       special_notes: h.specialNotes,
       source_type: h.sourceType,
     }));
+
+    // NULL 보강: 같은 course_id의 다른 행에서 회사/과정명/단가 추출해 채움.
+    // 단가 칩 매칭(textmatch)이 회사/과정명 substring을 사용하므로 NULL이면 매칭 자체 불가.
+    // 단가도 NULL이면 amount+date 폴백, fee_history 매칭 폴백 모두 작동 안 함 → 단가 칩 누락.
+    const courseIdLookup = new Map<
+      string,
+      { company: string | null; course: string | null; fee: number | null }
+    >();
+    for (const h of teachingHistoryAllRaw) {
+      if (!h.course_id) continue;
+      const existing = courseIdLookup.get(h.course_id);
+      const company = h.company_name ?? existing?.company ?? null;
+      const course = h.course_name ?? existing?.course ?? null;
+      const fee =
+        (typeof h.deal_fee_hourly === "number" ? h.deal_fee_hourly : null) ??
+        existing?.fee ??
+        null;
+      courseIdLookup.set(h.course_id, { company, course, fee });
+    }
+    const teachingHistoryAll = teachingHistoryAllRaw.map((h) => {
+      if (!h.course_id) return h;
+      const hasAll =
+        h.company_name &&
+        h.course_name &&
+        typeof h.deal_fee_hourly === "number";
+      if (hasAll) return h;
+      const same = courseIdLookup.get(h.course_id);
+      if (!same) return h;
+      return {
+        ...h,
+        company_name: h.company_name ?? same.company,
+        course_name: h.course_name ?? same.course,
+        deal_fee_hourly:
+          typeof h.deal_fee_hourly === "number" ? h.deal_fee_hourly : same.fee,
+      };
+    });
 
     const totalPaid = calculateTeachingHistoryTotalPaid(teachingHistoryAll, {
       fromDate: "2025-01-01",
@@ -661,7 +702,7 @@ export async function GET(
       where: {
         instructorDbId: inst.id,
         sourceType: {
-          in: ["sheet_summary", "google_forms", "gmail_summary", "drive_satisfaction"],
+          in: ["sheet_summary", "google_forms", "gmail_summary"],
         },
       },
       select: {
@@ -669,19 +710,55 @@ export async function GET(
         companyName: true,
         courseName: true,
         responseDate: true,
+        respondentCount: true,
+        sourceType: true,
+        sourceRef: true,
         createdAt: true,
       },
       orderBy: [{ responseDate: "desc" }, { createdAt: "desc" }],
     });
     const recentCanonicalSatisfactionRows = recentSatisfactionRecords
-      .map((row) => ({
-        score: Number(row.score),
-        observedAt:
-          row.responseDate?.toISOString().slice(0, 10) ??
-          row.createdAt.toISOString().slice(0, 10),
-        companyName: row.companyName,
-        courseName: row.courseName,
-      }))
+      .map((row) => {
+        const ref =
+          row.sourceRef && typeof row.sourceRef === "object" && !Array.isArray(row.sourceRef)
+            ? (row.sourceRef as Record<string, unknown>)
+            : {};
+        const sourceRefs = Array.isArray(ref.source_refs) ? ref.source_refs : [];
+        const firstNested =
+          sourceRefs.length > 0 && typeof sourceRefs[0] === "object" && sourceRefs[0]
+            ? ((sourceRefs[0] as Record<string, unknown>).source_ref as
+                | Record<string, unknown>
+                | undefined)
+            : undefined;
+        return {
+          score: Number(row.score),
+          observedAt:
+            row.responseDate?.toISOString().slice(0, 10) ??
+            row.createdAt.toISOString().slice(0, 10),
+          companyName: row.companyName,
+          courseName: row.courseName,
+          respondentCount: row.respondentCount ?? 1,
+          sourceType: row.sourceType,
+          sourceKey:
+            typeof firstNested?.source_key === "string"
+              ? (firstNested.source_key as string)
+              : null,
+          resolutionLevel:
+            typeof firstNested?.resolution_level === "string"
+              ? (firstNested.resolution_level as string)
+              : null,
+          resolutionBasis:
+            typeof firstNested?.resolution_basis === "string"
+              ? (firstNested.resolution_basis as string)
+              : null,
+          sessionLabel:
+            typeof firstNested?.session_label === "string"
+              ? (firstNested.session_label as string)
+              : null,
+          registryKey:
+            typeof ref.registry_key === "string" ? (ref.registry_key as string) : null,
+        };
+      })
       .filter((row) => row.observedAt >= recentSatisfactionCutoffDate);
     const satisfactionImportSearchClauses = [
       { candidateName: inst.name },
@@ -699,7 +776,7 @@ export async function GET(
             await prisma.satisfactionImportItem.findMany({
               where: {
                 sourceType: {
-                  in: ["sheet_summary", "google_forms", "gmail_summary", "drive_satisfaction"],
+                  in: ["sheet_summary", "google_forms", "gmail_summary"],
                 },
                 OR: satisfactionImportSearchClauses,
               },
@@ -745,17 +822,18 @@ export async function GET(
     const recentSatisfactionHistory = buildRecentSatisfactionHistory({
       rows: recentCanonicalSatisfactionRows,
     });
+    // P0-5: respondentCount 가중 평균. 25응답 × 4.5는 1응답 × 5.0 보다 무거워야.
+    let weightedScoreSum = 0;
+    let totalRespondents = 0;
+    for (const row of recentCanonicalSatisfactionRows) {
+      const w = row.respondentCount > 0 ? row.respondentCount : 1;
+      weightedScoreSum += row.score * w;
+      totalRespondents += w;
+    }
     const recentSatisfactionSummary = {
       avg:
-        recentCanonicalSatisfactionRows.length > 0
-          ? Math.round(
-              (recentCanonicalSatisfactionRows.reduce(
-                (sum, row) => sum + row.score,
-                0
-              ) /
-                recentCanonicalSatisfactionRows.length) *
-                100
-            ) / 100
+        totalRespondents > 0
+          ? Math.round((weightedScoreSum / totalRespondents) * 100) / 100
           : null,
       count: recentCanonicalSatisfactionRows.length,
       is_imputed: false,

@@ -111,6 +111,9 @@ model SatisfactionImportItem {
   id                   String    @id @default(uuid()) @db.Uuid
   runId                String    @map("run_id") @db.Uuid
   sourceType           String    @map("source_type")
+  /// P0-4: 시트 source_key (sourceRef.source_key) denormalized.
+  /// narrow include 안전 replace를 위해 컬럼 단위 필터 가능.
+  sourceKey            String?   @map("source_key")
   sourceRefKey         String?   @map("source_ref_key")
   sourceRef            Json      @default("{}") @map("source_ref")
   rawPayload           Json      @default("{}") @map("raw_payload")
@@ -127,6 +130,7 @@ model SatisfactionImportItem {
 
   @@index([runId])
   @@index([sourceType])
+  @@index([sourceKey])
   @@unique([sourceType, sourceRefKey])
   @@map("satisfaction_import_items")
 }

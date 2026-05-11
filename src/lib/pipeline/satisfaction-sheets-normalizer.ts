@@ -22,6 +22,13 @@ interface DraftSatisfactionItem {
   scoreNormalized?: number | null;
   respondentCount?: number | null;
   responseDate?: Date | string | null;
+  /**
+   * Phase B/C — generic forms 파서가 강사명 미상으로 emit한 draft.
+   * Phase C resolveInstructorByCourseAndDate 매칭 후 fan-out 시 사용.
+   */
+  needsInstructorResolution?: boolean;
+  /** Phase B에서 catalog에서 자동 추출한 차수 라벨 (registry_key/응답일자 fallback에 사용) */
+  sessionLabel?: string | null;
 }
 
 type FeedbackNoteType =
@@ -410,6 +417,9 @@ function buildWooriDraftItems(result: SatisfactionSheetCollectResult): DraftSati
       scoreNormalized,
       respondentCount: 1,
       responseDate,
+      // Phase C 다중 강사 fan-out 활성화
+      // catalog의 expectedInstructors=[유종훈, 김정수A, 정민수A]가 L0 super-priority로 작동
+      needsInstructorResolution: true,
     });
   }
 
@@ -681,6 +691,666 @@ async function resolveWooriInstructorSuggestion(args: {
   };
 }
 
+// ===========================================================================
+// Phase B — 일반 google_forms 파서 (회사·과정 무관 다중 강사 시트)
+// ===========================================================================
+
+/**
+ * 시트 title에서 회사명을 자동 추출. 첫 `_` 또는 `(`/`[` 앞까지를 회사로 본다.
+ * "(공유용)" 같은 접두 marker는 stripping. catalog의 companyName이 있으면 그 값을 우선.
+ */
+function deriveCompanyFromTitle(title: string): string {
+  let cleaned = title.trim();
+  cleaned = cleaned.replace(/^[★\(\[]?\s*공유용\s*[\)\]]?\s*[_\s-]*/u, "");
+  cleaned = cleaned.replace(/^[★\(\[]?\s*공유\s*[\)\]]?\s*[_\s-]*/u, "");
+  cleaned = cleaned.replace(/^[★]+\s*/u, "");
+  cleaned = cleaned.replace(/^\(([^)]+)\)\s*/u, "$1 "); // "(JB우리캐피탈)..." → "JB우리캐피탈 ..."
+  cleaned = cleaned.replace(/^\[([^\]]+)\]\s*/u, "$1 ");
+  // 첫 토큰: `_` 우선, 없으면 공백
+  const underscoreIndex = cleaned.indexOf("_");
+  if (underscoreIndex > 0) {
+    return cleaned.slice(0, underscoreIndex).trim();
+  }
+  const spaceIndex = cleaned.indexOf(" ");
+  if (spaceIndex > 0) {
+    return cleaned.slice(0, spaceIndex).trim();
+  }
+  return cleaned;
+}
+
+/**
+ * 시트 title에서 과정명을 자동 추출. 회사 prefix를 제거하고, "만족도조사", "(응답)" 등 trailing meta 제거.
+ */
+function deriveCourseFromTitle(title: string, companyName: string): string {
+  let cleaned = title.trim();
+  cleaned = cleaned.replace(/^[★\(\[]?\s*공유용\s*[\)\]]?\s*[_\s-]*/u, "");
+  cleaned = cleaned.replace(/^[★\(\[]?\s*공유\s*[\)\]]?\s*[_\s-]*/u, "");
+  cleaned = cleaned.replace(/^[★]+\s*/u, "");
+  cleaned = cleaned.replace(/^\(([^)]+)\)\s*/u, "");
+  cleaned = cleaned.replace(/^\[([^\]]+)\]\s*/u, "");
+  if (companyName && cleaned.startsWith(companyName)) {
+    cleaned = cleaned.slice(companyName.length).replace(/^[_\s-]+/u, "");
+  }
+  cleaned = cleaned.replace(/\s*\(응답\)\s*$/u, "");
+  cleaned = cleaned.replace(/\s*만족도\s*(조사|평가|설문)?(\s*결과)?(\s*\(응답\))?\s*$/u, "");
+  cleaned = cleaned.replace(/\s*설문\s*결과\s*$/u, "");
+  return cleaned.trim();
+}
+
+/**
+ * 시트 title에서 차수 라벨 자동 추출. catalog의 sessionLabel이 있으면 그 값을 우선.
+ *  - "Basic-6차수", "Basic 6차수" → "Basic-6차수"
+ *  - "6회차"
+ *  - "6기"
+ *  - 없으면 null (단일 차수로 처리)
+ */
+function deriveSessionLabelFromTitle(title: string): string | null {
+  const basicMatch = title.match(/(Basic|Pro|Plus|기본|심화|초급|중급|고급)\s*-?\s*(\d+)\s*(차수|기|회차)/iu);
+  if (basicMatch) {
+    return `${basicMatch[1]}-${basicMatch[2]}${basicMatch[3]}`;
+  }
+  const sessionMatch = title.match(/(\d+)\s*(차수|회차|기)/u);
+  if (sessionMatch) {
+    return `${sessionMatch[1]}${sessionMatch[2]}`;
+  }
+  return null;
+}
+
+/**
+ * 시트 헤더에서 score 컬럼 인덱스 찾기. 우선순위:
+ *   1. "전반적으로 만족|종합 만족도|전체 만족도|overall satisfaction"
+ *   2. "만족도" 포함 (단 "운영" 등 제외)
+ */
+function findScoreColumn(headerRow: string[]): number {
+  const priority1 = headerRow.findIndex((h) =>
+    /전반적으로\s*만족|종합\s*만족도|전체\s*만족도|overall\s*satisfaction/i.test(h)
+  );
+  if (priority1 !== -1) return priority1;
+  const priority2 = headerRow.findIndex((h) => /만족도/.test(h) && !/운영|관리/.test(h));
+  return priority2;
+}
+
+/**
+ * Phase B — 일반 google_forms 다중 강사 시트 파서.
+ *
+ * 입력: SatisfactionSheetCollectResult (sourceType === "google_forms")
+ * 처리:
+ *   - companyName/courseName/sessionLabel 자동 추출 (catalog 명시 우선)
+ *   - 응답 행마다 timestamp + score 추출 → DraftSatisfactionItem (candidateName=null)
+ *   - needsInstructorResolution=true 표시. Phase C가 resolveInstructorByCourseAndDate로 fan-out.
+ */
+function buildGenericGoogleFormsDraftItems(
+  result: SatisfactionSheetCollectResult
+): DraftSatisfactionItem[] {
+  const rows = result.rows;
+  if (rows.length < 2) return [];
+
+  const headerRow = rows[0] ?? [];
+  const timestampIndex = headerRow.findIndex((h) => /타임스탬프|timestamp/i.test(h));
+  const scoreIndex = findScoreColumn(headerRow);
+  if (timestampIndex === -1 || scoreIndex === -1) return [];
+
+  const definition = result.definition;
+  const companyName =
+    definition.companyName?.trim() || deriveCompanyFromTitle(definition.title);
+  const courseName =
+    definition.courseName?.trim() || deriveCourseFromTitle(definition.title, companyName);
+  const sessionLabel =
+    definition.sessionLabel?.trim() || deriveSessionLabelFromTitle(definition.title);
+
+  if (!companyName || !courseName) return [];
+
+  const items: DraftSatisfactionItem[] = [];
+  for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex] ?? [];
+    const timestampRaw = getCell(row, timestampIndex);
+    const scoreRaw = getCell(row, scoreIndex);
+    if (!timestampRaw && !scoreRaw) continue;
+
+    const scoreNormalized = parseNumber(scoreRaw);
+    const responseDate = parseDateValue(timestampRaw);
+    if (scoreNormalized === null || !responseDate) continue;
+
+    const feedbackNotes = dedupeFeedbackNotes(
+      extractRowFeedbackNotes({
+        headerRow,
+        row,
+        rowIndex: rowIndex + 1,
+      })
+    );
+
+    const sessionOrDate = sessionLabel ?? responseDate.toISOString().slice(0, 10);
+
+    // candidateName=null → Phase C가 채움. registry_key는 fan-out 시 instructorName 포함하여 재계산.
+    items.push({
+      sourceKey: definition.key,
+      sourceType: definition.sourceType,
+      sourceRefKey: `${definition.sourceType}:${definition.spreadsheetId}:${definition.worksheetGid}:r${rowIndex + 1}`,
+      sourceRef: {
+        spreadsheet_id: definition.spreadsheetId,
+        worksheet_gid: definition.worksheetGid,
+        row_number: rowIndex + 1,
+        source_key: definition.key,
+        session_label: sessionLabel ?? null,
+      },
+      rawPayload: {
+        timestamp_raw: timestampRaw,
+        score_raw: scoreRaw,
+        feedback_notes: feedbackNotes,
+      },
+      normalizedPayload: {
+        company_name: companyName,
+        course_name: courseName,
+        session_label: sessionLabel ?? null,
+        response_date: responseDate.toISOString().slice(0, 10),
+        respondent_count: 1,
+        source_family: "generic_google_forms",
+      },
+      candidateCompanyName: companyName,
+      candidateCourseName: courseName,
+      scoreRaw,
+      scoreNormalized,
+      respondentCount: 1,
+      responseDate,
+      needsInstructorResolution: true,
+      sessionLabel,
+    });
+  }
+
+  return items;
+}
+
+/**
+ * Phase B 확장 — 강의관리 시트 (sheet_summary, 회사 전용 파서 없음) 일반 파서.
+ *
+ * 강의관리 시트 구조: 강사명/만족도/일자 컬럼이 있는 row-based summary 시트.
+ *  - 차수 또는 일자 column이 row identity
+ *  - 강사 column이 candidateName
+ *  - 만족도 column이 score
+ *  - companyName/courseName은 catalog 또는 title에서 derive
+ */
+function buildGenericSheetSummaryDraftItems(
+  result: SatisfactionSheetCollectResult
+): DraftSatisfactionItem[] {
+  const rows = result.rows;
+  if (rows.length < 2) return [];
+
+  // 헤더 row 찾기 — 첫 5 row 중 "강사" 또는 "만족도" 또는 "차수" 키워드가 가장 많이 나오는 row.
+  let headerRowIndex = -1;
+  let bestScore = 0;
+  for (let i = 0; i < Math.min(5, rows.length); i++) {
+    const row = rows[i] ?? [];
+    let score = 0;
+    for (const cell of row) {
+      const c = (cell ?? "").trim();
+      if (/강사/.test(c)) score += 2;
+      if (/만족도/.test(c)) score += 2;
+      if (/차수|회차|기수/.test(c)) score += 1;
+      if (/일자|일정|날짜/.test(c)) score += 1;
+      if (/응답|인원|점수/.test(c)) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      headerRowIndex = i;
+    }
+  }
+  if (headerRowIndex === -1 || bestScore < 4) return [];
+
+  const headerRow = rows[headerRowIndex] ?? [];
+  const findCol = (re: RegExp): number =>
+    headerRow.findIndex((h) => re.test((h ?? "").trim()));
+
+  const instructorCol = findCol(/^강사(?:명)?$/);
+  const scoreCol =
+    findCol(/^전체\s*만족도|^종합\s*만족도|^전반적/) >= 0
+      ? findCol(/^전체\s*만족도|^종합\s*만족도|^전반적/)
+      : findCol(/만족도/);
+  const sessionCol = findCol(/차수|회차|기수/);
+  const dateCol = findCol(/교육\s*일자|일정\s*시작|시작\s*일|일자|날짜/);
+  const respondentCol = findCol(/응답.*인원|만족도.*인원|참여.*인원|인원/);
+
+  if (instructorCol === -1 || scoreCol === -1) return [];
+
+  const definition = result.definition;
+  const companyName =
+    definition.companyName?.trim() || deriveCompanyFromTitle(definition.title);
+  const courseName =
+    definition.courseName?.trim() || deriveCourseFromTitle(definition.title, companyName);
+  if (!companyName || !courseName) return [];
+
+  const items: DraftSatisfactionItem[] = [];
+  for (let rowIndex = headerRowIndex + 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex] ?? [];
+    const instructorRaw = getCell(row, instructorCol);
+    const scoreRaw = getCell(row, scoreCol);
+    if (!instructorRaw || !scoreRaw) continue;
+
+    const scoreNormalized = parseNumber(scoreRaw);
+    if (scoreNormalized === null) continue;
+
+    const sessionLabel =
+      sessionCol >= 0 ? getCell(row, sessionCol) : null;
+    const dateRaw = dateCol >= 0 ? getCell(row, dateCol) : null;
+    const responseDate = dateRaw ? parseDateValue(dateRaw) : null;
+    const respondentCount =
+      respondentCol >= 0 ? parseNumber(getCell(row, respondentCol)) : null;
+
+    const sessionOrDate =
+      (sessionLabel && sessionLabel.length > 0
+        ? sessionLabel
+        : responseDate?.toISOString().slice(0, 10)) ?? `r${rowIndex + 1}`;
+
+    const registryKey = buildSatisfactionRegistryKey({
+      sourceFamily: definition.key,
+      companyName,
+      courseName,
+      sessionOrDate,
+      instructorName: instructorRaw,
+    });
+
+    const feedbackNotes = dedupeFeedbackNotes(
+      extractRowFeedbackNotes({
+        headerRow,
+        row,
+        rowIndex: rowIndex + 1,
+      })
+    );
+
+    items.push({
+      sourceKey: definition.key,
+      sourceType: definition.sourceType,
+      sourceRefKey: `${definition.sourceType}:${definition.spreadsheetId}:${definition.worksheetGid}:r${rowIndex + 1}`,
+      sourceRef: {
+        spreadsheet_id: definition.spreadsheetId,
+        worksheet_gid: definition.worksheetGid,
+        row_number: rowIndex + 1,
+        source_key: definition.key,
+        session_label: sessionLabel,
+      },
+      rawPayload: {
+        instructor_raw: instructorRaw,
+        score_raw: scoreRaw,
+        date_raw: dateRaw,
+        session_raw: sessionLabel,
+        feedback_notes: feedbackNotes,
+      },
+      normalizedPayload: {
+        registry_key: registryKey,
+        company_name: companyName,
+        course_name: courseName,
+        session_label: sessionLabel,
+        response_date: responseDate?.toISOString().slice(0, 10) ?? null,
+        instructor_name: instructorRaw,
+        respondent_count: respondentCount ?? 1,
+        source_family: "generic_sheet_summary",
+      },
+      candidateName: instructorRaw,
+      candidateCompanyName: companyName,
+      candidateCourseName: courseName,
+      scoreRaw,
+      scoreNormalized,
+      respondentCount: respondentCount ?? 1,
+      responseDate,
+      sessionLabel,
+    });
+  }
+
+  return items;
+}
+
+/**
+ * dispatchSheetParser — 시트 sourceKey/sourceType에 따라 적절한 파서 라우터.
+ *  우선순위: KT > 현대모비스 > 우리은행 > generic google_forms > generic sheet_summary
+ *
+ *  generic 파서가 처리한 시트는 reports/satisfaction-coverage 에 generic_dispatch=true 표시 가능.
+ */
+function dispatchSheetParser(
+  result: SatisfactionSheetCollectResult
+): {
+  items: DraftSatisfactionItem[];
+  parserUsed: string;
+  note?: string;
+  status?: "success" | "partial" | "skipped";
+} {
+  const key = result.definition.key;
+
+  if (key === "kt_ai_campus") {
+    return { items: buildKtDraftItems(result), parserUsed: "kt" };
+  }
+
+  if (key === "woori_ax_forms") {
+    return {
+      items: buildWooriDraftItems(result),
+      parserUsed: "woori",
+      note: "다중 강사 fan-out (catalog expectedInstructors L0 super-priority)",
+    };
+  }
+
+  if (key.startsWith("hyundai_mobis_llm")) {
+    const items =
+      key === "hyundai_mobis_llm" || key === "hyundai_mobis_llm_2"
+        ? buildHyundaiSummaryDraftItems(result)
+        : buildHyundaiFormsDraftItems(result);
+    return {
+      items,
+      parserUsed: "hyundai",
+      note:
+        items.length > 0
+          ? "만족도 폴더 차수별 파일을 강의관리 시트의 김인섭/LLM 과정 메타와 연결"
+          : "현대모비스 파일 구조 파싱 실패",
+      status: items.length > 0 ? "success" : "partial",
+    };
+  }
+
+  // 일반 google_forms 다중 강사 시트
+  if (result.definition.sourceType === "google_forms") {
+    const items = buildGenericGoogleFormsDraftItems(result);
+    return {
+      items,
+      parserUsed: "generic_google_forms",
+      note:
+        items.length > 0
+          ? "일반 google_forms 파서로 처리 — Phase C에서 강사 매칭"
+          : "일반 google_forms 파서 — 헤더(타임스탬프/만족도) 인식 실패",
+      status: items.length > 0 ? "success" : "partial",
+    };
+  }
+
+  // 일반 강의관리 시트 (sheet_summary, 회사 전용 파서 없음)
+  if (result.definition.sourceType === "sheet_summary") {
+    const items = buildGenericSheetSummaryDraftItems(result);
+    return {
+      items,
+      parserUsed: "generic_sheet_summary",
+      note:
+        items.length > 0
+          ? "일반 강의관리 시트 파서 — 강사+만족도 헤더 매칭"
+          : "일반 강의관리 시트 — 헤더(강사/만족도) 인식 실패",
+      status: items.length > 0 ? "success" : "partial",
+    };
+  }
+
+  return { items: [], parserUsed: "none", note: "지원 안 되는 시트", status: "skipped" };
+}
+
+// ===========================================================================
+// Phase C — 다중 강사 차수 자동 매칭 알고리즘 (회사·과정 무관 일반화)
+// ===========================================================================
+
+interface ResolveByCourseAndDateArgs {
+  candidateCompanyName: string | null;
+  candidateCourseName: string | null;
+  responseDate: Date | string | null;
+  /** catalog instructorHint (L4 폴백, 단일 강사) */
+  instructorHint?: string | null;
+  /** catalog expectedInstructors (L4 폴백, 다중 강사 명시) */
+  expectedInstructors?: string[];
+  /** catalog companyAliases (L1/L3 매칭 보강) */
+  companyAliases?: string[];
+}
+
+interface ResolveByCourseAndDateResult {
+  instructorIds: string[];
+  /** L0~L5 단계명 — reports에 표시 (L0 = catalog expectedInstructors super-priority) */
+  resolutionLevel: "L0" | "L1" | "L2" | "L3" | "L4" | "L5";
+  resolutionBasis: string;
+  /**
+   * Expert P0-2/P0-3: 자동 수락 여부.
+   *  true  → SatisfactionRecord 자동 생성 (auto_accepted)
+   *  false → ReviewRegistry pending_review로 적재. Record 안 만듦.
+   *
+   * 정책 (정확성 우선):
+   *  - L0 단일 expectedInstructor (length=1) → auto-accept (강사별 평균 신뢰)
+   *  - L0 다중 (length>=2) → pending_review (다중 강사 시 강사별 만족도 왜곡)
+   *  - L1 단일 강사 일정 정확 매칭 → auto-accept
+   *  - L1 다중 강사 → pending_review (P0-3)
+   *  - L2/L3/L4 모두 → pending_review (자동 매칭 신뢰 X)
+   *  - L5 → 빈 배열
+   */
+  shouldAutoAccept: boolean;
+}
+
+/**
+ * normalizeFeeLinkText 와 같은 텍스트 정규화 (대소문자/공백/특수문자 제거).
+ */
+function normalizeForMatch(value: string | null | undefined): string {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/[\s()[\]{}.,:;'"`~!?+\-_/\\|]+/g, "")
+    .trim();
+}
+
+/**
+ * 강사 매칭 자동 알고리즘 — 회사·과정 무관, 다중 강사 일반화.
+ *
+ * L1 (정확): contract sheet 행 중 [startDate, endDate] ⊇ responseDate 만족 강사 후보 ≥ 1명 → 모두 매칭
+ * L2 (일정 근접): L1 0명 → responseDate 와 가장 가까운 일정 강사 매칭 (14일 이내)
+ * L3 (텍스트 부분): L2 0명 → companyName/courseName 부분 매칭 강사 모두 (광범위 폴백)
+ * L4 (catalog hint): L3 0명 → instructorHint 단일 강사 매칭
+ * L5 (실패 보고): 모두 실패 → 빈 배열 + 사유
+ */
+async function resolveInstructorByCourseAndDate(
+  args: ResolveByCourseAndDateArgs
+): Promise<ResolveByCourseAndDateResult> {
+  const companyName = args.candidateCompanyName?.trim() ?? "";
+  const courseName = args.candidateCourseName?.trim() ?? "";
+  const responseDateStr = toDateOnlyString(args.responseDate);
+  if (!responseDateStr || (!companyName && !courseName)) {
+    return {
+      instructorIds: [],
+      resolutionLevel: "L5",
+      resolutionBasis: "missing_input",
+      shouldAutoAccept: false,
+    };
+  }
+  const targetDate = new Date(`${responseDateStr}T00:00:00.000Z`);
+
+  // L0 — catalog expectedInstructors super-priority (사용자가 plan에 명시한 다중 강사 정보).
+  // 이 시트의 모든 응답을 명시된 강사 전원에게 분배. 회사명/일정 mismatch가 있어도 신뢰 우선.
+  // 예: 동국제강 시트는 박상훈 강의 데이터가 노션에 잘못 저장됐어도 expectedInstructors로 회복.
+  if (args.expectedInstructors && args.expectedInstructors.length > 0) {
+    const expectedNames = args.expectedInstructors.map((n) => n.trim()).filter((n) => n.length > 0);
+    if (expectedNames.length > 0) {
+      const expectedRows = await prisma.instructor.findMany({
+        where: { name: { in: expectedNames } },
+        select: { id: true, name: true, isPracticeCoach: true },
+      });
+      const expectedIds = expectedRows
+        .filter((h) => !h.isPracticeCoach)
+        .map((h) => h.id);
+      if (expectedIds.length >= 1) {
+        // Expert P0-2: 단일 강사일 때만 auto-accept. 다중 강사면 pending_review.
+        // 다중 강사 시트의 응답이 모든 강사에 동일 평균으로 분배되는 왜곡 차단.
+        return {
+          instructorIds: expectedIds,
+          resolutionLevel: "L0",
+          resolutionBasis:
+            expectedIds.length === 1
+              ? "catalog_expected_instructor_single"
+              : "catalog_expected_instructors_multi_pending",
+          shouldAutoAccept: expectedIds.length === 1,
+        };
+      }
+    }
+  }
+
+  // L1 — companyName/courseName 정규화 매칭 + 일정 포함 (companyAliases 포함)
+  const companyContains: string[] = [];
+  const courseTokens: string[] = [];
+  if (companyName) companyContains.push(companyName);
+  if (args.companyAliases) companyContains.push(...args.companyAliases.filter((a) => a.trim()));
+  if (courseName) {
+    // 토큰화: 길이 ≥ 2인 토큰만 추출
+    courseTokens.push(...courseName.split(/\s+/).filter((t) => t.length >= 2));
+  }
+
+  const orFilters: Array<Record<string, unknown>> = [];
+  for (const company of companyContains) {
+    orFilters.push({ companyName: { contains: company } });
+  }
+  if (courseName) orFilters.push({ courseName: { contains: courseName } });
+
+  const courseTokenAndFilter =
+    courseTokens.length >= 2
+      ? courseTokens.slice(0, 4).map((t) => ({ courseName: { contains: t } }))
+      : [];
+
+  // L1 후보: 응답일자 포함 일정
+  const l1Rows = await prisma.teachingHistory.findMany({
+    where: {
+      AND: [
+        ...(orFilters.length > 0 ? [{ OR: orFilters }] : []),
+        { OR: [{ startDate: null }, { startDate: { lte: targetDate } }] },
+        { OR: [{ endDate: null }, { endDate: { gte: targetDate } }] },
+        ...(courseTokenAndFilter.length > 0 ? [{ AND: courseTokenAndFilter }] : []),
+      ],
+    },
+    select: {
+      instructorDbId: true,
+      instructor: { select: { isPracticeCoach: true } },
+    },
+  });
+  const l1Ids = Array.from(
+    new Set(
+      l1Rows
+        .filter((r) => !r.instructor.isPracticeCoach)
+        .map((r) => r.instructorDbId)
+        .filter(Boolean)
+    )
+  );
+  if (l1Ids.length >= 1) {
+    // Expert P0-3: L1 단일 강사만 auto-accept. 다중이면 pending_review.
+    return {
+      instructorIds: l1Ids,
+      resolutionLevel: "L1",
+      resolutionBasis:
+        l1Ids.length === 1
+          ? "schedule_overlap_single_instructor"
+          : "schedule_overlap_multi_instructor_pending",
+      shouldAutoAccept: l1Ids.length === 1,
+    };
+  }
+
+  // L2 — 일정 근접 (14일 이내)
+  const candidateRows = await prisma.teachingHistory.findMany({
+    where: {
+      AND: [
+        ...(orFilters.length > 0 ? [{ OR: orFilters }] : []),
+        ...(courseTokenAndFilter.length > 0 ? [{ AND: courseTokenAndFilter }] : []),
+      ],
+    },
+    select: {
+      instructorDbId: true,
+      startDate: true,
+      endDate: true,
+      instructor: { select: { isPracticeCoach: true } },
+    },
+  });
+  const filteredCandidates = candidateRows.filter(
+    (r) => !r.instructor.isPracticeCoach
+  );
+  const targetMs = targetDate.getTime();
+  let bestDist = Number.MAX_SAFE_INTEGER;
+  const bestIds = new Set<string>();
+  for (const r of filteredCandidates) {
+    const startMs = r.startDate?.getTime() ?? null;
+    const endMs = r.endDate?.getTime() ?? null;
+    let dist = Number.MAX_SAFE_INTEGER;
+    if (startMs !== null && endMs !== null) {
+      if (targetMs < startMs) dist = startMs - targetMs;
+      else if (targetMs > endMs) dist = targetMs - endMs;
+      else dist = 0;
+    } else if (startMs !== null) {
+      dist = Math.abs(targetMs - startMs);
+    } else if (endMs !== null) {
+      dist = Math.abs(targetMs - endMs);
+    }
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIds.clear();
+      if (r.instructorDbId) bestIds.add(r.instructorDbId);
+    } else if (dist === bestDist && r.instructorDbId) {
+      bestIds.add(r.instructorDbId);
+    }
+  }
+  const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000;
+  if (bestIds.size >= 1 && bestDist <= fourteenDaysMs) {
+    // Expert P0-3: L2 (일정 근접)은 자동 매칭 X. pending_review.
+    return {
+      instructorIds: Array.from(bestIds),
+      resolutionLevel: "L2",
+      resolutionBasis: `schedule_proximity_${Math.round(bestDist / (24 * 60 * 60 * 1000))}d_pending`,
+      shouldAutoAccept: false,
+    };
+  }
+
+  // L3 — 회사+과정 부분 매칭 (가장 광범위)
+  const l3Rows = await prisma.teachingHistory.findMany({
+    where: {
+      OR: orFilters.length > 0 ? orFilters : undefined,
+    },
+    select: {
+      instructorDbId: true,
+      instructor: { select: { isPracticeCoach: true } },
+    },
+  });
+  const l3Ids = Array.from(
+    new Set(
+      l3Rows
+        .filter((r) => !r.instructor.isPracticeCoach)
+        .map((r) => r.instructorDbId)
+        .filter(Boolean)
+    )
+  );
+  if (l3Ids.length >= 1) {
+    // Expert P0-3: L3 (회사+과정 substring)은 자동 매칭 X. pending_review.
+    return {
+      instructorIds: l3Ids,
+      resolutionLevel: "L3",
+      resolutionBasis: "company_course_substring_pending",
+      shouldAutoAccept: false,
+    };
+  }
+
+  // L4 — catalog instructorHint 또는 expectedInstructors 폴백
+  const namesToTry = new Set<string>();
+  if (args.instructorHint?.trim()) namesToTry.add(args.instructorHint.trim());
+  if (args.expectedInstructors) {
+    for (const n of args.expectedInstructors) {
+      if (n?.trim()) namesToTry.add(n.trim());
+    }
+  }
+  if (namesToTry.size > 0) {
+    const hints = await prisma.instructor.findMany({
+      where: { name: { in: Array.from(namesToTry) } },
+      select: { id: true, name: true, isPracticeCoach: true },
+    });
+    const ids = hints
+      .filter((h) => !h.isPracticeCoach)
+      .map((h) => h.id);
+    if (ids.length >= 1) {
+      // Expert P0-3: L4 (instructorHint/expectedInstructors fallback)은 자동 매칭 X. pending_review.
+      return {
+        instructorIds: ids,
+        resolutionLevel: "L4",
+        resolutionBasis:
+          ids.length === 1
+            ? "catalog_instructor_hint_pending"
+            : "catalog_expected_instructors_pending",
+        shouldAutoAccept: false,
+      };
+    }
+  }
+
+  // L5 — 실패
+  return {
+    instructorIds: [],
+    resolutionLevel: "L5",
+    resolutionBasis: "no_match_after_all_fallbacks",
+    shouldAutoAccept: false,
+  };
+}
+
 export async function normalizeSatisfactionSheetResults(
   results: SatisfactionSheetCollectResult[]
 ): Promise<{
@@ -706,47 +1376,17 @@ export async function normalizeSatisfactionSheetResults(
       continue;
     }
 
-    if (result.definition.key === "kt_ai_campus") {
-      const items = buildKtDraftItems(result);
-      draftItems.push(...items);
-      sourceSummaries.push(buildSourceSummary(result.definition, result.rows.length, items));
-      continue;
-    }
-
-    if (result.definition.key === "woori_ax_forms") {
-      const items = buildWooriDraftItems(result);
-      draftItems.push(...items);
-      sourceSummaries.push(
-        buildSourceSummary(
-          result.definition,
-          result.rows.length,
-          items,
-          "강사명 없음으로 1차는 pending registry로 적재"
-        )
-      );
-      continue;
-    }
-
-    if (result.definition.key.startsWith("hyundai_mobis_llm")) {
-      const items =
-        result.definition.key === "hyundai_mobis_llm" ||
-        result.definition.key === "hyundai_mobis_llm_2"
-          ? buildHyundaiSummaryDraftItems(result)
-          : buildHyundaiFormsDraftItems(result);
-      draftItems.push(...items);
-      sourceSummaries.push(
-        buildSourceSummary(
-          result.definition,
-          result.rows.length,
-          items,
-          items.length > 0
-            ? "만족도 폴더 차수별 파일을 강의관리 시트의 김인섭/LLM 과정 메타와 연결"
-            : "현대모비스 파일 구조 파싱 실패",
-          items.length > 0 ? "success" : "partial"
-        )
-      );
-      continue;
-    }
+    const dispatch = dispatchSheetParser(result);
+    draftItems.push(...dispatch.items);
+    sourceSummaries.push(
+      buildSourceSummary(
+        result.definition,
+        result.rows.length,
+        dispatch.items,
+        dispatch.note,
+        dispatch.status
+      )
+    );
   }
 
   const candidateNames = Array.from(
@@ -770,8 +1410,129 @@ export async function normalizeSatisfactionSheetResults(
     )
   );
 
-  const items: SatisfactionImportItemInput[] = [];
+  // Phase C — 다중 강사 매칭에 필요한 catalog 정보 (instructorHint 등) 매핑
+  const catalogByKey = new Map<string, SatisfactionSheetSourceDefinition>();
+  for (const result of results) {
+    catalogByKey.set(result.definition.key, result.definition);
+  }
+  // 강사 ID → 이름 lookup (registry_key에 instructorName 인코딩용)
+  const allInstructorIdsNeeded = new Set<string>();
+  // Phase 1 pass — 모든 draft에 대해 resolution을 미리 수행하여 ID 수집 후 이름 lookup
+  const resolutionByDraftIndex: Array<ResolveByCourseAndDateResult | null> = [];
   for (const draft of draftItems) {
+    if (!draft.needsInstructorResolution) {
+      resolutionByDraftIndex.push(null);
+      continue;
+    }
+    const definition = catalogByKey.get(draft.sourceKey);
+    const resolution = await resolveInstructorByCourseAndDate({
+      candidateCompanyName: draft.candidateCompanyName ?? null,
+      candidateCourseName: draft.candidateCourseName ?? null,
+      responseDate: draft.responseDate ?? null,
+      instructorHint: definition?.instructorHint ?? null,
+      expectedInstructors: definition?.expectedInstructors,
+      companyAliases: definition?.companyAliases,
+    });
+    for (const id of resolution.instructorIds) allInstructorIdsNeeded.add(id);
+    resolutionByDraftIndex.push(resolution);
+  }
+  const resolvedInstructorRecords =
+    allInstructorIdsNeeded.size > 0
+      ? await prisma.instructor.findMany({
+          where: { id: { in: Array.from(allInstructorIdsNeeded) } },
+          select: { id: true, name: true },
+        })
+      : [];
+  const instructorNameById = new Map<string, string>(
+    resolvedInstructorRecords.map((row) => [row.id, row.name])
+  );
+
+  const items: SatisfactionImportItemInput[] = [];
+  for (let i = 0; i < draftItems.length; i++) {
+    const draft = draftItems[i]!;
+    const resolution = resolutionByDraftIndex[i];
+
+    if (resolution && resolution.instructorIds.length > 0) {
+      // Expert P0-2/P0-3 정책: shouldAutoAccept=true 만 SatisfactionRecord로 가는 경로 진입.
+      // shouldAutoAccept=false면 ImportItem만 생성, suggested_instructor_id 비움 → applier가 pending_review로 적재.
+      const shouldAutoAccept = resolution.shouldAutoAccept;
+      for (const instructorId of resolution.instructorIds) {
+        const instructorName = instructorNameById.get(instructorId) ?? "";
+        const sessionOrDate =
+          draft.sessionLabel ??
+          (draft.responseDate
+            ? toDateOnlyString(draft.responseDate) ?? "unknown"
+            : "unknown");
+        const registryKey = buildSatisfactionRegistryKey({
+          sourceFamily: draft.sourceKey,
+          companyName: draft.candidateCompanyName ?? "",
+          courseName: draft.candidateCourseName ?? "",
+          sessionOrDate,
+          // pending_review 케이스는 instructor 별 registry 분리 (운영자 검토 시 candidate별 결정 가능)
+          instructorName,
+        });
+        items.push({
+          sourceType: draft.sourceType,
+          sourceRefKey: `${draft.sourceRefKey}:i${instructorId}`,
+          sourceRef: {
+            ...draft.sourceRef,
+            resolved_instructor_id: instructorId,
+            resolution_level: resolution.resolutionLevel,
+            resolution_basis: resolution.resolutionBasis,
+            should_auto_accept: shouldAutoAccept,
+          },
+          rawPayload: draft.rawPayload,
+          normalizedPayload: {
+            ...draft.normalizedPayload,
+            registry_key: registryKey,
+            instructor_name: instructorName,
+            // shouldAutoAccept=true 만 suggested_instructor_id 채움 → applier가 auto_accepted 처리.
+            // false면 candidate만 적재 → pending_review.
+            ...(shouldAutoAccept ? { suggested_instructor_id: instructorId } : {}),
+            resolution_basis: resolution.resolutionBasis,
+            resolution_level: resolution.resolutionLevel,
+            should_auto_accept: shouldAutoAccept,
+          },
+          candidateName: instructorName,
+          candidateCompanyName: draft.candidateCompanyName ?? null,
+          candidateCourseName: draft.candidateCourseName ?? null,
+          scoreRaw: draft.scoreRaw ?? null,
+          scoreNormalized: draft.scoreNormalized ?? null,
+          respondentCount: draft.respondentCount ?? null,
+          responseDate: draft.responseDate ?? null,
+        });
+      }
+      continue;
+    }
+
+    if (resolution && resolution.instructorIds.length === 0) {
+      // L5 — 실패 보고. pending으로 적재 (운영팀 catalog 정정 인계).
+      items.push({
+        sourceType: draft.sourceType,
+        sourceRefKey: draft.sourceRefKey,
+        sourceRef: {
+          ...draft.sourceRef,
+          resolution_level: "L5",
+          resolution_basis: resolution.resolutionBasis,
+        },
+        rawPayload: draft.rawPayload,
+        normalizedPayload: {
+          ...draft.normalizedPayload,
+          resolution_level: "L5",
+          resolution_basis: resolution.resolutionBasis,
+        },
+        candidateName: draft.candidateName ?? null,
+        candidateCompanyName: draft.candidateCompanyName ?? null,
+        candidateCourseName: draft.candidateCourseName ?? null,
+        scoreRaw: draft.scoreRaw ?? null,
+        scoreNormalized: draft.scoreNormalized ?? null,
+        respondentCount: draft.respondentCount ?? null,
+        responseDate: draft.responseDate ?? null,
+      });
+      continue;
+    }
+
+    // 기존 회사 전용 파서 경로 (KT/현대모비스/우리은행) — candidateName 또는 woori 폴백
     let suggestedInstructorId = draft.candidateName
       ? instructorByName.get(draft.candidateName) ?? null
       : null;

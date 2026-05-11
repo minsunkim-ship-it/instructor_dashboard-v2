@@ -1145,6 +1145,10 @@ export async function recomputeAggregatesForInstructors(
       dateLabel: true,
       totalSessions: true,
       totalHours: true,
+      // dealFeeHourly + contractType: isNonTeachingCompensationItem 패치 작동에 필수.
+      // 누락 시 박상훈 동국홀딩스 같은 복합 detailType 행이 NON_TEACHING으로 오분류.
+      dealFeeHourly: true,
+      contractType: true,
     },
   });
 
@@ -1183,6 +1187,9 @@ export async function recomputeAggregatesForInstructors(
       date_label: row.dateLabel,
       total_sessions: row.totalSessions,
       total_hours: row.totalHours !== null ? Number(row.totalHours) : null,
+      // 박상훈 패치 작동을 위해 deal_fee_hourly/contract_type 포함 필수
+      deal_fee_hourly: row.dealFeeHourly,
+      contract_type: row.contractType,
     }));
 
     const courseCountableItems = rows
@@ -1199,6 +1206,9 @@ export async function recomputeAggregatesForInstructors(
         date_label: row.dateLabel,
         total_sessions: row.totalSessions,
         total_hours: row.totalHours !== null ? Number(row.totalHours) : null,
+        // 박상훈 패치 작동을 위해 deal_fee_hourly/contract_type 포함 필수
+        deal_fee_hourly: row.dealFeeHourly,
+        contract_type: row.contractType,
       }));
 
     const contractSheetRows = countGroupedTeachingHistories(courseCountableItems, {

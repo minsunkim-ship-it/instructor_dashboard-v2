@@ -381,6 +381,75 @@ function getRegistryKeyFromSourceRef(sourceRef: Prisma.JsonValue): string | null
   return getString(record.registry_key);
 }
 
+/**
+ * SatisfactionImportItem 또는 SatisfactionRecord의 sourceRef에서 시트 source_key 추출.
+ *
+ * 실제 DB 구조 (snapshot으로 확인):
+ *   - SatisfactionImportItem.sourceRef = { source_key, row_number, spreadsheet_id, ... }  (1-depth flat)
+ *   - SatisfactionRecord.sourceRef     = { registry_key, source_refs: [{ source_ref: { source_key, ... } }] }  (2-depth nested)
+ *   - gmail_summary record             = { source_refs: [{ source_ref: { thread_id, ... } }] }  (source_key 없음)
+ *
+ * narrow include 안전성 보장: 현재 run에서 처리한 source_key의 record만 sync 대상.
+ */
+function getSourceKeyFromSourceRef(sourceRef: Prisma.JsonValue): string | null {
+  const record = asRecord(sourceRef);
+
+  // Path 1: 1-depth flat (SatisfactionImportItem)
+  const direct = getString(record.source_key);
+  if (direct) return direct;
+
+  // Path 2: 2-depth nested in source_refs array (SatisfactionRecord)
+  const sourceRefs = record.source_refs;
+  if (Array.isArray(sourceRefs) && sourceRefs.length > 0) {
+    const first = asRecord(sourceRefs[0]);
+
+    // 2a: source_refs[].source_ref.source_key (정상 nested record path)
+    const nested = asRecord(first.source_ref);
+    const nestedKey = getString(nested.source_key);
+    if (nestedKey) return nestedKey;
+
+    // 2b: source_refs[].source_key (안전망 - 미래 변경 대비)
+    const flatInArray = getString(first.source_key);
+    if (flatInArray) return flatInArray;
+  }
+
+  return null;
+}
+
+/**
+ * 현재 run의 registries에서 처리한 source_key 집합 추출.
+ * registry.sourceRefs는 InputJsonValue[] 형태로 각 entry가 1-depth flat 구조이거나 nested일 수 있음.
+ * narrow include 시 다른 시트의 record를 보호하기 위한 scope.
+ */
+function getRunSourceKeys(
+  registries: Array<{ sourceRefs: Prisma.InputJsonValue[] }>
+): Set<string> {
+  const keys = new Set<string>();
+  for (const reg of registries) {
+    for (const ref of reg.sourceRefs) {
+      if (!ref || typeof ref !== "object" || Array.isArray(ref)) continue;
+      const refObj = ref as Record<string, unknown>;
+
+      // Path 1: flat
+      const direct = getString(refObj.source_key);
+      if (direct) {
+        keys.add(direct);
+        continue;
+      }
+
+      // Path 2: nested under source_ref
+      const nested = refObj.source_ref;
+      if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+        const nestedKey = getString(
+          (nested as Record<string, unknown>).source_key
+        );
+        if (nestedKey) keys.add(nestedKey);
+      }
+    }
+  }
+  return keys;
+}
+
 function inferCompanyFromCourseName(courseName: string | null | undefined): string | null {
   const cleaned = getString(courseName);
   if (!cleaned) return null;
@@ -542,12 +611,20 @@ async function syncSatisfactionCanonical(
   );
 
   const acceptedKeys = new Set(acceptedRegistries.map((registry) => registry.registryKey));
+  // narrow include 안전성: 이번 run에서 처리한 source_key 만 scope.
+  // 다른 시트(예: 동국제강)의 record는 절대 건드리지 않는다.
+  const runSourceKeys = getRunSourceKeys(registries);
   const touchedInstructorIds = new Set<string>();
   let canonicalRecordsUpserted = 0;
   const recordIdsToDelete = existingRecords
     .filter((record) => {
       const registryKey = getRegistryKeyFromSourceRef(record.sourceRef);
-      return registryKey !== null && !acceptedKeys.has(registryKey);
+      if (registryKey === null) return false;
+      if (acceptedKeys.has(registryKey)) return false;
+      // 현재 run의 source_key가 아니면 보존 (다른 시트 record 보호).
+      const recordSourceKey = getSourceKeyFromSourceRef(record.sourceRef);
+      if (!recordSourceKey || !runSourceKeys.has(recordSourceKey)) return false;
+      return true;
     })
     .map((record) => {
       touchedInstructorIds.add(record.instructorDbId);
@@ -762,29 +839,54 @@ export async function applySatisfactionImports({
   );
 
   if (replaceableSourceTypes.length > 0) {
-    await prisma.satisfactionImportItem.deleteMany({
-      where: {
-        sourceType: { in: replaceableSourceTypes },
-      },
-    });
+    // P0-4: replace 범위를 (sourceType, sourceKey) 단위로 축소.
+    // 현재 run의 source_key만 삭제 → 다른 시트 ImportItem 보존.
+    const replaceableSourceKeys = Array.from(
+      new Set(
+        replaceableItems
+          .map((item) => {
+            const ref = (item.sourceRef ?? {}) as Record<string, unknown>;
+            const key = ref.source_key;
+            return typeof key === "string" && key.length > 0 ? key : null;
+          })
+          .filter((value): value is string => Boolean(value))
+      )
+    );
+    if (replaceableSourceKeys.length > 0) {
+      await prisma.satisfactionImportItem.deleteMany({
+        where: {
+          sourceType: { in: replaceableSourceTypes },
+          sourceKey: { in: replaceableSourceKeys },
+        },
+      });
+    }
+    // source_key 없는 replaceable item은 안전망: 삭제하지 않음 (현재 데이터 없음, 미래 source_key missing 케이스 발생 시 별도 alarm)
 
     for (let index = 0; index < replaceableItems.length; index += SATISFACTION_CREATE_BATCH_SIZE) {
       const batch = replaceableItems.slice(index, index + SATISFACTION_CREATE_BATCH_SIZE);
       await prisma.satisfactionImportItem.createMany({
-        data: batch.map((item) => ({
-          runId,
-          sourceType: item.sourceType,
-          sourceRefKey: item.sourceRefKey ?? null,
-          sourceRef: toInputJsonObject(item.sourceRef ?? {}),
-          rawPayload: toInputJsonObject(item.rawPayload ?? {}),
-          normalizedPayload: toInputJsonObject(item.normalizedPayload),
-          candidateName: item.candidateName ?? null,
-          candidateCompanyName: item.candidateCompanyName ?? null,
-          candidateCourseName: item.candidateCourseName ?? null,
-          scoreRaw: item.scoreRaw ?? null,
-          scoreNormalized: item.sanitizedScore,
-          responseDate: item.responseDateValue,
-        })),
+        data: batch.map((item) => {
+          const ref = (item.sourceRef ?? {}) as Record<string, unknown>;
+          const sourceKey =
+            typeof ref.source_key === "string" && ref.source_key.length > 0
+              ? ref.source_key
+              : null;
+          return {
+            runId,
+            sourceType: item.sourceType,
+            sourceKey,
+            sourceRefKey: item.sourceRefKey ?? null,
+            sourceRef: toInputJsonObject(item.sourceRef ?? {}),
+            rawPayload: toInputJsonObject(item.rawPayload ?? {}),
+            normalizedPayload: toInputJsonObject(item.normalizedPayload),
+            candidateName: item.candidateName ?? null,
+            candidateCompanyName: item.candidateCompanyName ?? null,
+            candidateCourseName: item.candidateCourseName ?? null,
+            scoreRaw: item.scoreRaw ?? null,
+            scoreNormalized: item.sanitizedScore,
+            responseDate: item.responseDateValue,
+          };
+        }),
         skipDuplicates: true,
       });
     }

@@ -1149,8 +1149,11 @@ export async function POST(request: Request) {
     const isSatisfactionOnly = scope === "satisfaction";
     const isPostprocessOnly = scope === "postprocess";
     const isSnapshotOnly = scope === "snapshot_only";
-    const isLightweightOnly =
-      scope === null || scope === "all" || scope === "lightweight";
+    // Expert P0-6: 기본 refresh에 contract_sheet/instructor_dispatch_sheet/postprocess 포함.
+    // 정확성 우선 — 강의 이력이 stale인 채로 만족도 매칭이 일어나지 않게.
+    // scope=lightweight 명시 시만 제외 (운영자 빠른 새로고침용).
+    const isLightweightOnly = scope === "lightweight";
+    const isFullDefault = scope === null || scope === "all";
     const defaultTriggeredBy = isSnapshotOnly
       ? "api:/api/refresh?scope=snapshot_only"
       : isSatisfactionOnly
@@ -1324,7 +1327,25 @@ export async function POST(request: Request) {
         ]
       : isSatisfactionOnly
       ? [{ name: "satisfaction", fn: (ctx) => runSatisfaction(run.id, ctx), timeoutMs: 180_000 }]
+      : isFullDefault
+      ? [
+          // Expert P0-6: 기본 refresh = 강의 이력 + 만족도 + postprocess 모두 포함.
+          { name: "notion", fn: runNotion, timeoutMs: 180_000 },
+          { name: "fulltime", fn: async () => runFulltime(), timeoutMs: 15_000 },
+          { name: "ops_notes", fn: async () => runOpsNotes(), timeoutMs: 15_000 },
+          { name: "salesmap", fn: async () => runSalesmap(), timeoutMs: 20_000 },
+          { name: "contract_sheet", fn: runContractSheet, timeoutMs: 150_000 },
+          {
+            name: "instructor_dispatch_sheet",
+            fn: runInstructorDispatchSheet,
+            timeoutMs: 150_000,
+          },
+          { name: "slack", fn: (ctx) => runSlack(run.id, ctx), timeoutMs: 150_000 },
+          { name: "gmail", fn: (ctx) => runGmail(run.id, ctx), timeoutMs: 150_000 },
+          { name: "satisfaction", fn: (ctx) => runSatisfaction(run.id, ctx), timeoutMs: 180_000 },
+        ]
       : [
+          // scope=lightweight: 빠른 새로고침. 강의 이력 stale 가능성 있음 (운영자 명시 선택).
           { name: "notion", fn: runNotion, timeoutMs: 180_000 },
           { name: "fulltime", fn: async () => runFulltime(), timeoutMs: 15_000 },
           { name: "ops_notes", fn: async () => runOpsNotes(), timeoutMs: 15_000 },
@@ -1333,7 +1354,8 @@ export async function POST(request: Request) {
           { name: "gmail", fn: (ctx) => runGmail(run.id, ctx), timeoutMs: 150_000 },
           { name: "satisfaction", fn: (ctx) => runSatisfaction(run.id, ctx), timeoutMs: 180_000 },
         ];
-    const shouldRunPostStages = isPostprocessOnly;
+    // Expert P0-6: 기본/teaching_history/satisfaction 모두에서 postprocess 자동 실행.
+    const shouldRunPostStages = isPostprocessOnly || isFullDefault;
     const totalStages = sources.length + (shouldRunPostStages ? 5 : 0);
 
     for (const [index, source] of sources.entries()) {

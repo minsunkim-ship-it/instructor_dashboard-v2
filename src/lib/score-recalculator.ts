@@ -204,10 +204,13 @@ async function loadTeachingHistoryCounts(): Promise<{
       dateLabel: true,
       totalSessions: true,
       totalHours: true,
+      // 박상훈 패치 작동을 위해 deal_fee_hourly/contract_type 포함
+      dealFeeHourly: true,
+      contractType: true,
     },
   });
 
-  const allByInstructor = new Map<string, Array<{
+  type CountableItem = {
     company_name: string | null;
     course_name: string | null;
     course_id: string | null;
@@ -219,23 +222,15 @@ async function loadTeachingHistoryCounts(): Promise<{
     date_label: string | null;
     total_sessions: number | null;
     total_hours: number | null;
-  }>>();
-  const courseCountByInstructor = new Map<string, Array<{
-    company_name: string | null;
-    course_name: string | null;
-    course_id: string | null;
-    detail_type: string | null;
-    fee_extra: string | null;
-    special_notes: string | null;
-    start_date: string | null;
-    end_date: string | null;
-    date_label: string | null;
-    total_sessions: number | null;
-    total_hours: number | null;
-  }>>();
+    // 박상훈 패치 작동을 위해 필수
+    deal_fee_hourly: number | null;
+    contract_type: string | null;
+  };
+  const allByInstructor = new Map<string, CountableItem[]>();
+  const courseCountByInstructor = new Map<string, CountableItem[]>();
 
   for (const row of histories) {
-    const item = {
+    const item: CountableItem = {
       company_name: row.companyName,
       course_name: row.courseName,
       course_id: row.courseId,
@@ -247,6 +242,8 @@ async function loadTeachingHistoryCounts(): Promise<{
       date_label: row.dateLabel,
       total_sessions: row.totalSessions,
       total_hours: row.totalHours !== null ? Number(row.totalHours) : null,
+      deal_fee_hourly: row.dealFeeHourly,
+      contract_type: row.contractType,
     };
 
     const allBucket = allByInstructor.get(row.instructorDbId) ?? [];

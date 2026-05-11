@@ -1,0 +1,181 @@
+{
+  "_meta": {
+    "description": "만족도 시트 카탈로그 — ACCESSIBLE_SATISFACTION_SHEET_SOURCES와 merge되어 사용된다. 우선순위는 코드 내부 SOURCES 가 먼저, 그 다음 이 파일.",
+    "imported_from": "work/instructor-dashboard/forms_satisfaction.json (구 시스템, 폐기 예정)",
+    "imported_at": "2026-05-04",
+    "default_worksheet_gid": 0,
+    "default_range": "A1:Z1000",
+    "notes": "worksheetGid/range는 default. 시트 read 실패 시 ValidationIssue 자동 등록 + 수동 보강."
+  },
+  "sources": [
+    {
+      "key": "jangcheolwon_deeplearning_anomaly_2026_04",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "1wF3EVPP0obNSQMdeTwG98F2D3STEIR_EdPTG7DgEIcw",
+      "worksheetGid": 0,
+      "title": "딥러닝 실습 : 정형 데이터 이상치 탐지_장철원 강사님_설문결과",
+      "range": "A1:Z1000",
+      "instructorHint": "장철원"
+    },
+    {
+      "key": "jangcheolwon_linear_algebra_2026_03",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "1Ya5N2dBRJG5nBtUsqERcUyth7ifbdpbvp2j34ftZXDM",
+      "worksheetGid": 0,
+      "title": "머신러닝·딥러닝을 위한 선형대수 기초_장철원 강사님_설문결과",
+      "range": "A1:Z1000",
+      "instructorHint": "장철원"
+    },
+    {
+      "key": "jangcheolwon_deeplearning_basic_2026_04",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "1iS2kTzd5In6mxGAYsQiB49xsfAOZ1ExWgYDqeL-O_N4",
+      "worksheetGid": 0,
+      "title": "딥러닝 기초 : 핵심 원리와 기본 모델_장철원 강사님_설문결과",
+      "range": "A1:Z1000",
+      "instructorHint": "장철원"
+    },
+    {
+      "key": "jangcheolwon_prob_stat_2023_06",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "19_3iw9cKgH5yMpdI-5eINY_8IxsHt3MEDgWCS3_bFx4",
+      "worksheetGid": 0,
+      "title": "데이터분석을 위한 확률/통계 설문 결과_장철원 강사님",
+      "range": "A1:Z1000",
+      "instructorHint": "장철원"
+    },
+    {
+      "key": "jangcheolwon_ml_prob_stat_2024_05",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "13QtyroTgDk7ABqq01MhdDRJAosAjreHkYGwYQbSSSxg",
+      "worksheetGid": 0,
+      "title": "머신러닝을 위한 필수 확률/통계_장철원 강사님_설문결과",
+      "range": "A1:Z1000",
+      "instructorHint": "장철원"
+    },
+    {
+      "key": "jangcheolwon_data_prob_stat_2023_08",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "16QWm3e3OaOBKLSWWSsrek_jSAadoSebYxXIT5swe0Pc",
+      "worksheetGid": 0,
+      "title": "데이터분석을 위한 확률/통계_장철원 강사님_설문결과",
+      "range": "A1:Z1000",
+      "instructorHint": "장철원",
+      "note": "raw text 빈 시트일 가능성. 처리 실패 시 ValidationIssue 등록."
+    },
+    {
+      "key": "dongkuk_steel_dk_ai_2026_03_6",
+      "sourceType": "google_forms",
+      "spreadsheetId": "1xKIMHh8Qewsaxqh0ttpPFQeysQOCv9KbgLEmJyL-7TE",
+      "worksheetGid": 0,
+      "title": "동국제강그룹_2026 DK AI 역량강화 아카데미 Basic-6차수과정 만족도조사(응답)",
+      "range": "A1:AB1000",
+      "instructorHint": null,
+      "companyName": "동국제강그룹",
+      "courseName": "2026 DK AI 역량강화 아카데미",
+      "sessionLabel": "Basic-6차수",
+      "companyAliases": ["동국홀딩스", "동국제강", "동국"],
+      "expectedInstructors": ["박상훈", "공지연", "최진영B"],
+      "note": "다중 강사 강의 — Phase B/C plan에 따라 박상훈/공지연/최진영B 명시 (사용자 plan 인계)"
+    },
+    {
+      "key": "dongkuk_steel_dk_ai_2026_04_7",
+      "sourceType": "google_forms",
+      "spreadsheetId": "1H4mQffvAHIIkCaudkmZ6fWl7wVyYtZbJ3MMMQHAOslc",
+      "worksheetGid": 0,
+      "title": "동국제강그룹_2026 DK AI 역량강화 아카데미 Basic-7차수과정 만족도조사(응답)",
+      "range": "A1:AB1000",
+      "instructorHint": null,
+      "companyName": "동국제강그룹",
+      "courseName": "2026 DK AI 역량강화 아카데미",
+      "sessionLabel": "Basic-7차수",
+      "companyAliases": ["동국홀딩스", "동국제강", "동국"],
+      "expectedInstructors": ["박상훈", "공지연", "최진영B"],
+      "note": "다중 강사 강의 — Phase B/C plan에 따라 박상훈/공지연/최진영B 명시 (사용자 plan 인계)"
+    },
+    {
+      "key": "dearforce_ai_literacy_2026_01",
+      "sourceType": "google_forms",
+      "spreadsheetId": "1TJ2qo2fgxCdzHgLNP5Z-IVkxL4x5V0GrAysQQfwZ6Lc",
+      "worksheetGid": 0,
+      "title": "(공유용) 디어포스_리더 대상 AI 리터러시 과정_만족도 평가(응답)",
+      "range": "A1:AB1000",
+      "instructorHint": null
+    },
+    {
+      "key": "jb_woori_capital_ax_2026_05",
+      "sourceType": "google_forms",
+      "spreadsheetId": "1ZgjxURh3EHZfTzgVjA9bkJc6AYd9l4Gb",
+      "worksheetGid": 0,
+      "title": "(JB우리캐피탈)AX기획 역량 강화 교육 만족도 조사",
+      "range": "A1:AB1000",
+      "instructorHint": null
+    },
+    {
+      "key": "samsung_life_ai_hackathon",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "1LxQQvj2GKnSxgkdz4HZjvvQ2JQlYvWrYMGZMX9PmmQk",
+      "worksheetGid": 0,
+      "title": "[삼성생명] AI 해커톤 프로젝트 만족도 설문 결과 및 raw data",
+      "range": "A1:Z1000",
+      "instructorHint": null
+    },
+    {
+      "key": "hyundai_motor_research_awareness",
+      "sourceType": "google_forms",
+      "spreadsheetId": "1xdNpqncUSBtmzEN8_UPh7QRWqpWbGuxvuxftCpOi0tU",
+      "worksheetGid": 0,
+      "title": "★[현대자동차 연구소] Awareness 전환 설문 결과",
+      "range": "A1:Z1000",
+      "instructorHint": null
+    },
+    {
+      "key": "shinsegae_property_genai_2025",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "1juJbifY2OVdEJqD04LhZXDohcsTqM8knwGhHByXSmyc",
+      "worksheetGid": 0,
+      "title": "2506-2508_신세게프라퍼티_전사 대상 생성형 AI_강의관리 시트",
+      "range": "A1:Z1000",
+      "instructorHint": null,
+      "disabled": true,
+      "sourceKind": "lecture_management_sheet",
+      "note": "강의관리 시트 (만족도 시트 아님) — catalog 오등록."
+    },
+    {
+      "key": "woori_bank_ax_2604_2611",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "1_ejiRquc49YdsFyBQYWwcpQ-4eiBCrXw",
+      "worksheetGid": 0,
+      "title": "2604~2611_우리은행 AX 전문가 양성 과정_강의관리 시트",
+      "range": "A1:Z1000",
+      "instructorHint": null,
+      "disabled": true,
+      "sourceKind": "lecture_management_sheet",
+      "note": "강의관리 시트 (만족도 시트 아님) — 시트 내용 검수 결과 만족도 데이터 없음. catalog 오등록. 진짜 만족도 시트 별도 등록 필요."
+    },
+    {
+      "key": "shinsegae_dept_genai_2503_2505",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "1wNu58RdO4Gtt4cOFoPTQUqBbFY1WU78m",
+      "worksheetGid": 0,
+      "title": "2503~2505_신세계백화점_승급자 대상 생성형AI 과정_강의관리 시트",
+      "range": "A1:Z1000",
+      "instructorHint": null,
+      "disabled": true,
+      "sourceKind": "lecture_management_sheet",
+      "note": "강의관리 시트 (만족도 시트 아님) — 김덕진/김용담 강사 일정만 있고 만족도 점수 없음. catalog 오등록."
+    },
+    {
+      "key": "home_n_service_dt_2506_2512",
+      "sourceType": "sheet_summary",
+      "spreadsheetId": "1ank_wF-S3MklrLtBOdEtxxaTWnOhA_T-",
+      "worksheetGid": 0,
+      "title": "2506~2512_홈앤서비스_AI 활용 DT전문가 양성과정_강의관리 시트",
+      "range": "A1:Z1000",
+      "instructorHint": null,
+      "disabled": true,
+      "sourceKind": "lecture_management_sheet",
+      "note": "강의관리 시트 (만족도 시트 아님) — 강사 일정/체크리스트/운영캘린더만 있고 만족도 점수 없음. catalog 오등록."
+    }
+  ]
+}

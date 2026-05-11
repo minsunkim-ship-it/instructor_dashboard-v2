@@ -124,6 +124,14 @@ export interface RecentSatisfactionHistoryItem {
   company_name: string | null;
   course_name: string | null;
   session_label: string | null;
+  // P0-5: 만족도 평균 근거 추적용 필드 (필수). 운영자가 평균값의 출처를 직접 확인 가능.
+  score?: number;
+  respondent_count?: number;
+  source_type?: string;
+  source_key?: string | null;
+  resolution_level?: string | null;
+  resolution_basis?: string | null;
+  registry_key?: string | null;
 }
 
 export interface NotionMemoDiagnostics {

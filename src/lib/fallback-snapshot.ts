@@ -155,33 +155,62 @@ export async function writeStoredFallbackSnapshot(
 }
 
 export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnapshot> {
-  const [instructors, latestFinishedRun, allSyncLogs] = await Promise.all([
-    prisma.instructor.findMany({
-      include: {
-        teachingHistories: {
-          orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
+  const [instructors, latestFinishedRun, allSyncLogs, allSatisfactionRecords] =
+    await Promise.all([
+      prisma.instructor.findMany({
+        include: {
+          teachingHistories: {
+            orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
+          },
+          feeHistories: {
+            orderBy: [{ effectiveDate: "desc" }, { createdAt: "desc" }],
+          },
+          instructorIntelligence: true,
         },
-        feeHistories: {
-          orderBy: [{ effectiveDate: "desc" }, { createdAt: "desc" }],
+        orderBy: [{ score: "desc" }, { rank: "asc" }, { name: "asc" }],
+      }),
+      prisma.pipelineRun.findFirst({
+        where: { status: { in: ["success", "partial", "failed"] } },
+        orderBy: { finishedAt: "desc" },
+      }),
+      prisma.sourceSyncLog.findMany({
+        orderBy: [{ startedAt: "desc" }, { finishedAt: "desc" }],
+      }),
+      // P0-5: summary/history 동일 row set 사용 — record 일괄 로드.
+      prisma.satisfactionRecord.findMany({
+        select: {
+          id: true,
+          instructorDbId: true,
+          score: true,
+          companyName: true,
+          courseName: true,
+          responseDate: true,
+          respondentCount: true,
+          comment: true,
+          sourceType: true,
+          sourceRef: true,
+          createdAt: true,
         },
-        instructorIntelligence: true,
-      },
-      orderBy: [{ score: "desc" }, { rank: "asc" }, { name: "asc" }],
-    }),
-    prisma.pipelineRun.findFirst({
-      where: { status: { in: ["success", "partial", "failed"] } },
-      orderBy: { finishedAt: "desc" },
-    }),
-    prisma.sourceSyncLog.findMany({
-      orderBy: [{ startedAt: "desc" }, { finishedAt: "desc" }],
-    }),
-  ]);
+        orderBy: [{ responseDate: "desc" }, { createdAt: "desc" }],
+      }),
+    ]);
 
   const generatedAt =
     latestFinishedRun?.finishedAt?.toISOString() ?? new Date().toISOString();
   const today = new Date().toISOString().split("T")[0];
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setUTCMonth(sixMonthsAgo.getUTCMonth() - 6);
+  const sixMonthsAgoIso = sixMonthsAgo.toISOString().split("T")[0];
+
+  // 강사별 record map (cutoff 안만)
+  const recordsByInstructor = new Map<string, typeof allSatisfactionRecords>();
+  for (const r of allSatisfactionRecords) {
+    const inWindow = r.responseDate ? r.responseDate >= sixMonthsAgo : true;
+    if (!inWindow) continue;
+    const list = recordsByInstructor.get(r.instructorDbId) ?? [];
+    list.push(r);
+    recordsByInstructor.set(r.instructorDbId, list);
+  }
 
   const listItems: StoredFallbackListItem[] = instructors
     .filter((inst) => shouldIncludeInInstructorList(inst))
@@ -317,12 +346,69 @@ export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnaps
           count: inst.satisfactionCount,
           is_imputed: inst.satisfactionIsImputed,
         },
-        recent_satisfaction_summary: {
-          avg: inst.satisfactionAvg !== null ? Number(inst.satisfactionAvg) : null,
-          count: inst.satisfactionCount,
-          is_imputed: inst.satisfactionIsImputed,
-        },
-        recent_satisfaction_history: [],
+        // P0-5: summary와 history는 동일 record set에서 생성 + respondentCount 가중 평균.
+        ...(() => {
+          const myRecords = recordsByInstructor.get(inst.id) ?? [];
+          const history = myRecords.map((r) => {
+            const ref =
+              r.sourceRef && typeof r.sourceRef === "object" && !Array.isArray(r.sourceRef)
+                ? (r.sourceRef as Record<string, unknown>)
+                : {};
+            const sourceRefs = Array.isArray(ref.source_refs) ? ref.source_refs : [];
+            const firstSourceRef =
+              sourceRefs.length > 0 && typeof sourceRefs[0] === "object" && sourceRefs[0]
+                ? ((sourceRefs[0] as Record<string, unknown>).source_ref as
+                    | Record<string, unknown>
+                    | undefined)
+                : undefined;
+            return {
+              observed_at: r.responseDate?.toISOString().slice(0, 10) ?? null,
+              company_name: r.companyName,
+              course_name: r.courseName,
+              session_label:
+                typeof firstSourceRef?.session_label === "string"
+                  ? (firstSourceRef.session_label as string)
+                  : null,
+              score: Number(r.score),
+              respondent_count: r.respondentCount ?? 1,
+              source_type: r.sourceType,
+              source_key:
+                typeof firstSourceRef?.source_key === "string"
+                  ? (firstSourceRef.source_key as string)
+                  : null,
+              resolution_level:
+                typeof firstSourceRef?.resolution_level === "string"
+                  ? (firstSourceRef.resolution_level as string)
+                  : null,
+              resolution_basis:
+                typeof firstSourceRef?.resolution_basis === "string"
+                  ? (firstSourceRef.resolution_basis as string)
+                  : null,
+              registry_key:
+                typeof ref.registry_key === "string" ? (ref.registry_key as string) : null,
+            };
+          });
+          // 응답자 가중 평균: sum(score × respondentCount) / sum(respondentCount)
+          let totalScore = 0;
+          let totalRespondents = 0;
+          for (const h of history) {
+            const w = h.respondent_count > 0 ? h.respondent_count : 1;
+            totalScore += h.score * w;
+            totalRespondents += w;
+          }
+          const weightedAvg =
+            totalRespondents > 0
+              ? Math.round((totalScore / totalRespondents) * 100) / 100
+              : null;
+          return {
+            recent_satisfaction_summary: {
+              avg: weightedAvg,
+              count: history.length,
+              is_imputed: false,
+            },
+            recent_satisfaction_history: history,
+          };
+        })(),
         ...legacyOperationalFields,
         raw_operational_notes: operationalPayload.raw_operational_notes,
         classified_notes: operationalPayload.classified_notes,

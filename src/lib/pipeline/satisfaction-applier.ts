@@ -721,7 +721,11 @@ export async function refreshSatisfactionAggregates(
         WITH aggregated AS (
           SELECT
             instructor_db_id,
-            ROUND(AVG(score)::numeric, 2) AS avg_score,
+            ROUND(
+              SUM(score * COALESCE(respondent_count, 1))::numeric
+                / NULLIF(SUM(COALESCE(respondent_count, 1))::numeric, 0),
+              2
+            ) AS avg_score,
             COUNT(*)::int AS response_count
           FROM satisfaction_records
           WHERE instructor_db_id IN (${instructorIdSqlList})
@@ -755,7 +759,11 @@ export async function refreshSatisfactionAggregates(
       WITH aggregated AS (
         SELECT
           instructor_db_id,
-          ROUND(AVG(score)::numeric, 2) AS avg_score,
+          ROUND(
+            SUM(score * COALESCE(respondent_count, 1))::numeric
+              / NULLIF(SUM(COALESCE(respondent_count, 1))::numeric, 0),
+            2
+          ) AS avg_score,
           COUNT(*)::int AS response_count
         FROM satisfaction_records
         WHERE COALESCE(

@@ -12,5 +12,5 @@ const result = await recalculateAllScores({
 
 console.log("Score recalc done:");
 console.log(`  updated instructors: ${result.updatedInstructors}`);
-console.log(`  totals: instructors=${result.totals.instructors}, regularInstructors=${result.totals.regularInstructors}`);
+console.log(`  total instructors: ${result.totalInstructors}`);
 console.log(`  timings(ms): instructors=${result.timings.loadInstructorsMs} stats=${result.timings.loadActivityStatsMs} thCounts=${result.timings.loadTeachingHistoryCountsMs} score=${result.timings.scoringMs} write=${result.timings.writeScoresMs}`);

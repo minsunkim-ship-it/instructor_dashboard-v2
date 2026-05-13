@@ -15,7 +15,7 @@
  *
  * 모드:
  *   ?mode=dry_run (기본) — DB 변경 없음. 분류 통계 + sample 반환.
- *   ?mode=apply — strong_single만 SatisfactionRecord 생성 + registry resolved (다음 commit)
+ *   ?mode=apply — strong_single만 SatisfactionRecord upsert + registry resolved + refresh.
  *
  * 인증: CRON_SECRET
  */
@@ -23,6 +23,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
+import { refreshSatisfactionAggregates } from "@/lib/pipeline/satisfaction-applier";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -99,9 +100,9 @@ export async function GET(request: NextRequest) {
 
   const startedAt = Date.now();
   const mode = request.nextUrl.searchParams.get("mode") ?? "dry_run";
-  if (mode !== "dry_run") {
+  if (mode !== "dry_run" && mode !== "apply") {
     return NextResponse.json(
-      { ok: false, error: "apply mode not yet implemented (separate commit)" },
+      { ok: false, error: "invalid mode (use dry_run or apply)" },
       { status: 400 }
     );
   }
@@ -268,10 +269,136 @@ export async function GET(request: NextRequest) {
     {} as Record<string, number>
   );
 
+  // ============================================================================
+  // apply mode — strong_single만 SatisfactionRecord upsert + registry resolved
+  // ============================================================================
+  let appliedSummary:
+    | {
+        registries_resolved: number;
+        records_upserted: number;
+        affected_instructors: number;
+        instructor_avg_after: Array<{ name: string; satisfactionAvg: number | null; satisfactionCount: number }>;
+        skipped_no_avg: number;
+        skipped_no_resp_date: number;
+      }
+    | null = null;
+
+  if (mode === "apply") {
+    const strongs = classifications.filter(
+      (c) => c.status === "strong_single" && c.matched_instructor_id
+    );
+    const affectedInstructorIds = new Set<string>();
+    let registriesResolved = 0;
+    let recordsUpserted = 0;
+    let skippedNoAvg = 0;
+    let skippedNoRespDate = 0;
+
+    // pending registry 다시 로드 (sourceRefs 등 전체 데이터 필요)
+    const regKeySet = new Set(strongs.map((s) => s.registryKey));
+    const fullRegs = await prisma.satisfactionReviewRegistry.findMany({
+      where: { registryKey: { in: Array.from(regKeySet) } },
+    });
+    const fullRegByKey = new Map(fullRegs.map((r) => [r.registryKey, r]));
+
+    for (const s of strongs) {
+      const reg = fullRegByKey.get(s.registryKey);
+      if (!reg) continue;
+      if (reg.avgScore === null) {
+        skippedNoAvg += 1;
+        continue;
+      }
+      const refs = Array.isArray(reg.sourceRefs) ? (reg.sourceRefs as RawRecord[]) : [];
+      const firstRef = refs[0] as RawRecord | undefined;
+      const responseDateStr = pickString(firstRef, "response_date");
+      if (!responseDateStr) {
+        skippedNoRespDate += 1;
+        continue;
+      }
+      const responseDate = new Date(responseDateStr);
+      if (Number.isNaN(responseDate.getTime())) {
+        skippedNoRespDate += 1;
+        continue;
+      }
+
+      // 1) Registry 업데이트 — resolved
+      await prisma.satisfactionReviewRegistry.update({
+        where: { id: reg.id },
+        data: {
+          matchStatus: "approved_by_slack_ops_report",
+          resolvedInstructorId: s.matched_instructor_id!,
+          suggestedInstructorId: s.matched_instructor_id!,
+          resolutionBasis: "slack_ops_report_single_instructor_match",
+        },
+      });
+      registriesResolved += 1;
+
+      // 2) SatisfactionRecord upsert — P0-4 source_key 호환 nested structure 유지
+      // sourceRefKey 기준 중복 방지: (instructorDbId, registry_key) 단위
+      const existing = await prisma.satisfactionRecord.findFirst({
+        where: {
+          instructorDbId: s.matched_instructor_id!,
+          sourceRef: {
+            path: ["registry_key"],
+            equals: reg.registryKey,
+          },
+        },
+      });
+      const recordData = {
+        instructorDbId: s.matched_instructor_id!,
+        score: reg.avgScore,
+        companyName: reg.companyName,
+        courseName: reg.courseName,
+        responseDate,
+        respondentCount: reg.responseCount,
+        sourceType: reg.sourceType,
+        sourceRef: {
+          source_refs: refs,
+          registry_key: reg.registryKey,
+          auto_resolver: "slack_ops_report",
+        },
+      };
+      if (existing) {
+        await prisma.satisfactionRecord.update({
+          where: { id: existing.id },
+          data: recordData,
+        });
+      } else {
+        await prisma.satisfactionRecord.create({ data: recordData });
+      }
+      recordsUpserted += 1;
+      affectedInstructorIds.add(s.matched_instructor_id!);
+    }
+
+    // 3) 영향 강사 satisfaction_avg 재계산 (P0-5 가중평균 SQL)
+    if (affectedInstructorIds.size > 0) {
+      await refreshSatisfactionAggregates(Array.from(affectedInstructorIds));
+    }
+
+    // 4) 결과 확인
+    const refreshedInstructors = await prisma.instructor.findMany({
+      where: { id: { in: Array.from(affectedInstructorIds) } },
+      select: { id: true, name: true, satisfactionAvg: true, satisfactionCount: true },
+    });
+
+    appliedSummary = {
+      registries_resolved: registriesResolved,
+      records_upserted: recordsUpserted,
+      affected_instructors: affectedInstructorIds.size,
+      instructor_avg_after: refreshedInstructors.map((i) => ({
+        name: i.name,
+        satisfactionAvg: i.satisfactionAvg !== null ? Number(i.satisfactionAvg) : null,
+        satisfactionCount: i.satisfactionCount,
+      })),
+      skipped_no_avg: skippedNoAvg,
+      skipped_no_resp_date: skippedNoRespDate,
+    };
+  }
+
   return NextResponse.json({
     ok: true,
-    mode: "dry_run",
+    mode,
     durationMs: Date.now() - startedAt,
+    applied_summary: appliedSummary,
     total_pending: pending.length,
     ops_messages_parsed: opsMessages.length,
     classification_stats: stats,

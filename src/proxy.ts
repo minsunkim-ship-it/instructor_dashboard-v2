@@ -52,7 +52,7 @@ const proxyWithAuth = auth((req: AuthProxyRequest) => {
     return NextResponse.next();
   }
 
-  if (pathname === "/api/refresh/cron") {
+  if (pathname === "/api/refresh/cron" || pathname.startsWith("/api/admin/")) {
     if (isAuthorizedCronRequest(req)) {
       return NextResponse.next();
     }

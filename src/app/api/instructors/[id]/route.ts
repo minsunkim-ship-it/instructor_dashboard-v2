@@ -701,8 +701,16 @@ export async function GET(
     const recentSatisfactionRecords = await prisma.satisfactionRecord.findMany({
       where: {
         instructorDbId: inst.id,
+        // D1 fix (Phase α): drive_satisfaction 포함. 50건이 정상 만족도 source인데
+        // 라이브 응답에서 누락되어 history 빈 케이스(서용구 등)가 발생했음.
+        // `manual`은 운영자 수기 입력 또는 test data가 섞일 수 있어 제외 유지.
         sourceType: {
-          in: ["sheet_summary", "google_forms", "gmail_summary"],
+          in: [
+            "sheet_summary",
+            "google_forms",
+            "gmail_summary",
+            "drive_satisfaction",
+          ],
         },
       },
       select: {

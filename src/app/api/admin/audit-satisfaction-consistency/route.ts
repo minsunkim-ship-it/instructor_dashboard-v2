@@ -38,10 +38,13 @@ function authorize(request: NextRequest): boolean {
   return false;
 }
 
+// D1 fix (Phase α): drive_satisfaction 추가. route.ts와 동기화.
+// manual은 운영자 수기 입력/test data 가능성으로 라이브 제외 유지.
 const LIVE_RESPONSE_SOURCE_TYPES = new Set([
   "sheet_summary",
   "google_forms",
   "gmail_summary",
+  "drive_satisfaction",
 ]);
 
 const P0_CHECK_NAMES = [

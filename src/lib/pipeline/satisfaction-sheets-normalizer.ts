@@ -1440,7 +1440,19 @@ export async function normalizeSatisfactionSheetResults(
       const forcePending = shouldForcePendingReviewForSourceKind(
         definition?.sourceKind
       );
-      const shouldAutoAccept = resolution.shouldAutoAccept && !forcePending;
+      // β-1 fix (D3): catalog가 satisfactionLevel="course" 또는
+      // instructorMappingMode="course_level"로 명시한 course-level survey는
+      // 강사별 평균 반영 금지 — instructor 매칭 결과가 단일 schedule이어도
+      // pending_review로 강제. 전문가 보고서 P1-2 정책.
+      //
+      // 예: dongkuk_steel_dk_ai_2026_03_6 (catalog satisfactionLevel="course",
+      //     expectedInstructors=[박상훈, 공지연, 최진영B]). 공지연 schedule
+      //     단독 매칭으로 33응답이 auto_accept되어 평균 왜곡됐던 케이스 차단.
+      const isCourseLevel =
+        definition?.satisfactionLevel === "course" ||
+        definition?.instructorMappingMode === "course_level";
+      const shouldAutoAccept =
+        resolution.shouldAutoAccept && !forcePending && !isCourseLevel;
       for (const instructorId of resolution.instructorIds) {
         const instructorName = instructorNameById.get(instructorId) ?? "";
         const sessionOrDate =

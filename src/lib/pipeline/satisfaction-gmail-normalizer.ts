@@ -129,6 +129,27 @@ function cleanText(value: string | null | undefined): string {
     .trim();
 }
 
+/**
+ * body_excerpt(1200자)에 가려진 본문/제목의 모든 URL을 raw_payload에 보존한다.
+ * body_excerpt 자체는 LLM input(feedback-note-llm)에 그대로 쓰이므로 길이를 늘리지 않는다.
+ * 대신 link 추출용 별개 키 `extracted_urls`로 분리해서 비용 영향 없이 catalog 자동 발견,
+ * forms.gle resolver 등 후속 단계가 활용할 수 있게 한다.
+ */
+function extractAllUrlsFromText(...sources: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  for (const text of sources) {
+    if (!text) continue;
+    const matches = text.match(/https?:\/\/[^\s<>"'\)\]]+/g);
+    if (!matches) continue;
+    for (const url of matches) {
+      // trailing punctuation 정리 (한국어 메일에서 흔히 ".", "," 가 link 끝에 붙음)
+      const cleaned = url.replace(/[.,;:!?)]+$/, "");
+      if (cleaned) seen.add(cleaned);
+    }
+  }
+  return Array.from(seen);
+}
+
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
@@ -1329,6 +1350,7 @@ function extractSectionEvents(
         sent_at: thread.sentAt,
         section_title: sectionTitle,
         body_excerpt: sectionText.slice(0, 1200),
+        extracted_urls: extractAllUrlsFromText(thread.subject, sectionText),
       },
       normalizedPayload: {
         registry_key: registryKey,
@@ -1413,6 +1435,7 @@ function extractSingleEvent(
       cc: thread.cc,
       sent_at: thread.sentAt,
       body_excerpt: bodyText.slice(0, 1200),
+      extracted_urls: extractAllUrlsFromText(thread.subject, bodyText),
     },
     normalizedPayload: {
         registry_key: registryKey,
@@ -1498,6 +1521,7 @@ function extractEvidenceOnlyEvent(
       cc: thread.cc,
       sent_at: thread.sentAt,
       body_excerpt: bodyText.slice(0, 1200),
+      extracted_urls: extractAllUrlsFromText(thread.subject, bodyText),
       evidence_only: true,
     },
     normalizedPayload: {

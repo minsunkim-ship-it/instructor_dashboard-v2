@@ -109,6 +109,10 @@ export async function GET(request: NextRequest) {
     rawKeys: string[];
   }> = [];
 
+  // extracted_urls 키가 있는 record 수 (신규 normalizer 변경 적용 여부 측정)
+  let withExtractedUrls = 0;
+  let extractedUrlsTotal = 0;
+
   for (const item of items) {
     const raw = (item.rawPayload as Record<string, unknown> | null) ?? {};
     const keys = Object.keys(raw);
@@ -118,6 +122,9 @@ export async function GET(request: NextRequest) {
     const subject = typeof raw.subject === "string" ? raw.subject : null;
     const body = typeof raw.body_excerpt === "string" ? raw.body_excerpt : "";
     const sectionTitle = typeof raw.section_title === "string" ? raw.section_title : "";
+    const extractedUrls = Array.isArray(raw.extracted_urls)
+      ? (raw.extracted_urls as unknown[]).filter((v): v is string => typeof v === "string")
+      : null;
 
     const len = body.length;
     if (len < 100) bodyLengthBuckets.lt100 += 1;
@@ -127,14 +134,30 @@ export async function GET(request: NextRequest) {
     else if (len === BODY_CUTOFF) bodyLengthBuckets.eq1200 += 1;
     else bodyLengthBuckets.gt1200 += 1;
 
-    classifyUrls([subject, body, sectionTitle].filter(Boolean).join("\n"), urlBuckets);
+    // URL 분류: extracted_urls가 있으면 우선 (전체 본문 + subject에서 추출된 dedupe된 URL).
+    // 없으면 fallback — body_excerpt + subject + section_title (구 데이터, 1200 cutoff).
+    if (extractedUrls && extractedUrls.length > 0) {
+      withExtractedUrls += 1;
+      extractedUrlsTotal += extractedUrls.length;
+      classifyUrls(extractedUrls.join("\n"), urlBuckets);
+    } else if (extractedUrls && extractedUrls.length === 0) {
+      withExtractedUrls += 1;
+      // 신규 normalizer 적용된 record인데 URL 0건. fallback 안 함 (구 cutoff 데이터 섞임 방지).
+    } else {
+      classifyUrls([subject, body, sectionTitle].filter(Boolean).join("\n"), urlBuckets);
+    }
 
     if (hasSurveyKeyword(subject)) subjectHasKeyword += 1;
     else subjectMissing += 1;
 
     const ids = new Set<string>();
-    for (const v of Object.values(raw)) {
-      if (typeof v === "string") extractSpreadsheetIds(v).forEach((id) => ids.add(id));
+    // spreadsheet ID 추출: extracted_urls 있으면 그것에서, 없으면 raw의 string fields fallback.
+    if (extractedUrls && extractedUrls.length > 0) {
+      for (const url of extractedUrls) extractSpreadsheetIds(url).forEach((id) => ids.add(id));
+    } else {
+      for (const v of Object.values(raw)) {
+        if (typeof v === "string") extractSpreadsheetIds(v).forEach((id) => ids.add(id));
+      }
     }
     if (ids.size > 0) {
       extracted += 1;
@@ -163,6 +186,14 @@ export async function GET(request: NextRequest) {
     extracted,
     notExtracted,
     extractionRate: total > 0 ? `${((extracted / total) * 100).toFixed(2)}%` : "0%",
+    // extracted_urls 적용 진척도 — 신규 normalizer 데이터 비율 측정
+    extractedUrlsRollout: {
+      withExtractedUrls,
+      withoutExtractedUrls: total - withExtractedUrls,
+      rolloutRate: total > 0 ? `${((withExtractedUrls / total) * 100).toFixed(2)}%` : "0%",
+      avgUrlsPerRecord:
+        withExtractedUrls > 0 ? (extractedUrlsTotal / withExtractedUrls).toFixed(2) : "0",
+    },
     rawPayloadKeys,
     hasAttachmentLikeKey,
     bodyLengthBuckets,

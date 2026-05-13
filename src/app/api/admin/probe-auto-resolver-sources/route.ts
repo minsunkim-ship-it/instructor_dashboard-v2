@@ -47,8 +47,112 @@ export async function GET(request: NextRequest) {
 
   const startedAt = Date.now();
 
+  // γ-A1 매칭 알고리즘 후보 정규식 — 운영보고 메시지 패턴
+  // 예: "*<URL|(B2B) KB금융그룹(국민은행)_Agent 기획·설계·구현_이한준 강사님_5회차/5회차 강의 내용 공유드립니다>*"
+  // 1) (B2B) 다음 회사명: _ 또는 "(" 까지
+  // 2) 마지막에 등장하는 "{이름} 강사님" — backward 추출
+  // 3) 강사명: 한글 2~4자 + 선택적 영문 1자 (동명이인 suffix A/B 등)
+  const OPS_REPORT_INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*강사님/g;
+  const OPS_REPORT_COMPANY_REGEX = /\(B2B\)\s*([^_\n]+?)_/;
+  const OPS_REPORT_SESSION_REGEX = /_(\d+)\s*(?:회차|차수|일차)(?:\s*\/\s*\d+\s*(?:회차|차수|일차))?/;
+
+  function parseOpsReportText(text: string | null | undefined): {
+    company: string | null;
+    instructors: string[];
+    sessionNumber: number | null;
+    hasB2BPrefix: boolean;
+  } {
+    if (!text) return { company: null, instructors: [], sessionNumber: null, hasB2BPrefix: false };
+    const companyMatch = text.match(OPS_REPORT_COMPANY_REGEX);
+    const instructors = Array.from(text.matchAll(OPS_REPORT_INSTRUCTOR_REGEX)).map((m) => m[1]);
+    const sessionMatch = text.match(OPS_REPORT_SESSION_REGEX);
+    return {
+      company: companyMatch?.[1]?.trim() ?? null,
+      instructors: Array.from(new Set(instructors)),
+      sessionNumber: sessionMatch ? parseInt(sessionMatch[1], 10) : null,
+      hasB2BPrefix: /\(B2B\)/i.test(text),
+    };
+  }
+
   // detail mode — 채널별 메시지 sample 깊이 dump (γ-A1 패턴 분석)
   const detail = request.nextUrl.searchParams.get("detail");
+
+  // detail=ops_report_pattern_test — 운영보고 채널 전체에 패턴 정규식 적용해서 추출 성공/실패 측정
+  if (detail === "ops_report_pattern_test") {
+    const channelId = request.nextUrl.searchParams.get("channel_id") ?? "C015YD84VGS";
+    const items = await prisma.activityImportItem.findMany({
+      where: { sourceType: "slack" },
+      select: {
+        rawPayload: true,
+        sourceRef: true,
+        activityAt: true,
+      },
+      take: 5000,
+      orderBy: { activityAt: "desc" },
+    });
+    const inChannel = items.filter((it) => {
+      const raw = (it.rawPayload as RawRecord | null) ?? {};
+      const ref = (it.sourceRef as RawRecord | null) ?? {};
+      const cid =
+        pickString(raw, "channel_id", "channel") ??
+        pickString(ref, "channel_id", "channel");
+      return cid === channelId;
+    });
+
+    let withB2B = 0;
+    let companyExtracted = 0;
+    let instructorExtracted = 0;
+    let bothExtracted = 0;
+    let multipleInstructors = 0;
+    const companyDist = new Map<string, number>();
+    const instructorDist = new Map<string, number>();
+    const sampleSuccesses: Array<{ text: string; parsed: ReturnType<typeof parseOpsReportText> }> = [];
+    const sampleFailures: Array<{ text: string; parsed: ReturnType<typeof parseOpsReportText> }> = [];
+
+    for (const it of inChannel) {
+      const raw = (it.rawPayload as RawRecord | null) ?? {};
+      const text = pickString(raw, "text", "message", "body") ?? "";
+      const parsed = parseOpsReportText(text);
+      if (parsed.hasB2BPrefix) withB2B += 1;
+      if (parsed.company) {
+        companyExtracted += 1;
+        companyDist.set(parsed.company, (companyDist.get(parsed.company) ?? 0) + 1);
+      }
+      if (parsed.instructors.length > 0) {
+        instructorExtracted += 1;
+        for (const i of parsed.instructors) instructorDist.set(i, (instructorDist.get(i) ?? 0) + 1);
+      }
+      if (parsed.instructors.length > 1) multipleInstructors += 1;
+      if (parsed.company && parsed.instructors.length > 0) bothExtracted += 1;
+
+      if (parsed.company && parsed.instructors.length === 1 && sampleSuccesses.length < 8) {
+        sampleSuccesses.push({ text: text.slice(0, 250), parsed });
+      }
+      if (parsed.hasB2BPrefix && (!parsed.company || parsed.instructors.length === 0) && sampleFailures.length < 8) {
+        sampleFailures.push({ text: text.slice(0, 250), parsed });
+      }
+    }
+
+    return NextResponse.json({
+      ok: true,
+      mode: "ops_report_pattern_test",
+      channel_id: channelId,
+      stats: {
+        total: inChannel.length,
+        with_b2b_prefix: withB2B,
+        company_extracted: companyExtracted,
+        instructor_extracted: instructorExtracted,
+        both_extracted: bothExtracted,
+        multiple_instructors: multipleInstructors,
+        extraction_rate_company: inChannel.length > 0 ? `${((companyExtracted / inChannel.length) * 100).toFixed(2)}%` : "0%",
+        extraction_rate_both: inChannel.length > 0 ? `${((bothExtracted / inChannel.length) * 100).toFixed(2)}%` : "0%",
+      },
+      top_companies: Array.from(companyDist.entries()).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, v]) => ({ company: k, count: v })),
+      top_instructors: Array.from(instructorDist.entries()).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, v]) => ({ instructor: k, count: v })),
+      sample_successes: sampleSuccesses,
+      sample_failures: sampleFailures,
+    });
+  }
   if (detail === "channel_messages") {
     const channelId = request.nextUrl.searchParams.get("channel_id");
     const limitRaw = request.nextUrl.searchParams.get("limit");

@@ -89,6 +89,17 @@ function extractSpreadsheetIds(text: string | null | undefined): string[] {
 async function main() {
   await loadDotEnv(path.join(process.cwd(), ".env"));
 
+  // sourceType 실제 분포 먼저 확인 — normalizer는 "gmail_summary"로 저장하지만
+  // 다른 값이 섞여 있을 수 있으므로 진단 시작 전에 분포를 출력해야 가정 흔들림 없음.
+  const sourceTypeDistribution = await prisma.satisfactionImportItem.groupBy({
+    by: ["sourceType"],
+    _count: { _all: true },
+  });
+  console.log(`SatisfactionImportItem sourceType 분포:`);
+  for (const row of sourceTypeDistribution) {
+    console.log(`  ${row.sourceType}: ${row._count._all}건`);
+  }
+
   const items = await prisma.satisfactionImportItem.findMany({
     where: { sourceType: { in: ["gmail_summary"] } },
     select: {
@@ -185,6 +196,10 @@ async function main() {
     extracted,
     notExtracted,
     extractionRate: total > 0 ? `${((extracted / total) * 100).toFixed(2)}%` : "0%",
+    sourceTypeDistribution: sourceTypeDistribution.map((row) => ({
+      sourceType: row.sourceType,
+      count: row._count._all,
+    })),
     rawPayloadKeys: keyDistribution,
     hasAttachmentLikeKey,
     bodyLengthBuckets,
@@ -202,6 +217,25 @@ async function main() {
   lines.push(`- 총 SatisfactionImportItem (gmail_summary): **${total}건**`);
   lines.push(`- 현재 정규식 (/spreadsheets/d/ID/) 추출 성공: **${extracted}건** (${report.extractionRate})`);
   lines.push(`- 추출 실패: **${notExtracted}건**`);
+  lines.push(``);
+  lines.push(`## sourceType 분포 (전체 SatisfactionImportItem)`);
+  lines.push(`| sourceType | 건수 |`);
+  lines.push(`|---|---|`);
+  for (const row of sourceTypeDistribution) {
+    lines.push(`| \`${row.sourceType}\` | ${row._count._all} |`);
+  }
+  lines.push(``);
+  lines.push(`## 진단 범위 ⚠️ 중요`);
+  lines.push(``);
+  lines.push(`이 진단은 **이미 SatisfactionImportItem.rawPayload에 저장된 데이터**만 본다.`);
+  lines.push(`즉 collector → normalizer 파이프라인을 통과한 후의 상태가 입력이다.`);
+  lines.push(``);
+  lines.push(`**collector 단계에서 이미 손실/누락된 항목 (이 진단으로는 안 잡힘)**:`);
+  lines.push(`1. HTML 본문: collector(\`satisfaction-gmail-collector.ts\`)는 \`extractPrimaryBodyText\`로 text만 뽑는다. HTML \`<a href>\` 링크 정보는 추출 단계에서 손실됨. raw에 html이 없는 게 정상.`);
+  lines.push(`2. 첨부 파일: collector가 첨부 metadata/content를 가져오지 않음. \`rawPayload\` 키에 \`attach*\` / \`file*\` 자체가 없을 것 (위 키 분포로 확인).`);
+  lines.push(`3. body cutoff: collector가 15000자까지 가져왔는데 normalizer가 \`sectionText.slice(0, 1200)\`로 다시 자름. 즉 본문 1200자 도달 = 14000자 추가 정보 손실 가능성.`);
+  lines.push(``);
+  lines.push(`이 진단의 역할: 위 3개 가설 중 어느 것이 가장 큰 손실 원인인지 정량 분기. cutoff=1200 도달이 많고 spreadsheet/forms URL이 잡히는데도 추출 실패라면 ① cutoff 늘리기로 회복 가능. URL 자체가 거의 없으면 ② HTML/첨부 트랙 필요.`);
   lines.push(``);
   lines.push(`## rawPayload 키 분포`);
   lines.push(`| key | count |`);

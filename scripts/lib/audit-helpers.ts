@@ -89,7 +89,15 @@ export function addLine(
 }
 
 export async function loadDotEnv(filePath: string): Promise<void> {
-  const text = await readFile(filePath, "utf8");
+  let text: string;
+  try {
+    text = await readFile(filePath, "utf8");
+  } catch (err) {
+    // .env 미존재는 정상 (Coolify Terminal 등에서는 환경변수가 이미 주입됨).
+    // 그 외 IO 에러는 그대로 전파.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;

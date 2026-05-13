@@ -269,7 +269,8 @@ export async function GET(request: NextRequest) {
     };
 
     return NextResponse.json(response);
-  } catch {
+  } catch (err) {
+    console.error("[/api/instructors] live query failed → fallback", err);
     const snapshot = await readStoredFallbackSnapshot();
     const fallbackItems = (
       snapshot

@@ -124,6 +124,47 @@ export async function GET(request: NextRequest) {
   const detailMode = request.nextUrl.searchParams.get("detail");
   const instructorNameQuery = request.nextUrl.searchParams.get("name");
 
+  // detail=sourcetype_dump&type=manual — 특정 sourceType 모든 record dump
+  if (detailMode === "sourcetype_dump") {
+    const targetType = request.nextUrl.searchParams.get("type");
+    if (!targetType) {
+      return NextResponse.json({ ok: false, error: "type query param required" });
+    }
+    const all = await prisma.satisfactionRecord.findMany({
+      where: { sourceType: targetType },
+      select: {
+        id: true,
+        instructorDbId: true,
+        score: true,
+        respondentCount: true,
+        companyName: true,
+        courseName: true,
+        responseDate: true,
+        createdAt: true,
+        sourceRef: true,
+        instructor: { select: { name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    return NextResponse.json({
+      ok: true,
+      mode: "sourcetype_dump",
+      sourceType: targetType,
+      count: all.length,
+      records: all.map((r) => ({
+        id: r.id,
+        instructor: r.instructor.name,
+        score: Number(r.score),
+        respondentCount: r.respondentCount,
+        companyName: r.companyName,
+        courseName: r.courseName,
+        responseDate: r.responseDate?.toISOString().slice(0, 10) ?? null,
+        createdAt: r.createdAt.toISOString(),
+        sourceRef: r.sourceRef,
+      })),
+    });
+  }
+
   // detail=sourcetypes — sourceType별 sample 1건씩 dump (drive_satisfaction/manual 정체 파악)
   if (detailMode === "sourcetypes") {
     const allTypes = await prisma.satisfactionRecord.groupBy({

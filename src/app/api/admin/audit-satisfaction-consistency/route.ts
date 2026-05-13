@@ -117,6 +117,129 @@ export async function GET(request: NextRequest) {
   const startedAt = Date.now();
   const cutoffDate = getRecentSatisfactionCutoffDate();
 
+  // 진단 모드 — 기본은 consistency, 옵션으로 source/instructor detail
+  const detailMode = request.nextUrl.searchParams.get("detail");
+  const instructorNameQuery = request.nextUrl.searchParams.get("name");
+
+  // detail=sourcetypes — sourceType별 sample 1건씩 dump (drive_satisfaction/manual 정체 파악)
+  if (detailMode === "sourcetypes") {
+    const allTypes = await prisma.satisfactionRecord.groupBy({
+      by: ["sourceType"],
+      _count: { _all: true },
+    });
+    const samples: Array<{
+      sourceType: string;
+      count: number;
+      sample: {
+        instructorName: string | null;
+        score: number;
+        respondentCount: number | null;
+        companyName: string | null;
+        courseName: string | null;
+        responseDate: string | null;
+        createdAt: string;
+        sourceRef: unknown;
+      } | null;
+    }> = [];
+    for (const t of allTypes) {
+      const rec = await prisma.satisfactionRecord.findFirst({
+        where: { sourceType: t.sourceType },
+        select: {
+          score: true,
+          respondentCount: true,
+          companyName: true,
+          courseName: true,
+          responseDate: true,
+          createdAt: true,
+          sourceRef: true,
+          instructor: { select: { name: true } },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      samples.push({
+        sourceType: t.sourceType,
+        count: t._count._all,
+        sample: rec
+          ? {
+              instructorName: rec.instructor.name,
+              score: Number(rec.score),
+              respondentCount: rec.respondentCount,
+              companyName: rec.companyName,
+              courseName: rec.courseName,
+              responseDate: rec.responseDate?.toISOString().slice(0, 10) ?? null,
+              createdAt: rec.createdAt.toISOString(),
+              sourceRef: rec.sourceRef,
+            }
+          : null,
+      });
+    }
+    return NextResponse.json({
+      ok: true,
+      mode: "sourcetypes",
+      samples,
+    });
+  }
+
+  // detail=instructor&name=공지연 — 특정 강사 record 전체 dump (P0 회귀 조사용)
+  if (detailMode === "instructor" && instructorNameQuery) {
+    const inst = await prisma.instructor.findFirst({
+      where: { name: instructorNameQuery },
+      select: { id: true, name: true, satisfactionAvg: true, satisfactionCount: true },
+    });
+    if (!inst) {
+      return NextResponse.json({ ok: false, error: "instructor not found", name: instructorNameQuery });
+    }
+    const records = await prisma.satisfactionRecord.findMany({
+      where: { instructorDbId: inst.id },
+      orderBy: { createdAt: "desc" },
+    });
+    const registries = await prisma.satisfactionReviewRegistry.findMany({
+      where: {
+        OR: [
+          { candidateName: instructorNameQuery },
+          { resolvedInstructorId: inst.id },
+        ],
+      },
+      take: 20,
+      orderBy: { updatedAt: "desc" },
+    });
+    return NextResponse.json({
+      ok: true,
+      mode: "instructor",
+      instructor: {
+        id: inst.id,
+        name: inst.name,
+        satisfactionAvg: inst.satisfactionAvg !== null ? Number(inst.satisfactionAvg) : null,
+        satisfactionCount: inst.satisfactionCount,
+      },
+      records: records.map((r) => ({
+        id: r.id,
+        score: Number(r.score),
+        respondentCount: r.respondentCount,
+        companyName: r.companyName,
+        courseName: r.courseName,
+        responseDate: r.responseDate?.toISOString().slice(0, 10) ?? null,
+        createdAt: r.createdAt.toISOString(),
+        sourceType: r.sourceType,
+        sourceRef: r.sourceRef,
+      })),
+      registries: registries.map((reg) => ({
+        registryKey: reg.registryKey,
+        sourceType: reg.sourceType,
+        candidateName: reg.candidateName,
+        companyName: reg.companyName,
+        courseName: reg.courseName,
+        avgScore: reg.avgScore !== null ? Number(reg.avgScore) : null,
+        responseCount: reg.responseCount,
+        matchStatus: reg.matchStatus,
+        suggestedInstructorId: reg.suggestedInstructorId,
+        resolvedInstructorId: reg.resolvedInstructorId,
+        resolutionBasis: reg.resolutionBasis,
+        updatedAt: reg.updatedAt.toISOString(),
+      })),
+    });
+  }
+
   // 모든 만족도 record (모든 sourceType, 모든 강사)
   const records = await prisma.satisfactionRecord.findMany({
     select: {
@@ -263,8 +386,17 @@ export async function GET(request: NextRequest) {
     name: string,
     actual: { a_avg: number | null; a_count: number } | null,
     expectations: { avg: number | null | "any"; count: number | "any" }
-  ): { name: string; status: "PASS" | "FAIL" | "MISSING"; expected: typeof expectations; actual: typeof actual } {
-    if (!actual) return { name, status: "MISSING", expected: expectations, actual: null };
+  ): { name: string; status: "PASS" | "FAIL"; expected: typeof expectations; actual: typeof actual } {
+    // P0 정정으로 record가 0건이 된 케이스(박상훈/최진영B): pending_review로 빠져 SatisfactionRecord 없음 = 정책상 정상.
+    // 즉 expectations.avg=null, expectations.count=0 일 때 actual=null도 PASS.
+    if (expectations.avg === null && expectations.count === 0) {
+      if (actual === null) return { name, status: "PASS", expected: expectations, actual: null };
+      if (actual.a_avg === null && actual.a_count === 0) {
+        return { name, status: "PASS", expected: expectations, actual };
+      }
+      return { name, status: "FAIL", expected: expectations, actual };
+    }
+    if (!actual) return { name, status: "FAIL", expected: expectations, actual: null };
     const avgOk =
       expectations.avg === "any" ||
       (expectations.avg === null ? actual.a_avg === null : avgDiffers(actual.a_avg, expectations.avg) === false);

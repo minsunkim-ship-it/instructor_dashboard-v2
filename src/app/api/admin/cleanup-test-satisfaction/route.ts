@@ -9,7 +9,11 @@
  *
  * 안전 조건 (모든 record가 아래를 만족해야 삭제):
  *   - sourceType === "manual"
- *   - companyName === "test"
+ *   - createdAt BETWEEN '2026-04-15' AND '2026-04-17' (운영자 admin endpoint test window)
+ *
+ * audit detail=sourcetype_dump&type=manual 결과 정확히 9건이 이 window에 들어가며,
+ * 정백 (company=test) + 서용구 (8건, company=null/테스트/데이원, respondentCount=null) 모두
+ * 동일한 운영자 manual entry 테스트 흔적임을 확인. 미래 운영자 수기 entry는 다른 시점이라 영향 없음.
  *
  * 모드:
  *   - ?mode=dry_run (기본): 삭제 예정 record list만 반환. DB 변경 없음.
@@ -47,11 +51,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 안전 조건으로 후보 조회 — sourceType=manual AND companyName=test
+  // 안전 조건으로 후보 조회 — sourceType=manual + 운영자 test window
   const candidates = await prisma.satisfactionRecord.findMany({
     where: {
       sourceType: "manual",
-      companyName: "test",
+      createdAt: {
+        gte: new Date("2026-04-15T00:00:00.000Z"),
+        lte: new Date("2026-04-17T23:59:59.999Z"),
+      },
     },
     select: {
       id: true,
@@ -66,18 +73,43 @@ export async function POST(request: NextRequest) {
     },
   });
 
-  // 추가 보호: courseName이 명백히 test가 아닌 케이스가 섞여있으면 중단
+  // 추가 보호: respondentCount가 있는 record는 진짜 만족도 entry일 가능성 → 중단
+  // (audit dump 결과 9건 모두 respondentCount=null 또는 정백 1건만 =1 — test 흔적)
+  // null이 아니고 1보다 큰 case는 외부 import일 가능성이므로 차단.
   const suspicious = candidates.filter(
-    (r) => r.courseName !== null && !r.courseName.toLowerCase().includes("test")
+    (r) => r.respondentCount !== null && r.respondentCount > 1
   );
   if (suspicious.length > 0) {
     return NextResponse.json({
       ok: false,
-      error: "safety check failed — non-test courseName detected among candidates",
+      error: "safety check failed — non-null respondentCount > 1 detected",
       mode,
       candidate_count: candidates.length,
       suspicious_count: suspicious.length,
       suspicious_samples: suspicious.slice(0, 5).map((r) => ({
+        id: r.id,
+        instructor: r.instructor.name,
+        company: r.companyName,
+        course: r.courseName,
+        respondentCount: r.respondentCount,
+      })),
+    });
+  }
+
+  // 추가 보호 2: 운영 데이터 외관(회사명이 진짜 회사명처럼 보이는) 차단
+  // 알려진 test marker만 허용: null, "test", "테스트", "데이원" (audit dump 기준)
+  const ALLOWED_TEST_COMPANY = new Set([null, "test", "테스트", "데이원"]);
+  const unknownCompany = candidates.filter(
+    (r) => !ALLOWED_TEST_COMPANY.has(r.companyName)
+  );
+  if (unknownCompany.length > 0) {
+    return NextResponse.json({
+      ok: false,
+      error: "safety check failed — unknown companyName not in test allowlist",
+      mode,
+      candidate_count: candidates.length,
+      unknown_count: unknownCompany.length,
+      unknown_samples: unknownCompany.slice(0, 5).map((r) => ({
         id: r.id,
         instructor: r.instructor.name,
         company: r.companyName,

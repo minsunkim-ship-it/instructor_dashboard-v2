@@ -49,11 +49,11 @@ export async function GET(request: NextRequest) {
 
   // γ-A1 매칭 알고리즘 후보 정규식 — 운영보고 메시지 패턴
   // 예: "*<URL|(B2B) KB금융그룹(국민은행)_Agent 기획·설계·구현_이한준 강사님_5회차/5회차 강의 내용 공유드립니다>*"
-  // 1) (B2B) 다음 회사명: _ 또는 "(" 까지
-  // 2) 마지막에 등장하는 "{이름} 강사님" — backward 추출
-  // 3) 강사명: 한글 2~4자 + 선택적 영문 1자 (동명이인 suffix A/B 등)
-  const OPS_REPORT_INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*강사님/g;
-  const OPS_REPORT_COMPANY_REGEX = /\(B2B\)\s*([^_\n]+?)_/;
+  // v2 보강 (sample 분석 결과):
+  //  - "강사" 외에 "대표/교수/선생"도 같은 의미로 사용됨 (스타벅스_김지훈 대표님)
+  //  - 회사 구분자가 _ 외에 공백도 있음 (중앙홀딩스 26년 CL 승격자 과정)
+  const OPS_REPORT_INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
+  const OPS_REPORT_COMPANY_REGEX = /\(B2B\)\s*([^_\n]+?)[\s_]/;
   const OPS_REPORT_SESSION_REGEX = /_(\d+)\s*(?:회차|차수|일차)(?:\s*\/\s*\d+\s*(?:회차|차수|일차))?/;
 
   function parseOpsReportText(text: string | null | undefined): {

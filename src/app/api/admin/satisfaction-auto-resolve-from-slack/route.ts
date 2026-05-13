@@ -21,6 +21,7 @@
  */
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
 import { refreshSatisfactionAggregates } from "@/lib/pipeline/satisfaction-applier";
@@ -351,11 +352,13 @@ export async function GET(request: NextRequest) {
         responseDate,
         respondentCount: reg.responseCount,
         sourceType: reg.sourceType,
+        // Prisma Json 컬럼: 동적 RawRecord[] 직접 대입은 InputJsonValue로 좁혀지지 않아
+        // 명시적으로 InputJsonObject로 cast.
         sourceRef: {
           source_refs: refs,
           registry_key: reg.registryKey,
           auto_resolver: "slack_ops_report",
-        },
+        } as unknown as Prisma.InputJsonObject,
       };
       if (existing) {
         await prisma.satisfactionRecord.update({

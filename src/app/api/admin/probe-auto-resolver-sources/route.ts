@@ -47,6 +47,63 @@ export async function GET(request: NextRequest) {
 
   const startedAt = Date.now();
 
+  // detail mode — 채널별 메시지 sample 깊이 dump (γ-A1 패턴 분석)
+  const detail = request.nextUrl.searchParams.get("detail");
+  if (detail === "channel_messages") {
+    const channelId = request.nextUrl.searchParams.get("channel_id");
+    const limitRaw = request.nextUrl.searchParams.get("limit");
+    const limit = limitRaw ? Math.min(Math.max(parseInt(limitRaw, 10), 1), 200) : 50;
+    if (!channelId) {
+      return NextResponse.json({ ok: false, error: "channel_id required" }, { status: 400 });
+    }
+    const items = await prisma.activityImportItem.findMany({
+      where: {
+        sourceType: "slack",
+      },
+      select: {
+        candidateName: true,
+        candidateEmail: true,
+        activityAt: true,
+        isOpsReport: true,
+        isDispatchRequest: true,
+        rawPayload: true,
+        sourceRef: true,
+      },
+      take: 2000,
+      orderBy: { activityAt: "desc" },
+    });
+    const filtered = items.filter((it) => {
+      const raw = (it.rawPayload as RawRecord | null) ?? {};
+      const ref = (it.sourceRef as RawRecord | null) ?? {};
+      const cid =
+        pickString(raw, "channel_id", "channel") ??
+        pickString(ref, "channel_id", "channel");
+      return cid === channelId;
+    });
+    return NextResponse.json({
+      ok: true,
+      mode: "channel_messages",
+      channel_id: channelId,
+      sample_count: Math.min(filtered.length, limit),
+      total_matched_in_window: filtered.length,
+      messages: filtered.slice(0, limit).map((it) => {
+        const raw = (it.rawPayload as RawRecord | null) ?? {};
+        return {
+          activityAt: it.activityAt?.toISOString() ?? null,
+          author_real_name: pickString(raw, "author_real_name") ?? null,
+          author_display_name: pickString(raw, "author_display_name") ?? null,
+          is_bot: raw.is_bot ?? null,
+          reply_count: raw.reply_count ?? null,
+          isOpsReport: it.isOpsReport,
+          isDispatchRequest: it.isDispatchRequest,
+          candidateName: it.candidateName,
+          candidateEmail: it.candidateEmail,
+          text: pickString(raw, "text", "message", "body")?.slice(0, 600) ?? null,
+        };
+      }),
+    });
+  }
+
   // 1) Slack activity items — 채널 분포 + sample (rawPayload structure 파악)
   const slackItems = await prisma.activityImportItem.findMany({
     where: { sourceType: "slack" },

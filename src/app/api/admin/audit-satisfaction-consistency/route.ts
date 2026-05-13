@@ -182,13 +182,23 @@ export async function GET(request: NextRequest) {
 
   // detail=instructor&name=공지연 — 특정 강사 record 전체 dump (P0 회귀 조사용)
   if (detailMode === "instructor" && instructorNameQuery) {
-    const inst = await prisma.instructor.findFirst({
-      where: { name: instructorNameQuery },
+    // findFirst exact match가 한글 unicode normalization 차이로 실패하는 케이스 있음.
+    // findMany + JS-side 비교 + 후보 list로 안전하게.
+    const candidates = await prisma.instructor.findMany({
+      where: { name: { contains: instructorNameQuery } },
       select: { id: true, name: true, satisfactionAvg: true, satisfactionCount: true },
     });
-    if (!inst) {
-      return NextResponse.json({ ok: false, error: "instructor not found", name: instructorNameQuery });
+    if (candidates.length === 0) {
+      return NextResponse.json({
+        ok: false,
+        error: "instructor not found",
+        name: instructorNameQuery,
+        name_codepoints: Array.from(instructorNameQuery).map((c) => c.codePointAt(0)),
+      });
     }
+    // 정확 매칭 우선, 없으면 contains 후보 모두 반환
+    const inst = candidates.find((c) => c.name === instructorNameQuery) ?? candidates[0];
+    const multipleCandidates = candidates.length > 1;
     const records = await prisma.satisfactionRecord.findMany({
       where: { instructorDbId: inst.id },
       orderBy: { createdAt: "desc" },
@@ -206,6 +216,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       mode: "instructor",
+      query_name: instructorNameQuery,
+      query_codepoints: Array.from(instructorNameQuery).map((c) => c.codePointAt(0)),
+      multiple_candidates: multipleCandidates,
+      all_candidates: candidates.map((c) => ({
+        id: c.id,
+        name: c.name,
+        codepoints: Array.from(c.name).map((ch) => ch.codePointAt(0)),
+        satisfactionAvg: c.satisfactionAvg !== null ? Number(c.satisfactionAvg) : null,
+        satisfactionCount: c.satisfactionCount,
+      })),
       instructor: {
         id: inst.id,
         name: inst.name,

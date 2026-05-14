@@ -27,8 +27,10 @@ const SLACK_API_BASE = "https://slack.com/api";
  * Pilot 4-5 v1 canonical channel 종류.
  * - ops_report: 운영보고 채널
  * - dispatch_request: 출강요청 채널 (채널 → 강사 mapping 적용 대상)
+ * - general: #general — 운영보고와 유사한 "(B2B) 회사_과정_강사 강사님_N회차_총M명" 패턴.
+ *            ops_report와 같은 normalizer/parser 재사용. (γ-A1-v14: 풍산 등 누락 매칭 회복)
  */
-export type SlackChannelKind = "ops_report" | "dispatch_request";
+export type SlackChannelKind = "ops_report" | "dispatch_request" | "general";
 
 export interface SlackChannelConfig {
   channelId: string;
@@ -46,6 +48,7 @@ export interface SlackChannelConfig {
  */
 export const SLACK_PILOT_4_5_CHANNELS: readonly SlackChannelConfig[] = [
   { channelId: "C015YD84VGS", kind: "ops_report" },
+  { channelId: "C79GDLS3A", kind: "general" },
   {
     channelId: "C099UH7ACGG",
     kind: "dispatch_request",

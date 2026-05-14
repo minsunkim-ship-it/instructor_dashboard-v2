@@ -37,8 +37,10 @@ function authorize(request: NextRequest): boolean {
   return false;
 }
 
-// 운영보고 채널 — `SLACK_PILOT_4_5_CHANNELS:48` ops_report 기준
+// 운영보고 채널 + #general — `SLACK_PILOT_4_5_CHANNELS` 참조
 const OPS_REPORT_CHANNEL_ID = "C015YD84VGS";
+const GENERAL_CHANNEL_ID = "C79GDLS3A"; // γ-A1-v14
+const ALLOWED_CHANNEL_IDS = new Set<string>([OPS_REPORT_CHANNEL_ID, GENERAL_CHANNEL_ID]);
 const MATCH_WINDOW_DAYS = 60;
 
 // γ-A1 regex (probe v2와 동기화)
@@ -123,7 +125,7 @@ export async function GET(request: NextRequest) {
     const cid =
       pickString(raw, "channel_id", "channel") ??
       pickString(ref, "channel_id", "channel");
-    if (cid !== OPS_REPORT_CHANNEL_ID) continue;
+    if (!cid || !ALLOWED_CHANNEL_IDS.has(cid)) continue;
     const text = pickString(raw, "text", "message", "body") ?? "";
     if (!text) continue;
     const parsed = parseOpsMessage(text);

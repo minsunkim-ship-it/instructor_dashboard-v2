@@ -62,6 +62,8 @@ function companyOverlap(a: string[], b: string[]): string[] {
 }
 
 const OPS_REPORT_CHANNEL_ID = "C015YD84VGS";
+const GENERAL_CHANNEL_ID = "C79GDLS3A"; // γ-A1-v14
+const ALLOWED_CHANNEL_IDS = new Set<string>([OPS_REPORT_CHANNEL_ID, GENERAL_CHANNEL_ID]);
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
 const COMPANY_REGEX = /\(B2B\)\s*([^_\n]+?)[\s_]/;
 
@@ -164,7 +166,7 @@ export async function GET(request: NextRequest) {
     const cid =
       pickString(raw, "channel_id", "channel") ??
       pickString(ref, "channel_id", "channel");
-    if (cid !== OPS_REPORT_CHANNEL_ID) continue;
+    if (!cid || !ALLOWED_CHANNEL_IDS.has(cid)) continue;
     const text = pickString(raw, "text", "message", "body") ?? "";
     if (!text) continue;
     const companyMatch = text.match(COMPANY_REGEX);

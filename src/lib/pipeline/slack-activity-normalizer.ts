@@ -49,7 +49,7 @@ export interface NormalizedSlackActivity {
     reply_count: number;
     latest_reply_at: string | null;
     channel_id: string;
-    channel_kind: "ops_report" | "dispatch_request";
+    channel_kind: "ops_report" | "dispatch_request" | "general";
     activity_unit: "thread" | "message";
     author_user_id: string | null;
     author_real_name: string | null;

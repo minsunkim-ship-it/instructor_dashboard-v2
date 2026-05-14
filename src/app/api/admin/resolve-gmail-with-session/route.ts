@@ -39,6 +39,11 @@ function authorize(request: NextRequest): boolean {
 }
 
 const OPS_REPORT_CHANNEL_ID = "C015YD84VGS";
+const GENERAL_CHANNEL_ID = "C79GDLS3A"; // γ-A1-v14
+const ALLOWED_RESOLVER_CHANNEL_IDS = new Set<string>([
+  OPS_REPORT_CHANNEL_ID,
+  GENERAL_CHANNEL_ID,
+]);
 const WINDOW_DAYS = 7;
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
 const SUBJECT_INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님께/;
@@ -108,7 +113,7 @@ export async function GET(request: NextRequest) {
     const raw = (it.rawPayload as RawRecord | null) ?? {};
     const ref = (it.sourceRef as RawRecord | null) ?? {};
     const cid = pickString(raw, "channel_id", "channel") ?? pickString(ref, "channel_id", "channel");
-    if (cid !== OPS_REPORT_CHANNEL_ID) continue;
+    if (!cid || !ALLOWED_RESOLVER_CHANNEL_IDS.has(cid)) continue;
     const text = pickString(raw, "text", "message", "body") ?? "";
     if (!text) continue;
     const companyMatch = text.match(COMPANY_REGEX);

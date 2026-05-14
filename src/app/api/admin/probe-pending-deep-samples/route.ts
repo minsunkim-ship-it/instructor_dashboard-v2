@@ -239,8 +239,97 @@ export async function GET(request: NextRequest) {
     return null;
   }
 
-  // 카테고리 1: drive multi (응답수 큰 것 우선)
-  const sample1 = await buildSample("drive_multi", async (r) => {
+  // 카테고리별 N건씩 (회사 다양성 확보) — ?count=N&offset=M
+  const countParam = parseInt(request.nextUrl.searchParams.get("count") ?? "3", 10);
+  const offsetParam = parseInt(request.nextUrl.searchParams.get("offset") ?? "0", 10);
+  const countPerCat = Math.max(1, Math.min(countParam, 10));
+
+  async function buildSamplesMulti(
+    category: string,
+    filter: (r: {
+      registryKey: string;
+      sourceType: string;
+      companyName: string | null;
+      courseName: string | null;
+      candidateName: string | null;
+      avgScore: import("@prisma/client").Prisma.Decimal | null;
+      responseCount: number;
+      sourceRefs: unknown;
+    }) => Promise<boolean> | boolean
+  ): Promise<PendingSample[]> {
+    const candidates = await getRegistryByCategory(category);
+    const matched: typeof candidates = [];
+    const seenCompanies = new Set<string>();
+    for (const reg of candidates) {
+      if (matched.length >= countPerCat + offsetParam) break;
+      const passes = await filter(reg);
+      if (!passes) continue;
+      // 회사 다양성 — 같은 회사는 1건만
+      const key = reg.companyName ?? `_no_company_${reg.registryKey}`;
+      if (seenCompanies.has(key)) continue;
+      seenCompanies.add(key);
+      matched.push(reg);
+    }
+    const slice = matched.slice(offsetParam, offsetParam + countPerCat);
+    const results: PendingSample[] = [];
+    for (const reg of slice) {
+      const refs = Array.isArray(reg.sourceRefs) ? (reg.sourceRefs as RawRecord[]) : [];
+      const firstRef = refs[0] as RawRecord | undefined;
+      const responseDateStr = pickString(firstRef, "response_date");
+      const item = await findImportItemForRegistry(reg.registryKey, reg.sourceType);
+      const responseDate = responseDateStr ? new Date(responseDateStr) : null;
+      const opsCandidates = responseDate
+        ? opsMessages
+            .filter((m) => {
+              if (!m.activityAt) return false;
+              const diff =
+                Math.abs(m.activityAt.getTime() - responseDate.getTime()) / (1000 * 60 * 60 * 24);
+              if (diff > 14) return false;
+              if (reg.companyName && !companyMatches(m.company, reg.companyName)) return false;
+              return true;
+            })
+            .slice(0, 5)
+            .map((m) => ({
+              activityAt: m.activityAt!.toISOString(),
+              parsed_company: m.company,
+              parsed_instructors: m.instructors,
+              text_head: m.text,
+            }))
+        : [];
+      results.push({
+        category,
+        registry: {
+          registryKey: reg.registryKey,
+          sourceType: reg.sourceType,
+          companyName: reg.companyName,
+          courseName: reg.courseName,
+          candidateName: reg.candidateName,
+          avgScore: reg.avgScore !== null ? Number(reg.avgScore) : null,
+          responseCount: reg.responseCount,
+          responseDate: responseDateStr,
+        },
+        importItem: item
+          ? {
+              subject: pickString(item.rawPayload, "subject"),
+              bodyHead:
+                pickString(item.rawPayload, "body_excerpt", "text", "body")?.slice(0, 400) ?? null,
+              sourceRefKeys: Object.keys(item.sourceRef),
+              file_name: pickString(item.sourceRef, "file_name"),
+              sheet_title: pickString(item.sourceRef, "sheet_title"),
+              section_title: pickString(item.rawPayload, "section_title"),
+              session_label: pickString(item.normalizedPayload, "session_label"),
+              instructor_name_in_normalized: pickString(item.normalizedPayload, "instructor_name"),
+              rawPayloadKeys: Object.keys(item.rawPayload),
+            }
+          : null,
+        ops_evidence_candidates: opsCandidates,
+      });
+    }
+    return results;
+  }
+
+  // drive_multi (회사 + 시점 매칭에 다중 강사)
+  const driveMulti = await buildSamplesMulti("drive_multi", async (r) => {
     const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];
     const firstRef = refs[0] as RawRecord | undefined;
     const responseDateStr = pickString(firstRef, "response_date");
@@ -249,15 +338,15 @@ export async function GET(request: NextRequest) {
     const ops = opsMessages.filter((m) => {
       if (!m.activityAt) return false;
       const diff = Math.abs(m.activityAt.getTime() - responseDate.getTime()) / (1000 * 60 * 60 * 24);
-      if (diff > 7) return false;
+      if (diff > 14) return false;
       return companyMatches(m.company, r.companyName);
     });
     const unique = new Set(ops.flatMap((m) => m.instructors));
-    return unique.size >= 2 && r.responseCount >= 5; // multi + 5응답 이상
+    return unique.size >= 2 && r.responseCount >= 5;
   });
 
-  // 카테고리 2: drive no_slack_match
-  const sample2 = await buildSample("drive_no_slack", async (r) => {
+  // drive_no_slack
+  const driveNoSlack = await buildSamplesMulti("drive_no_slack", async (r) => {
     const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];
     const firstRef = refs[0] as RawRecord | undefined;
     const responseDateStr = pickString(firstRef, "response_date");
@@ -266,17 +355,15 @@ export async function GET(request: NextRequest) {
     const ops = opsMessages.filter((m) => {
       if (!m.activityAt) return false;
       const diff = Math.abs(m.activityAt.getTime() - responseDate.getTime()) / (1000 * 60 * 60 * 24);
-      if (diff > 7) return false;
+      if (diff > 14) return false;
       return companyMatches(m.company, r.companyName);
     });
     return ops.length === 0 && r.responseCount >= 5;
   });
 
-  // 카테고리 3: gmail no_signal (회사 매칭 실패 + 응답수 큰 것)
-  const sample3 = await buildSample("gmail_no_signal", async (r) => {
-    if (!r.companyName) {
-      return r.responseCount >= 5;
-    }
+  // gmail_no_signal
+  const gmailNoSignal = await buildSamplesMulti("gmail_no_signal", async (r) => {
+    if (!r.companyName) return r.responseCount >= 5;
     const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];
     const firstRef = refs[0] as RawRecord | undefined;
     const responseDateStr = pickString(firstRef, "response_date");
@@ -285,7 +372,7 @@ export async function GET(request: NextRequest) {
     const ops = opsMessages.filter((m) => {
       if (!m.activityAt) return false;
       const diff = Math.abs(m.activityAt.getTime() - responseDate.getTime()) / (1000 * 60 * 60 * 24);
-      return diff <= 7 && companyMatches(m.company, r.companyName);
+      return diff <= 14 && companyMatches(m.company, r.companyName);
     });
     return ops.length === 0 && r.responseCount >= 5;
   });
@@ -293,6 +380,8 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     ok: true,
     durationMs: Date.now() - startedAt,
-    samples: [sample1, sample2, sample3].filter((s) => s !== null),
+    count_per_category: countPerCat,
+    offset: offsetParam,
+    samples: [...driveMulti, ...driveNoSlack, ...gmailNoSignal],
   });
 }

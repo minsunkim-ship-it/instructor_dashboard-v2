@@ -35,7 +35,7 @@ function authorize(request: NextRequest): boolean {
 }
 
 const OPS_REPORT_CHANNEL_ID = "C015YD84VGS";
-const WINDOW_DAYS = 30; // γ-A1-v5: 14→30 (운영보고 더 늦게 등록되는 케이스 + alias 부재 회복)
+const WINDOW_DAYS = 14; // γ-A1-v5b: 30→14 rollback (30 너무 넓어 multi 증가. v4 안전 가치 회복)
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
 const COMPANY_REGEX = /\(B2B\)\s*([^_\n]+?)[\s_]/;
 const SESSION_REGEX_OPS = /(\d+)\s*(?:회차|차수|일차)/;

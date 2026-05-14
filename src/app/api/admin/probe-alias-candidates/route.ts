@@ -41,6 +41,17 @@ function getBaseName(name: string): string {
   return name.replace(/[A-Z]$/, "").trim();
 }
 
+type RawRecord = { [key: string]: unknown };
+
+function pickString(obj: RawRecord | undefined, ...keys: string[]): string | null {
+  if (!obj) return null;
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v.trim().length > 0) return v;
+  }
+  return null;
+}
+
 export async function GET(request: NextRequest) {
   if (!authorize(request)) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -80,6 +91,71 @@ export async function GET(request: NextRequest) {
           : null,
         sourceRef: t.sourceRef,
       })),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // detail=session_in_pending — pending registry에 차수(session) 정보가 있는지 점검
+  //   사용자 인사이트(2026-05-14): 만족도 시트의 차수 ↔ 운영보고 메시지의 차수 매칭으로
+  //   다중 강사 자동 분배 가능 (KT AI Campus 5회차 = 김진태)
+  // ---------------------------------------------------------------------------
+  if (detail === "session_in_pending") {
+    const pending = await prisma.satisfactionReviewRegistry.findMany({
+      where: { matchStatus: "pending" },
+      select: {
+        registryKey: true,
+        candidateName: true,
+        companyName: true,
+        courseName: true,
+        responseCount: true,
+        sourceRefs: true,
+      },
+    });
+    let withSessionLabel = 0;
+    let withSessionInRefs = 0;
+    let withResponseDate = 0;
+    const sessionSamples: Array<{
+      key: string;
+      candidate: string | null;
+      company: string | null;
+      course: string | null;
+      session_label: string | null;
+      session_in_first_ref: unknown;
+      response_date: string | null;
+    }> = [];
+    for (const r of pending) {
+      const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];
+      const firstRef = refs[0] as RawRecord | undefined;
+      const sourceRef = firstRef?.source_ref as RawRecord | undefined;
+      const sessionLabel = pickString(sourceRef, "session_label");
+      const sessionNumber =
+        sourceRef && typeof sourceRef.session_number === "number"
+          ? sourceRef.session_number
+          : null;
+      const responseDate = pickString(firstRef, "response_date");
+      if (sessionLabel) withSessionLabel += 1;
+      if (sessionLabel || sessionNumber !== null) withSessionInRefs += 1;
+      if (responseDate) withResponseDate += 1;
+      if (sessionSamples.length < 15 && (sessionLabel || sessionNumber !== null)) {
+        sessionSamples.push({
+          key: r.registryKey.slice(0, 70),
+          candidate: r.candidateName,
+          company: r.companyName,
+          course: r.courseName,
+          session_label: sessionLabel,
+          session_in_first_ref: sessionNumber,
+          response_date: responseDate,
+        });
+      }
+    }
+    return NextResponse.json({
+      ok: true,
+      mode: "session_in_pending",
+      total_pending: pending.length,
+      with_session_label: withSessionLabel,
+      with_session_info_in_refs: withSessionInRefs,
+      with_response_date: withResponseDate,
+      samples: sessionSamples,
     });
   }
 

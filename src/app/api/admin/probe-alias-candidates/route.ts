@@ -95,6 +95,40 @@ export async function GET(request: NextRequest) {
   }
 
   // ---------------------------------------------------------------------------
+  // detail=drive_filename_samples — drive_satisfaction의 file_name 패턴 dump
+  //   229건 pending이 drive_satisfaction. file_name regex 정확히 짜야 차수 추출 가능
+  // ---------------------------------------------------------------------------
+  if (detail === "drive_filename_samples") {
+    const items = await prisma.satisfactionImportItem.findMany({
+      where: { sourceType: "drive_satisfaction" },
+      select: {
+        candidateCompanyName: true,
+        candidateCourseName: true,
+        candidateName: true,
+        responseDate: true,
+        sourceRef: true,
+      },
+      take: 30,
+      orderBy: { createdAt: "desc" },
+    });
+    return NextResponse.json({
+      ok: true,
+      mode: "drive_filename_samples",
+      samples: items.map((it) => {
+        const ref = (it.sourceRef as RawRecord | null) ?? {};
+        return {
+          company: it.candidateCompanyName,
+          course: it.candidateCourseName,
+          candidate: it.candidateName,
+          response_date: it.responseDate?.toISOString().slice(0, 10) ?? null,
+          file_name: pickString(ref, "file_name"),
+          sheet_title: pickString(ref, "sheet_title"),
+        };
+      }),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // detail=session_coverage — γ-A1-v2 Step 1 진단:
   //   ImportItem.normalizedPayload.session_label / sessionNumber 채움률을 sourceType별로 측정
   //   + multi_instructors 165건 (γ-A1 결과)의 sourceType 분포 + 차수 정보 위치

@@ -308,11 +308,16 @@ export async function GET(request: NextRequest) {
       continue;
     }
 
-    const responseDateStr = pickString(firstRef, "response_date");
-    const responseDate = responseDateStr ? new Date(responseDateStr) : null;
     // γ-A1-v4 C: session 정보를 courseName, sheet_title, file_name 순으로 추출
     const sheetTitle = pickString(firstRef, "sheet_title");
     const fileName = pickString(firstRef, "file_name");
+    // γ-A1-v14: response_date null이면 created_time fallback (drive 파일 생성 시점 = 강의 시작 직후 추정)
+    const innerForDate = firstRef && (firstRef as RawRecord).source_ref as RawRecord | undefined;
+    const responseDateStr =
+      pickString(firstRef, "response_date") ??
+      pickString(innerForDate, "created_time") ??
+      pickString(firstRef, "created_time");
+    const responseDate = responseDateStr ? new Date(responseDateStr) : null;
 
     // γ-A1-v9 (general): 비정형 companyName 검출 + 재추출
     let effectiveCompany = reg.companyName;

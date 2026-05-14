@@ -56,7 +56,8 @@
     "next": "16.1.6",
     "next-auth": "^5.0.0-beta.30",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "undici": "^8.2.0"
   },
   "prisma": {
     "seed": "node --experimental-strip-types prisma/seed.ts"

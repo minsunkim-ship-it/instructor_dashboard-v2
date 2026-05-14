@@ -84,6 +84,84 @@ export async function GET(request: NextRequest) {
   }
 
   // ---------------------------------------------------------------------------
+  // detail=corporate_instructors — Instructor.name이 법인/사업자 추정인 행 검출
+  //   사용자 인사이트(2026-05-14): "계약시트 강사명 컬럼에 사업자/법인이 들어가 있을 가능성"
+  //   → 법인 instructor + 그 contactEmail 그룹 = 사업자 소속 강사 list = γ-C1 B step의 진짜 source
+  // ---------------------------------------------------------------------------
+  if (detail === "corporate_instructors") {
+    const instructorsAll = await prisma.instructor.findMany({
+      select: {
+        id: true,
+        name: true,
+        contactEmail: true,
+        satisfactionAvg: true,
+        satisfactionCount: true,
+        totalCourses: true,
+        affiliation: true,
+        isFulltime: true,
+      },
+    });
+
+    // 법인/사업자 후보 검출 patterns
+    function isCorporateName(name: string): { isCorp: boolean; reason: string } {
+      // 패턴 1: 한글 외 문자(영문/숫자) 포함
+      if (/[a-zA-Z0-9]/.test(name)) {
+        return { isCorp: true, reason: "non_korean_char" };
+      }
+      // 패턴 2: 명백한 법인 suffix
+      const corpSuffixes = ["랩스", "랩", "주식회사", "코퍼레이션", "미디어", "컨설팅", "스튜디오", "에듀", "솔루션", "테크"];
+      for (const suf of corpSuffixes) {
+        if (name.endsWith(suf)) return { isCorp: true, reason: `suffix:${suf}` };
+      }
+      // 패턴 3: 한글 5자 초과 (개인명은 보통 2-4자)
+      if (name.length > 4 && /^[가-힣]+$/.test(name)) {
+        return { isCorp: true, reason: "long_korean" };
+      }
+      return { isCorp: false, reason: "" };
+    }
+
+    const corpCandidates = instructorsAll
+      .map((i) => ({
+        inst: i,
+        check: isCorporateName(i.name),
+      }))
+      .filter((x) => x.check.isCorp);
+
+    // 각 corp의 contactEmail 그룹 (같은 이메일의 다른 instructor list)
+    const emailToInstructors = new Map<string, string[]>();
+    for (const i of instructorsAll) {
+      if (!i.contactEmail) continue;
+      const k = i.contactEmail.toLowerCase().trim();
+      const arr = emailToInstructors.get(k) ?? [];
+      arr.push(i.name);
+      emailToInstructors.set(k, arr);
+    }
+
+    return NextResponse.json({
+      ok: true,
+      mode: "corporate_instructors",
+      total_instructors: instructorsAll.length,
+      total_corporate_candidates: corpCandidates.length,
+      samples: corpCandidates.slice(0, 30).map((x) => {
+        const emailGroup = x.inst.contactEmail
+          ? emailToInstructors.get(x.inst.contactEmail.toLowerCase().trim()) ?? []
+          : [];
+        return {
+          name: x.inst.name,
+          contactEmail: x.inst.contactEmail,
+          satisfactionAvg: x.inst.satisfactionAvg !== null ? Number(x.inst.satisfactionAvg) : null,
+          satisfactionCount: x.inst.satisfactionCount,
+          totalCourses: x.inst.totalCourses,
+          affiliation: x.inst.affiliation,
+          isFulltime: x.inst.isFulltime,
+          detection_reason: x.check.reason,
+          shared_email_with: emailGroup.filter((n) => n !== x.inst.name),
+        };
+      }),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // detail=homonym_disambig — 동명이인 그룹별 disambig 입력 풀 (γ-C1 핵심)
   // 각 강사의 (회사 set, 시점 range, 에이전시 그룹) + ambiguous candidates 매칭 가능성
   // ---------------------------------------------------------------------------

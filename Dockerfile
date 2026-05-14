@@ -19,7 +19,8 @@ RUN apt-get update \
     gosu \
     openssl \
     sqlite3 \
-  && update-ca-certificates \
+  && apt-get upgrade -y ca-certificates \
+  && update-ca-certificates --fresh \
   && rm -rf /var/lib/apt/lists/*
 
 FROM base AS deps

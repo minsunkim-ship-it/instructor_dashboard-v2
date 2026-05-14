@@ -1,0 +1,32 @@
+name: External Slack Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Lookback days (default 365)"
+        required: false
+        default: "365"
+  schedule:
+    # 매일 09:00 KST = 00:00 UTC
+    - cron: "0 0 * * *"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run Slack backfill (Slack API → Coolify ingest)
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
+          INGEST_URL: https://instructor-dashboard.skillflo.app/api/admin/ingest-raw-slack
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '365' }}
+        run: node scripts/external-slack-backfill.mjs

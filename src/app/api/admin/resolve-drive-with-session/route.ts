@@ -190,6 +190,18 @@ export async function GET(request: NextRequest) {
   });
   const instructorByName = new Map(allInstructors.map((i) => [i.name, i]));
 
+  // γ-A1-v6: TeachingHistory 직접 매칭용 — 운영보고 매칭 0건 시 fallback
+  const allTHs = await prisma.teachingHistory.findMany({
+    select: {
+      instructorDbId: true,
+      companyName: true,
+      courseName: true,
+      startDate: true,
+      endDate: true,
+    },
+  });
+  const instructorById = new Map(allInstructors.map((i) => [i.id, i]));
+
   // 5) 분류
   interface Classification {
     registryKey: string;
@@ -263,6 +275,40 @@ export async function GET(request: NextRequest) {
     });
 
     if (matched.length === 0) {
+      // γ-A1-v6: TeachingHistory fallback — ops_report 매칭 0건이면 계약시트로 직접 매칭
+      const thMatched = allTHs.filter((t) => {
+        if (!companyMatches(t.companyName, reg.companyName)) return false;
+        // 강의 기간이 responseDate 포함 ±14일
+        const start = t.startDate?.getTime() ?? null;
+        const end = t.endDate?.getTime() ?? null;
+        const respMs = responseDate.getTime();
+        if (start !== null && end !== null) {
+          return respMs >= start - 14 * 24 * 60 * 60 * 1000 && respMs <= end + 14 * 24 * 60 * 60 * 1000;
+        }
+        if (start !== null) {
+          return Math.abs(respMs - start) <= 30 * 24 * 60 * 60 * 1000;
+        }
+        return false;
+      });
+      const thInstructorIds = Array.from(new Set(thMatched.map((t) => t.instructorDbId)));
+      if (thInstructorIds.length === 1) {
+        const inst = instructorById.get(thInstructorIds[0]);
+        classifications.push({
+          registryKey: reg.registryKey,
+          company: reg.companyName,
+          course: reg.courseName,
+          candidate: reg.candidateName,
+          response_count: reg.responseCount,
+          response_date: responseDateStr,
+          course_session: courseSession,
+          status: "strong_single_by_date", // TH match도 같은 카테고리 (slot reuse)
+          matched_instructors: inst ? [inst.name] : [],
+          matched_instructor_id: inst?.id ?? null,
+          matched_instructor_name: inst?.name ?? null,
+          evidence_count: thMatched.length,
+        });
+        continue;
+      }
       classifications.push({
         registryKey: reg.registryKey,
         company: reg.companyName,

@@ -178,6 +178,17 @@ export async function GET(request: NextRequest) {
     select: { id: true, name: true },
   });
   const instructorByName = new Map(allInstructors.map((i) => [i.name, i]));
+  const instructorById = new Map(allInstructors.map((i) => [i.id, i]));
+
+  // γ-A1-v6: TeachingHistory fallback
+  const allTHs = await prisma.teachingHistory.findMany({
+    select: {
+      instructorDbId: true,
+      companyName: true,
+      startDate: true,
+      endDate: true,
+    },
+  });
 
   // γ-A1-v4 D: 알려진 회사명 set (TeachingHistory.companyName distinct)
   // gmail subject/body의 비정형 companyName을 진짜 회사명으로 재추출하는 anchor
@@ -364,6 +375,46 @@ export async function GET(request: NextRequest) {
     });
 
     if (opsMatched.length === 0) {
+      // γ-A1-v6: TeachingHistory fallback (effectiveCompany 사용)
+      if (effectiveCompany) {
+        const thMatched = allTHs.filter((t) => {
+          if (!companyMatches(t.companyName, effectiveCompany)) return false;
+          const start = t.startDate?.getTime() ?? null;
+          const end = t.endDate?.getTime() ?? null;
+          const respMs = responseDate.getTime();
+          if (start !== null && end !== null) {
+            return respMs >= start - 14 * 24 * 60 * 60 * 1000 && respMs <= end + 14 * 24 * 60 * 60 * 1000;
+          }
+          if (start !== null) {
+            return Math.abs(respMs - start) <= 30 * 24 * 60 * 60 * 1000;
+          }
+          return false;
+        });
+        const thInstructorIds = Array.from(new Set(thMatched.map((t) => t.instructorDbId)));
+        if (thInstructorIds.length === 1) {
+          const inst = instructorById.get(thInstructorIds[0]);
+          if (inst) {
+            classifications.push({
+              registryKey: reg.registryKey,
+              company: effectiveCompany,
+              course: reg.courseName,
+              candidate: reg.candidateName,
+              response_count: reg.responseCount,
+              response_date: responseDateStr,
+              subject_instructor: subjectInstructor,
+              subject_company: subjectCompany,
+              session_label: sessionLabel,
+              session_number: sessionNumber,
+              status: "strong_by_date_only", // TH 직접 매칭도 같은 분류 (운영자 검수 동등)
+              matched_instructors: [inst.name],
+              matched_instructor_id: inst.id,
+              matched_instructor_name: inst.name,
+              evidence_count: thMatched.length,
+            });
+            continue;
+          }
+        }
+      }
       classifications.push({
         registryKey: reg.registryKey,
         company: effectiveCompany,

@@ -41,6 +41,8 @@ export async function register() {
         },
       })
     );
+    // marker for /api/admin/debug-instrumentation
+    (process as unknown as { __TLS_DISPATCHER_SET__?: number }).__TLS_DISPATCHER_SET__ = trusted.length;
     // eslint-disable-next-line no-console
     console.log(
       `[instrumentation] TLS dispatcher set with ${trusted.length} trusted root certs`

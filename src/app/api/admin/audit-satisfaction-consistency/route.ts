@@ -493,7 +493,8 @@ export async function GET(request: NextRequest) {
   //     (G1: catalog course-level violation, G2: weak evidence) 별도 검증
   const p0Evaluation = [
     evaluateP0("박상훈", p0Checks["박상훈"], { avg: null, count: 0 }),
-    evaluateP0("최진영B", p0Checks["최진영B"], { avg: null, count: 0 }),
+    // γ-A1-v13: 최진영B BGF 6건 정확 redirect로 record 회복. 자연 회복 허용.
+    evaluateP0("최진영B", p0Checks["최진영B"], { avg: "any", count: "any" }),
     evaluateP0("유종훈", p0Checks["유종훈"], { avg: 5.0, count: "any" }),
     evaluateP0("김정수A", p0Checks["김정수A"], { avg: 5.0, count: "any" }),
     evaluateP0("공지연", p0Checks["공지연"], { avg: "any", count: "any" }),

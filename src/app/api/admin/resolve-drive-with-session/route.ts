@@ -217,7 +217,6 @@ export async function GET(request: NextRequest) {
     },
   });
   const instructorById = new Map(allInstructors.map((i) => [i.id, i]));
-  const instructorByName = new Map(allInstructors.map((i) => [i.name, i]));
 
   // 5) 분류
   interface Classification {

@@ -95,6 +95,122 @@ export async function GET(request: NextRequest) {
   }
 
   // ---------------------------------------------------------------------------
+  // detail=session_coverage — γ-A1-v2 Step 1 진단:
+  //   ImportItem.normalizedPayload.session_label / sessionNumber 채움률을 sourceType별로 측정
+  //   + multi_instructors 165건 (γ-A1 결과)의 sourceType 분포 + 차수 정보 위치
+  //   + gmail의 경우 subject 파싱 가능률 추정
+  // ---------------------------------------------------------------------------
+  if (detail === "session_coverage") {
+    // 1) ImportItem 전체 normalizedPayload.session_label 채움률
+    const items = await prisma.satisfactionImportItem.findMany({
+      select: {
+        sourceType: true,
+        rawPayload: true,
+        normalizedPayload: true,
+        sourceRef: true,
+      },
+      take: 3000,
+    });
+    const bySource = new Map<
+      string,
+      {
+        total: number;
+        with_session_label: number;
+        with_session_label_in_normalized: number;
+        session_in_raw_or_ref: number;
+        gmail_subject_has_instructor_pattern: number;
+        gmail_subject_has_company_pattern: number;
+        session_label_samples: string[];
+        raw_keys_union: Set<string>;
+      }
+    >();
+
+    for (const it of items) {
+      const np = (it.normalizedPayload as RawRecord | null) ?? {};
+      const raw = (it.rawPayload as RawRecord | null) ?? {};
+      const ref = (it.sourceRef as RawRecord | null) ?? {};
+      const npSession = pickString(np, "session_label");
+      const refSession = pickString(ref, "session_label");
+      const fileNameSession = (() => {
+        const fn = pickString(ref, "file_name");
+        if (!fn) return null;
+        const m = fn.match(/(\d+)\s*(?:회차|차수|일차)/);
+        return m ? m[0] : null;
+      })();
+      const subjectInstructor = (() => {
+        const s = pickString(raw, "subject");
+        if (!s) return false;
+        return /[가-힣]{2,4}[A-Z]?\s*(?:강사|대표|교수|선생)님/.test(s);
+      })();
+      const subjectCompany = (() => {
+        const s = pickString(raw, "subject");
+        if (!s) return false;
+        // 회사명 pattern: 한글 회사명 또는 "[패스트캠퍼스] {강사}강사님께 - {회사}"
+        return /[-_]\s*[가-힣\w()]{2,30}\s*[-_(]/.test(s);
+      })();
+
+      const bucket = bySource.get(it.sourceType) ?? {
+        total: 0,
+        with_session_label: 0,
+        with_session_label_in_normalized: 0,
+        session_in_raw_or_ref: 0,
+        gmail_subject_has_instructor_pattern: 0,
+        gmail_subject_has_company_pattern: 0,
+        session_label_samples: [],
+        raw_keys_union: new Set<string>(),
+      };
+      bucket.total += 1;
+      if (npSession) bucket.with_session_label_in_normalized += 1;
+      if (npSession || refSession) bucket.with_session_label += 1;
+      if (refSession || fileNameSession) bucket.session_in_raw_or_ref += 1;
+      if (it.sourceType === "gmail_summary") {
+        if (subjectInstructor) bucket.gmail_subject_has_instructor_pattern += 1;
+        if (subjectCompany) bucket.gmail_subject_has_company_pattern += 1;
+      }
+      if (npSession && bucket.session_label_samples.length < 5) {
+        bucket.session_label_samples.push(npSession);
+      }
+      for (const k of Object.keys(raw)) bucket.raw_keys_union.add(k);
+      bySource.set(it.sourceType, bucket);
+    }
+
+    const result = Array.from(bySource.entries()).map(([sourceType, b]) => ({
+      sourceType,
+      total: b.total,
+      with_session_label_in_normalized: b.with_session_label_in_normalized,
+      session_label_rate: b.total > 0 ? `${((b.with_session_label_in_normalized / b.total) * 100).toFixed(1)}%` : "0%",
+      session_in_raw_or_ref: b.session_in_raw_or_ref,
+      gmail_subject_has_instructor_pattern: b.gmail_subject_has_instructor_pattern,
+      gmail_subject_has_company_pattern: b.gmail_subject_has_company_pattern,
+      session_label_samples: b.session_label_samples,
+      raw_keys: Array.from(b.raw_keys_union),
+    }));
+
+    // 2) multi_instructors 165건의 sourceType 분포 (registry pending where suggestedInstructorId is null)
+    // → 정확히 multi_instructors와 일치 안 하지만 비슷 분포
+    const pendingRegistries = await prisma.satisfactionReviewRegistry.findMany({
+      where: { matchStatus: "pending" },
+      select: { sourceType: true },
+    });
+    const pendingBySource = new Map<string, number>();
+    for (const r of pendingRegistries) {
+      pendingBySource.set(r.sourceType, (pendingBySource.get(r.sourceType) ?? 0) + 1);
+    }
+
+    return NextResponse.json({
+      ok: true,
+      mode: "session_coverage",
+      total_import_items_sampled: items.length,
+      by_source_type: result,
+      pending_registries_total: pendingRegistries.length,
+      pending_by_source_type: Array.from(pendingBySource.entries()).map(([k, v]) => ({
+        sourceType: k,
+        count: v,
+      })),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // detail=session_in_pending — pending registry에 차수(session) 정보가 있는지 점검
   //   사용자 인사이트(2026-05-14): 만족도 시트의 차수 ↔ 운영보고 메시지의 차수 매칭으로
   //   다중 강사 자동 분배 가능 (KT AI Campus 5회차 = 김진태)

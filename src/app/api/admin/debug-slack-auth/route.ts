@@ -22,8 +22,11 @@ export async function GET(request: NextRequest) {
   };
   try {
     const res = await fetch("https://slack.com/api/auth.test", {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+      },
     });
     result.http_status = res.status;
     const txt = await res.text();

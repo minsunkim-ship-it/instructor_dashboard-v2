@@ -536,7 +536,12 @@ export async function GET(request: NextRequest) {
       if (!reg || reg.avgScore === null) continue;
       const refs = Array.isArray(reg.sourceRefs) ? (reg.sourceRefs as RawRecord[]) : [];
       const firstRef = refs[0] as RawRecord | undefined;
-      const responseDateStr = pickString(firstRef, "response_date");
+      // γ-A1-v14: response_date null이면 created_time fallback (dry_run과 동일)
+      const innerForDate = firstRef && (firstRef as RawRecord).source_ref as RawRecord | undefined;
+      const responseDateStr =
+        pickString(firstRef, "response_date") ??
+        pickString(innerForDate, "created_time") ??
+        pickString(firstRef, "created_time");
       if (!responseDateStr) continue;
       const responseDate = new Date(responseDateStr);
       if (Number.isNaN(responseDate.getTime())) continue;

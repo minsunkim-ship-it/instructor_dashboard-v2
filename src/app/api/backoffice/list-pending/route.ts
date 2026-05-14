@@ -8,6 +8,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { auth, isAuthDisabled } from "@/auth";
+import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
 
 export const maxDuration = 30;
 export const dynamic = "force-dynamic";
@@ -33,7 +34,9 @@ function extractResolvedIds(sourceRefs: unknown): string[] {
 }
 
 export async function GET(request: NextRequest) {
-  if (!isAuthDisabled()) {
+  // CRON_SECRET (admin/debug용) 우선 검사
+  const cronOk = isValidCronSecret(request.headers.get(CRON_SECRET_HEADER));
+  if (!cronOk && !isAuthDisabled()) {
     const session = await auth();
     if (!session?.user?.email) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });

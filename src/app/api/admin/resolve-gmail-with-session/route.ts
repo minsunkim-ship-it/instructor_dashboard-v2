@@ -236,6 +236,29 @@ export async function GET(request: NextRequest) {
   const classifications: Classification[] = [];
 
   for (const reg of pending) {
+    // G2 (general safety rule): respondentCount=1 + companyName=null 은
+    // evidence가 약해 자동 매칭 위험. β-1 D3 같은 정직화 결과를 손상시킬 수 있어
+    // 모든 신호를 무시하고 pending_review 유지.
+    if (reg.responseCount <= 1 && !reg.companyName) {
+      const refs = Array.isArray(reg.sourceRefs) ? (reg.sourceRefs as RawRecord[]) : [];
+      const firstRef = refs[0] as RawRecord | undefined;
+      classifications.push({
+        registryKey: reg.registryKey,
+        company: reg.companyName,
+        course: reg.courseName,
+        candidate: reg.candidateName,
+        response_count: reg.responseCount,
+        response_date: pickString(firstRef, "response_date"),
+        subject_instructor: null,
+        subject_company: null,
+        session_label: null,
+        session_number: null,
+        status: "no_signal",
+        matched_instructors: [],
+      });
+      continue;
+    }
+
     const refs = Array.isArray(reg.sourceRefs) ? (reg.sourceRefs as RawRecord[]) : [];
     const firstRef = refs[0] as RawRecord | undefined;
     const responseDateStr = pickString(firstRef, "response_date");

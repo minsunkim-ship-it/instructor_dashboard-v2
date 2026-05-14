@@ -84,6 +84,62 @@ export async function GET(request: NextRequest) {
   }
 
   // ---------------------------------------------------------------------------
+  // detail=affiliation_groups — Instructor.affiliation 컬럼 분포
+  //   사용자 인사이트 후속: 법인은 name보다 affiliation 컬럼에 들어있을 가능성 (예: "알자(이태화)")
+  //   같은 affiliation = 같은 사업자 소속 강사 list = γ-C1 B step source
+  // ---------------------------------------------------------------------------
+  if (detail === "affiliation_groups") {
+    const all = await prisma.instructor.findMany({
+      select: {
+        id: true,
+        name: true,
+        affiliation: true,
+        contactEmail: true,
+        satisfactionCount: true,
+        totalCourses: true,
+      },
+    });
+    const byAff = new Map<string, typeof all>();
+    let withAff = 0;
+    for (const i of all) {
+      if (!i.affiliation) continue;
+      const key = i.affiliation.trim();
+      if (!key) continue;
+      withAff += 1;
+      const arr = byAff.get(key) ?? [];
+      arr.push(i);
+      byAff.set(key, arr);
+    }
+    const groups = Array.from(byAff.entries())
+      .filter(([, arr]) => arr.length >= 2) // 그룹 = 같은 affiliation 2명 이상
+      .map(([aff, arr]) => ({
+        affiliation: aff,
+        count: arr.length,
+        // 그룹 내 contactEmail 유니크 수 (1이면 모두 같은 이메일 = 사업자 대표)
+        unique_emails: new Set(
+          arr.map((i) => i.contactEmail).filter((v): v is string => Boolean(v))
+        ).size,
+        instructors: arr.map((i) => ({
+          name: i.name,
+          contactEmail: i.contactEmail,
+          totalCourses: i.totalCourses,
+          satisfactionCount: i.satisfactionCount,
+        })),
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return NextResponse.json({
+      ok: true,
+      mode: "affiliation_groups",
+      total_instructors: all.length,
+      with_affiliation: withAff,
+      affiliation_rate: all.length > 0 ? `${((withAff / all.length) * 100).toFixed(2)}%` : "0%",
+      total_groups: groups.length,
+      top_groups: groups.slice(0, 25),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // detail=corporate_instructors — Instructor.name이 법인/사업자 추정인 행 검출
   //   사용자 인사이트(2026-05-14): "계약시트 강사명 컬럼에 사업자/법인이 들어가 있을 가능성"
   //   → 법인 instructor + 그 contactEmail 그룹 = 사업자 소속 강사 list = γ-C1 B step의 진짜 source

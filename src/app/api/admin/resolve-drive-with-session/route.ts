@@ -218,6 +218,35 @@ export async function GET(request: NextRequest) {
   });
   const instructorById = new Map(allInstructors.map((i) => [i.id, i]));
 
+  // γ-A1-v9 (general): 비정형 companyName 검출 + 알려진 회사명 재추출
+  // 결함 사례: '롯데웰푸드_ 25년 AI·Data Ops...' (underscore overrun)
+  //          '25/7/25' (날짜를 회사로 파싱) — file_name 첫 토큰이 날짜인 경우
+  const thCompaniesRaw = await prisma.teachingHistory.findMany({
+    select: { companyName: true },
+    distinct: ["companyName"],
+  });
+  const knownCompanies = thCompaniesRaw
+    .map((t) => t.companyName)
+    .filter((c): c is string => c !== null && c.length >= 2)
+    .sort((a, b) => b.length - a.length);
+
+  function looksUnparsedCompany(c: string | null | undefined): boolean {
+    if (!c) return true;
+    if (c.length > 25) return true;
+    // 날짜 패턴 (25/7/25, 2025-07-25 등)
+    if (/^\d{1,4}[/.\-]\d{1,2}([/.\-]\d{1,2})?$/.test(c.trim())) return true;
+    // underscore overrun (회사명에 _ 포함은 정상이지만 5개 이상 또는 한국어 어구는 비정형)
+    if ((c.match(/_/g) ?? []).length >= 1 && c.length > 20) return true;
+    return false;
+  }
+  function findKnownCompanyInText(text: string | null | undefined): string | null {
+    if (!text) return null;
+    for (const c of knownCompanies) {
+      if (text.includes(c)) return c;
+    }
+    return null;
+  }
+
   // 5) 분류
   interface Classification {
     registryKey: string;
@@ -268,6 +297,15 @@ export async function GET(request: NextRequest) {
     // γ-A1-v4 C: session 정보를 courseName, sheet_title, file_name 순으로 추출
     const sheetTitle = pickString(firstRef, "sheet_title");
     const fileName = pickString(firstRef, "file_name");
+
+    // γ-A1-v9 (general): 비정형 companyName 검출 + 재추출
+    let effectiveCompany = reg.companyName;
+    if (looksUnparsedCompany(effectiveCompany)) {
+      const fromFile = findKnownCompanyInText(fileName);
+      const fromSheet = findKnownCompanyInText(sheetTitle);
+      const fromCourse = findKnownCompanyInText(reg.courseName);
+      effectiveCompany = fromFile ?? fromSheet ?? fromCourse ?? effectiveCompany;
+    }
     const courseSession =
       extractSessionNumber(reg.courseName) ??
       extractSessionNumber(sheetTitle) ??
@@ -302,7 +340,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    if (!reg.companyName) {
+    if (!effectiveCompany) {
       classifications.push({
         registryKey: reg.registryKey,
         company: null,
@@ -331,9 +369,9 @@ export async function GET(request: NextRequest) {
       continue;
     }
 
-    // 시점 ±WINDOW_DAYS 내 운영보고 메시지 + 회사 alias 매칭
+    // 시점 ±WINDOW_DAYS 내 운영보고 메시지 + 회사 alias 매칭 (effectiveCompany)
     const matched = opsMessages.filter((m) => {
-      if (!companyMatches(m.company, reg.companyName)) return false;
+      if (!companyMatches(m.company, effectiveCompany)) return false;
       const diff = Math.abs(m.activityAt.getTime() - responseDate.getTime()) / (1000 * 60 * 60 * 24);
       return diff <= WINDOW_DAYS;
     });
@@ -341,7 +379,7 @@ export async function GET(request: NextRequest) {
     if (matched.length === 0) {
       // γ-A1-v6: TeachingHistory fallback — ops_report 매칭 0건이면 계약시트로 직접 매칭
       const thMatched = allTHs.filter((t) => {
-        if (!companyMatches(t.companyName, reg.companyName)) return false;
+        if (!companyMatches(t.companyName, effectiveCompany)) return false;
         // 강의 기간이 responseDate 포함 ±14일
         const start = t.startDate?.getTime() ?? null;
         const end = t.endDate?.getTime() ?? null;

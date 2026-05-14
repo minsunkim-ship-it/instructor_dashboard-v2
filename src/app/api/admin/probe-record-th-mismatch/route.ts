@@ -26,10 +26,10 @@ function authorize(request: NextRequest): boolean {
   return false;
 }
 
+import { normalizeCompanyWithAlias } from "@/lib/company-aliases";
+
 function normalizeCompany(value: string | null | undefined): string {
-  return (value ?? "")
-    .toLowerCase()
-    .replace(/[\s()[\]{}.,:;'"`~!?+\-_/\\|]+/g, "");
+  return normalizeCompanyWithAlias(value);
 }
 
 function companyMatches(a: string, b: string): boolean {

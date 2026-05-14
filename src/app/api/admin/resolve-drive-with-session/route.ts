@@ -22,6 +22,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
 import { refreshSatisfactionAggregates } from "@/lib/pipeline/satisfaction-applier";
+import { getAllSatisfactionSheetSources } from "@/lib/pipeline/satisfaction-sheets-collector";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -134,6 +135,21 @@ export async function GET(request: NextRequest) {
 
   const startedAt = Date.now();
 
+  // G1 (general safety): catalog satisfactionLevel="course" 또는
+  // instructorMappingMode="course_level"인 source_key는 자동 매칭 차단.
+  // β-1 D3 fix를 모든 resolver에 일반 적용. dongkuk Basic 6/7차수 등 다중 강사
+  // 책임 차수 source에서 어떤 신호로도 단일 강사 auto_accept 금지.
+  const catalogSources = await getAllSatisfactionSheetSources();
+  const courseLevelSourceKeys = new Set(
+    catalogSources
+      .filter(
+        (s) =>
+          s.satisfactionLevel === "course" ||
+          s.instructorMappingMode === "course_level"
+      )
+      .map((s) => s.key)
+  );
+
   // 1) 운영보고 메시지 parse
   const slackItems = await prisma.activityImportItem.findMany({
     where: { sourceType: "slack" },
@@ -228,6 +244,25 @@ export async function GET(request: NextRequest) {
   for (const reg of pending) {
     const refs = Array.isArray(reg.sourceRefs) ? (reg.sourceRefs as RawRecord[]) : [];
     const firstRef = refs[0] as RawRecord | undefined;
+
+    // G1 guard — catalog course-level source는 자동 매칭 차단
+    const innerRef = firstRef?.source_ref as RawRecord | undefined;
+    const sourceKey = pickString(innerRef, "source_key") ?? pickString(firstRef, "source_key");
+    if (sourceKey && courseLevelSourceKeys.has(sourceKey)) {
+      classifications.push({
+        registryKey: reg.registryKey,
+        company: reg.companyName,
+        course: reg.courseName,
+        candidate: reg.candidateName,
+        response_count: reg.responseCount,
+        response_date: pickString(firstRef, "response_date"),
+        course_session: null,
+        status: "no_company", // catalog course-level은 강사별 매칭 자체 금지 — 운영자 분배 결정 영역
+        matched_instructors: [],
+      });
+      continue;
+    }
+
     const responseDateStr = pickString(firstRef, "response_date");
     const responseDate = responseDateStr ? new Date(responseDateStr) : null;
     // γ-A1-v4 C: session 정보를 courseName, sheet_title, file_name 순으로 추출

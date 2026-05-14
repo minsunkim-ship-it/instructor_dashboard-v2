@@ -19,6 +19,7 @@ import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
 import { refreshSatisfactionAggregates } from "@/lib/pipeline/satisfaction-applier";
+import { normalizeCompanyWithAlias } from "@/lib/company-aliases";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -32,9 +33,7 @@ function authorize(request: NextRequest): boolean {
 }
 
 function normalizeCompany(value: string | null | undefined): string {
-  return (value ?? "")
-    .toLowerCase()
-    .replace(/[\s()[\]{}.,:;'"`~!?+\-_/\\|]+/g, "");
+  return normalizeCompanyWithAlias(value);
 }
 function companyMatches(a: string, b: string): boolean {
   if (!a || !b) return false;

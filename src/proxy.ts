@@ -64,6 +64,14 @@ const proxyWithAuth = auth((req: AuthProxyRequest) => {
     return buildApiError(401, "UNAUTHORIZED", "유효한 cron secret이 없습니다.");
   }
 
+  // /api/backoffice/*: NextAuth session OR cron secret 둘 다 허용 (운영자 + 관리자 디버그)
+  if (pathname.startsWith("/api/backoffice/")) {
+    if (isAuthorizedCronRequest(req)) {
+      return NextResponse.next();
+    }
+    // session check는 아래 fall-through에서 진행 — req.auth 없으면 401
+  }
+
   if (pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }

@@ -95,6 +95,79 @@ export async function GET(request: NextRequest) {
   }
 
   // ---------------------------------------------------------------------------
+  // detail=drive_signal_coverage — drive_satisfaction record 전체에 대해 차수/강사 신호 매칭률
+  //   sheet_title의 강사명 패턴 / 차수 / 날짜 / 모듈 비율 측정
+  // ---------------------------------------------------------------------------
+  if (detail === "drive_signal_coverage") {
+    const items = await prisma.satisfactionImportItem.findMany({
+      where: { sourceType: "drive_satisfaction" },
+      select: {
+        candidateCompanyName: true,
+        candidateCourseName: true,
+        responseDate: true,
+        sourceRef: true,
+      },
+    });
+    let withInstructorInSheet = 0;
+    let withSessionInCourse = 0;
+    let withSessionInFile = 0;
+    let withDateInSheet = 0;
+    let withModuleInSheet = 0;
+    let withResponseDate = 0;
+    const instructorSheetSamples: Array<{ sheet_title: string | null; extracted: string }> = [];
+    const sessionInCourseSamples: Array<{ course: string | null; extracted: string }> = [];
+    for (const it of items) {
+      const ref = (it.sourceRef as RawRecord | null) ?? {};
+      const sheetTitle = pickString(ref, "sheet_title");
+      const fileName = pickString(ref, "file_name");
+      const course = it.candidateCourseName;
+      if (it.responseDate) withResponseDate += 1;
+      // 신호 1: sheet_title에 "{이름}강사님"
+      if (sheetTitle) {
+        const m = sheetTitle.match(/([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/);
+        if (m) {
+          withInstructorInSheet += 1;
+          if (instructorSheetSamples.length < 10)
+            instructorSheetSamples.push({ sheet_title: sheetTitle, extracted: m[1] });
+        }
+      }
+      // 신호 2: course/file_name에 "N차수/N회차/N일차"
+      const sessionRegex = /(\d+)\s*(?:차수|회차|일차)/;
+      if (course && sessionRegex.test(course)) {
+        withSessionInCourse += 1;
+        const m = course.match(sessionRegex);
+        if (m && sessionInCourseSamples.length < 10)
+          sessionInCourseSamples.push({ course, extracted: m[0] });
+      }
+      if (fileName && sessionRegex.test(fileName)) withSessionInFile += 1;
+      // 신호 3: sheet_title에 날짜 (0412, 3/8 등)
+      if (sheetTitle && /\d{1,2}[/.\-]\d{1,2}|^\d{4}$|^\d{3,4}$/.test(sheetTitle)) {
+        withDateInSheet += 1;
+      }
+      // 신호 4: sheet_title에 모듈/회차 (1회차, 모듈4 등)
+      if (sheetTitle && /(모듈|회차|차수|일차|Day|day|Module|module)\s*\d+/.test(sheetTitle)) {
+        withModuleInSheet += 1;
+      }
+    }
+    return NextResponse.json({
+      ok: true,
+      mode: "drive_signal_coverage",
+      total_drive_records: items.length,
+      with_instructor_in_sheet_title: withInstructorInSheet,
+      with_session_in_course: withSessionInCourse,
+      with_session_in_filename: withSessionInFile,
+      with_date_in_sheet_title: withDateInSheet,
+      with_module_in_sheet_title: withModuleInSheet,
+      with_response_date: withResponseDate,
+      rate_instructor_in_sheet: items.length > 0 ? `${((withInstructorInSheet / items.length) * 100).toFixed(1)}%` : "0%",
+      rate_session_in_course: items.length > 0 ? `${((withSessionInCourse / items.length) * 100).toFixed(1)}%` : "0%",
+      rate_response_date: items.length > 0 ? `${((withResponseDate / items.length) * 100).toFixed(1)}%` : "0%",
+      instructor_sheet_samples: instructorSheetSamples,
+      session_course_samples: sessionInCourseSamples,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // detail=drive_filename_samples — drive_satisfaction의 file_name 패턴 dump
   //   229건 pending이 drive_satisfaction. file_name regex 정확히 짜야 차수 추출 가능
   // ---------------------------------------------------------------------------

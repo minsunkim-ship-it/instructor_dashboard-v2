@@ -18,6 +18,9 @@ const KEYS = [
   "GOOGLE_CLIENT_SECRET",
   "DATABASE_URL",
   "CRON_SECRET",
+  "NODE_OPTIONS",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
 ];
 
 export async function GET(request: NextRequest) {
@@ -26,10 +29,13 @@ export async function GET(request: NextRequest) {
   }
   const presence = KEYS.map((k) => {
     const v = process.env[k];
+    // NODE_OPTIONS / NODE_EXTRA_CA_CERTS / SSL_CERT_FILE는 secret 아님 — 값 노출 OK
+    const exposeValue = k === "NODE_OPTIONS" || k === "NODE_EXTRA_CA_CERTS" || k === "SSL_CERT_FILE";
     return {
       key: k,
       present: typeof v === "string" && v.length > 0,
       length: typeof v === "string" ? v.length : 0,
+      value: exposeValue && typeof v === "string" ? v : undefined,
     };
   });
   return NextResponse.json({ ok: true, presence });

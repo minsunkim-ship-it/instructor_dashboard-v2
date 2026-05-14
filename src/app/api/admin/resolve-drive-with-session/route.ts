@@ -35,7 +35,7 @@ function authorize(request: NextRequest): boolean {
 }
 
 const OPS_REPORT_CHANNEL_ID = "C015YD84VGS";
-const WINDOW_DAYS = 14; // γ-A1-v4 B: 7→14 (운영보고 비동기 등록 케이스 대응)
+const WINDOW_DAYS = 30; // γ-A1-v5: 14→30 (운영보고 더 늦게 등록되는 케이스 + alias 부재 회복)
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
 const COMPANY_REGEX = /\(B2B\)\s*([^_\n]+?)[\s_]/;
 const SESSION_REGEX_OPS = /(\d+)\s*(?:회차|차수|일차)/;
@@ -65,13 +65,21 @@ function extractCourseTokens(text: string | null | undefined): string[] {
     .slice(0, 8);
 }
 
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[\s()[\]{}.,:;'"`~!?+\-_/\\|]+/g, "");
+}
+
 function courseTextMatches(opsText: string, registryCourse: string | null | undefined): boolean {
   if (!registryCourse) return false;
   const tokens = extractCourseTokens(registryCourse);
   if (tokens.length === 0) return false;
-  // ops 메시지에 등록 course 토큰 ≥ 1개 포함
+  // γ-A1-v5: normalize 후 substring — "DT기초프로그램" ↔ "DT 기초프로그램(1)" 같은 공백 차이 흡수
+  const normalizedOps = normalizeText(opsText);
   for (const t of tokens) {
-    if (opsText.includes(t)) return true;
+    const nt = normalizeText(t);
+    if (nt.length >= 2 && normalizedOps.includes(nt)) return true;
   }
   return false;
 }

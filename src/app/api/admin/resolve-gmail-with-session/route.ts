@@ -249,6 +249,31 @@ export async function GET(request: NextRequest) {
     const subjectInstructorMatch = subject?.match(SUBJECT_INSTRUCTOR_REGEX);
     const subjectInstructor = subjectInstructorMatch ? subjectInstructorMatch[1] : null;
 
+    // γ-A1-v5: body 강사명 직접 추출 (body에 "정백 강사" 같이 명시된 케이스)
+    // subject가 "강호신 대리님께" 같이 강사 아닌 수신인이면 body가 진짜 정보원
+    let bodyInstructor: string | null = null;
+    if (body) {
+      // {이름}\s?(강사|대표|교수|선생) — 강사님께 패턴이 아니어도 OK
+      const bodyMatches = Array.from(body.matchAll(INSTRUCTOR_REGEX));
+      // 추가: "강사:" 또는 ": 강사" 패턴도 매칭 ("A반: 정백 강사")
+      const altRegex = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)(?:\s|$|[\s.,:;])/g;
+      const altMatches = Array.from(body.matchAll(altRegex));
+      const allCandidates = [...bodyMatches, ...altMatches].map((m) => m[1]);
+      // 가장 자주 등장한 강사 이름 (Instructor 정확 일치하는 것 중)
+      const counts = new Map<string, number>();
+      for (const c of allCandidates) {
+        if (instructorByName.has(c)) {
+          counts.set(c, (counts.get(c) ?? 0) + 1);
+        }
+      }
+      // 단일 후보가 있으면 그것. 동률이면 첫 매칭.
+      let best: { name: string; count: number } | null = null;
+      for (const [name, count] of counts) {
+        if (!best || count > best.count) best = { name, count };
+      }
+      bodyInstructor = best?.name ?? null;
+    }
+
     // 신호: subject 회사명 (best-effort)
     const subjectCompanyMatch = subject?.match(SUBJECT_COMPANY_REGEX);
     const subjectCompany = subjectCompanyMatch ? subjectCompanyMatch[1].trim() : null;
@@ -300,6 +325,30 @@ export async function GET(request: NextRequest) {
           session_number: sessionNumber,
           status: "strong_by_subject_instructor",
           matched_instructors: [subjectInstructor],
+          matched_instructor_id: inst.id,
+          matched_instructor_name: inst.name,
+        });
+        continue;
+      }
+    }
+
+    // ★ 신호 1b: body 강사명 (subject parser 실패 시) — γ-A1-v5
+    if (bodyInstructor) {
+      const inst = instructorByName.get(bodyInstructor);
+      if (inst) {
+        classifications.push({
+          registryKey: reg.registryKey,
+          company: effectiveCompany,
+          course: reg.courseName,
+          candidate: reg.candidateName,
+          response_count: reg.responseCount,
+          response_date: responseDateStr,
+          subject_instructor: subjectInstructor,
+          subject_company: subjectCompany,
+          session_label: sessionLabel,
+          session_number: sessionNumber,
+          status: "strong_by_subject_instructor", // body도 같은 status 카테고리 (운영자 검수 동등 안전)
+          matched_instructors: [bodyInstructor],
           matched_instructor_id: inst.id,
           matched_instructor_name: inst.name,
         });

@@ -86,6 +86,7 @@ export async function GET(request: NextRequest) {
     responseCount: number | null;
     responseDate: string | null;
     sourceType: string;
+    sourceRefRaw?: unknown;
   }
   const mismatches: Mismatch[] = [];
   let totalWithResolved = 0;
@@ -115,6 +116,7 @@ export async function GET(request: NextRequest) {
       responseCount: r.respondentCount,
       responseDate: r.responseDate?.toISOString().slice(0, 10) ?? null,
       sourceType: r.sourceType,
+      sourceRefRaw: r.sourceRef,
     });
   }
 

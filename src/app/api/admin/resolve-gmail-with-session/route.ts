@@ -283,16 +283,19 @@ export async function GET(request: NextRequest) {
     const subjectInstructorMatch = subject?.match(SUBJECT_INSTRUCTOR_REGEX);
     const subjectInstructor = subjectInstructorMatch ? subjectInstructorMatch[1] : null;
 
-    // γ-A1-v5: body 강사명 직접 추출 (body에 "정백 강사" 같이 명시된 케이스)
-    // subject가 "강호신 대리님께" 같이 강사 아닌 수신인이면 body가 진짜 정보원
+    // γ-A1-v5/v8 body 강사명 추출 (general 한국어 보고서 패턴 모두 커버)
+    // - "정백 강사" / "정백강사" — 이름 + 직책 suffix
+    // - "강사: 최선신" / "강사 : 오성수" — 직책 + 콜론 + 이름 (앰코 등 일반 양식)
+    // - "강사명: 정백" — 변형 라벨
     let bodyInstructor: string | null = null;
     if (body) {
-      // {이름}\s?(강사|대표|교수|선생) — 강사님께 패턴이 아니어도 OK
       const bodyMatches = Array.from(body.matchAll(INSTRUCTOR_REGEX));
-      // 추가: "강사:" 또는 ": 강사" 패턴도 매칭 ("A반: 정백 강사")
       const altRegex = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)(?:\s|$|[\s.,:;])/g;
       const altMatches = Array.from(body.matchAll(altRegex));
-      const allCandidates = [...bodyMatches, ...altMatches].map((m) => m[1]);
+      // γ-A1-v8: 콜론 형식 "강사: {이름}" / "강사명: {이름}" / "진행 강사: {이름}"
+      const colonRegex = /(?:^|\s|\n|\r|>)(?:진행\s*)?강사(?:명)?\s*[:：]\s*([가-힣]{2,4}[A-Z]?)/g;
+      const colonMatches = Array.from(body.matchAll(colonRegex));
+      const allCandidates = [...bodyMatches, ...altMatches, ...colonMatches].map((m) => m[1]);
       // 가장 자주 등장한 강사 이름 (Instructor 정확 일치하는 것 중)
       const counts = new Map<string, number>();
       for (const c of allCandidates) {

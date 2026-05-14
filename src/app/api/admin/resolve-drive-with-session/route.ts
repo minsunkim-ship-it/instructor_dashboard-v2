@@ -217,6 +217,7 @@ export async function GET(request: NextRequest) {
     },
   });
   const instructorById = new Map(allInstructors.map((i) => [i.id, i]));
+  const instructorByName = new Map(allInstructors.map((i) => [i.name, i]));
 
   // 5) 분류
   interface Classification {
@@ -272,6 +273,35 @@ export async function GET(request: NextRequest) {
       extractSessionNumber(reg.courseName) ??
       extractSessionNumber(sheetTitle) ??
       extractSessionNumber(fileName);
+
+    // γ-A1-v8 (general): sheet_title 또는 file_name에 강사명 직접 명시된 케이스
+    // "주한나강사님 만족도" 같은 패턴 — 강사 본인이 sheet 만든 경우 또는 운영자가 강사명 라벨
+    const titleInstructorRegex = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)/;
+    const sheetInstructorMatch = sheetTitle?.match(titleInstructorRegex);
+    const fileInstructorMatch = fileName?.match(titleInstructorRegex);
+    const titleInstructorName = sheetInstructorMatch?.[1] ?? fileInstructorMatch?.[1] ?? null;
+
+    // γ-A1-v8 신호 0: title에 강사명 명시 → 즉시 단일 강사 매칭 (가장 강한 신호)
+    if (titleInstructorName) {
+      const inst = instructorByName.get(titleInstructorName);
+      if (inst) {
+        classifications.push({
+          registryKey: reg.registryKey,
+          company: reg.companyName,
+          course: reg.courseName,
+          candidate: reg.candidateName,
+          response_count: reg.responseCount,
+          response_date: responseDateStr,
+          course_session: courseSession,
+          status: "strong_single_by_date",
+          matched_instructors: [inst.name],
+          matched_instructor_id: inst.id,
+          matched_instructor_name: inst.name,
+          evidence_count: 1,
+        });
+        continue;
+      }
+    }
 
     if (!reg.companyName) {
       classifications.push({

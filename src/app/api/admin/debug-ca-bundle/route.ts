@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
   if (!isValidCronSecret(request.headers.get(CRON_SECRET_HEADER))) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
-  const out: Array<{ path: string; exists: boolean; size: number; pemCount: number; firstSubjects: string[] }> = [];
+  const out: Array<{ path: string; exists: boolean; size: number; pemCount: number; firstSubjects: string[]; hits?: Array<{ k: string; hit: boolean }> }> = [];
   for (const p of CANDIDATES) {
     try {
       const s = await stat(p);
@@ -32,7 +32,10 @@ export async function GET(request: NextRequest) {
       const buf = await readFile(p, "utf-8");
       const beginCount = (buf.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
       const subjects = Array.from(buf.matchAll(/^subject=([^\n]+)/gm)).slice(0, 5).map((m) => m[1].slice(0, 80));
-      out.push({ path: p, exists: true, size: s.size, pemCount: beginCount, firstSubjects: subjects });
+      // hot keywords presence
+      const hits = ["DigiCert Global Root CA", "DigiCert Global Root G2", "DigiCert Global Root G3", "ISRG Root X1", "Cloudflare", "Let's Encrypt", "Google Trust", "Slack"]
+        .map((k) => ({ k, hit: buf.includes(k) }));
+      out.push({ path: p, exists: true, size: s.size, pemCount: beginCount, firstSubjects: subjects, hits });
     } catch {
       out.push({ path: p, exists: false, size: 0, pemCount: 0, firstSubjects: [] });
     }

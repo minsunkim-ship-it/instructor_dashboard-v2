@@ -6,6 +6,8 @@ WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_OPTIONS=--use-openssl-ca
+# Node 22 fetch (undici)는 NODE_OPTIONS=--use-openssl-ca를 일부 ignore — NODE_EXTRA_CA_CERTS 명시 필요.
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV EXTRA_CA_CERT_PATH=/app/runtime/extra-ca.crt

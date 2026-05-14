@@ -34,18 +34,27 @@ export async function register() {
       }
     }
 
-    setGlobalDispatcher(
-      new Agent({
-        connect: {
-          ca: trusted,
-        },
-      })
-    );
+    const agent = new Agent({
+      connect: { ca: trusted },
+    });
+    setGlobalDispatcher(agent);
+    // Next.js fetch 우회 — globalThis.fetch wrapper로 dispatcher 직접 주입
+    const origFetch = globalThis.fetch;
+    if (origFetch && !(globalThis as unknown as { __FETCH_WRAPPED__?: boolean }).__FETCH_WRAPPED__) {
+      const wrapped: typeof globalThis.fetch = (input, init) =>
+        origFetch(input, {
+          ...init,
+          // @ts-expect-error — undici dispatcher option은 Node fetch에서 동작하지만 lib.dom.d.ts에 정의 없음
+          dispatcher: agent,
+        });
+      globalThis.fetch = wrapped;
+      (globalThis as unknown as { __FETCH_WRAPPED__?: boolean }).__FETCH_WRAPPED__ = true;
+    }
     // marker for /api/admin/debug-instrumentation
     (process as unknown as { __TLS_DISPATCHER_SET__?: number }).__TLS_DISPATCHER_SET__ = trusted.length;
     // eslint-disable-next-line no-console
     console.log(
-      `[instrumentation] TLS dispatcher set with ${trusted.length} trusted root certs`
+      `[instrumentation] TLS dispatcher set + fetch wrapped (${trusted.length} certs)`
     );
   } catch (e) {
     // eslint-disable-next-line no-console

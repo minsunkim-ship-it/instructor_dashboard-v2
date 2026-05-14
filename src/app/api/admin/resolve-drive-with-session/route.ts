@@ -204,7 +204,18 @@ export async function GET(request: NextRequest) {
   const allInstructors = await prisma.instructor.findMany({
     select: { id: true, name: true },
   });
-  const instructorByName = new Map(allInstructors.map((i) => [i.name, i]));
+  // γ-A1-v12 (Korean unicode fix): NFC + NFD 둘 다 키로 등록 — Slack ops 메시지의 강사명이
+  // NFD로 들어오는 케이스가 있어 직접 비교 시 매칭 실패 ('민경주' 등)
+  const instructorByName = new Map<string, { id: string; name: string }>();
+  for (const i of allInstructors) {
+    instructorByName.set(i.name, i);
+    instructorByName.set(i.name.normalize("NFC"), i);
+    instructorByName.set(i.name.normalize("NFD"), i);
+  }
+  const lookupInstructor = (n: string): { id: string; name: string } | undefined =>
+    instructorByName.get(n) ??
+    instructorByName.get(n.normalize("NFC")) ??
+    instructorByName.get(n.normalize("NFD"));
 
   // γ-A1-v6: TeachingHistory 직접 매칭용 — 운영보고 매칭 0건 시 fallback
   const allTHs = await prisma.teachingHistory.findMany({
@@ -320,7 +331,7 @@ export async function GET(request: NextRequest) {
 
     // γ-A1-v8 신호 0: title에 강사명 명시 → 즉시 단일 강사 매칭 (가장 강한 신호)
     if (titleInstructorName) {
-      const inst = instructorByName.get(titleInstructorName);
+      const inst = lookupInstructor(titleInstructorName);
       if (inst) {
         classifications.push({
           registryKey: reg.registryKey,
@@ -448,7 +459,7 @@ export async function GET(request: NextRequest) {
 
     if (uniqueInstructors.length === 1) {
       const instName = uniqueInstructors[0];
-      const inst = instructorByName.get(instName);
+      const inst = lookupInstructor(instName);
       classifications.push({
         registryKey: reg.registryKey,
         company: reg.companyName,

@@ -177,7 +177,17 @@ export async function GET(request: NextRequest) {
   const allInstructors = await prisma.instructor.findMany({
     select: { id: true, name: true },
   });
-  const instructorByName = new Map(allInstructors.map((i) => [i.name, i]));
+  // γ-A1-v12: NFC/NFD unicode normalize 모두 키 등록 + lookup helper
+  const instructorByName = new Map<string, { id: string; name: string }>();
+  for (const i of allInstructors) {
+    instructorByName.set(i.name, i);
+    instructorByName.set(i.name.normalize("NFC"), i);
+    instructorByName.set(i.name.normalize("NFD"), i);
+  }
+  const lookupInstructor = (n: string): { id: string; name: string } | undefined =>
+    instructorByName.get(n) ??
+    instructorByName.get(n.normalize("NFC")) ??
+    instructorByName.get(n.normalize("NFD"));
   const instructorById = new Map(allInstructors.map((i) => [i.id, i]));
 
   // γ-A1-v6: TeachingHistory fallback
@@ -299,7 +309,7 @@ export async function GET(request: NextRequest) {
       // 가장 자주 등장한 강사 이름 (Instructor 정확 일치하는 것 중)
       const counts = new Map<string, number>();
       for (const c of allCandidates) {
-        if (instructorByName.has(c)) {
+        if (lookupInstructor(c)) {
           counts.set(c, (counts.get(c) ?? 0) + 1);
         }
       }
@@ -347,7 +357,7 @@ export async function GET(request: NextRequest) {
 
     // ★ 신호 1: subject 강사명이 instructor 정확 일치 → 즉시 확정
     if (subjectInstructor) {
-      const inst = instructorByName.get(subjectInstructor);
+      const inst = lookupInstructor(subjectInstructor);
       if (inst) {
         classifications.push({
           registryKey: reg.registryKey,
@@ -371,7 +381,7 @@ export async function GET(request: NextRequest) {
 
     // ★ 신호 1b: body 강사명 (subject parser 실패 시) — γ-A1-v5
     if (bodyInstructor) {
-      const inst = instructorByName.get(bodyInstructor);
+      const inst = lookupInstructor(bodyInstructor);
       if (inst) {
         classifications.push({
           registryKey: reg.registryKey,
@@ -473,7 +483,7 @@ export async function GET(request: NextRequest) {
 
     if (uniqueInstructors.length === 1) {
       const instName = uniqueInstructors[0];
-      const inst = instructorByName.get(instName);
+      const inst = lookupInstructor(instName);
       classifications.push({
         registryKey: reg.registryKey,
         company: effectiveCompany,

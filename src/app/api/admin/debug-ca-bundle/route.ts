@@ -38,14 +38,8 @@ export async function GET(request: NextRequest) {
     }
   }
   // also probe Slack with explicit fetch + show node/runtime info
-  let nodeVersion = process.version;
-  let undiciVersion: string | null = null;
-  try {
-    const u = await import("undici/package.json");
-    undiciVersion = (u as { version?: string }).version ?? null;
-  } catch {
-    undiciVersion = null;
-  }
+  const nodeVersion = process.version;
+  const undiciVersion: string | null = null;
   return NextResponse.json({
     ok: true,
     node_version: nodeVersion,

@@ -15,7 +15,8 @@ export async function register() {
   try {
     const tls = await import("tls");
     const fs = await import("fs/promises");
-    const { Agent, setGlobalDispatcher } = await import("undici");
+    const undici = await import("undici");
+    const { Agent, setGlobalDispatcher, fetch: undiciFetch } = undici;
 
     const trusted: string[] = [...tls.rootCertificates];
 
@@ -38,15 +39,12 @@ export async function register() {
       connect: { ca: trusted },
     });
     setGlobalDispatcher(agent);
-    // Next.js fetch 우회 — globalThis.fetch wrapper로 dispatcher 직접 주입
-    const origFetch = globalThis.fetch;
-    if (origFetch && !(globalThis as unknown as { __FETCH_WRAPPED__?: boolean }).__FETCH_WRAPPED__) {
-      const wrapped: typeof globalThis.fetch = (input, init) =>
-        origFetch(input, {
-          ...init,
-          // @ts-expect-error — undici dispatcher option은 Node fetch에서 동작하지만 lib.dom.d.ts에 정의 없음
-          dispatcher: agent,
-        });
+    // Next.js fetch 우회 — globalThis.fetch를 undici.fetch로 교체 + dispatcher 직접 주입.
+    // Node bundled fetch는 외부 undici Agent와 호환 X (`invalid onRequestStart method`).
+    // npm undici의 fetch + Agent는 호환.
+    if (!(globalThis as unknown as { __FETCH_WRAPPED__?: boolean }).__FETCH_WRAPPED__) {
+      const wrapped = ((input: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) =>
+        undiciFetch(input, { ...init, dispatcher: agent })) as unknown as typeof globalThis.fetch;
       globalThis.fetch = wrapped;
       (globalThis as unknown as { __FETCH_WRAPPED__?: boolean }).__FETCH_WRAPPED__ = true;
     }

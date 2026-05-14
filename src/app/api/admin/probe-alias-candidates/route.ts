@@ -156,6 +156,13 @@ export async function GET(request: NextRequest) {
       with_session_info_in_refs: withSessionInRefs,
       with_response_date: withResponseDate,
       samples: sessionSamples,
+      // 매칭 못한 경우 sourceRefs 구조 자체 dump (구조 다른 곳에 session 있을 가능성)
+      raw_sourcerefs_samples: pending.slice(0, 5).map((r) => ({
+        registryKey: r.registryKey.slice(0, 70),
+        candidateName: r.candidateName,
+        companyName: r.companyName,
+        sourceRefs: r.sourceRefs,
+      })),
     });
   }
 

@@ -26,6 +26,8 @@ export async function GET(request: NextRequest) {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        "User-Agent": "instructor-dashboard/1.0 (+coolify)",
+        Accept: "application/json",
       },
     });
     result.http_status = res.status;

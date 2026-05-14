@@ -84,6 +84,103 @@ export async function GET(request: NextRequest) {
   }
 
   // ---------------------------------------------------------------------------
+  // detail=corp_name_in_records — candidateName이 affiliation 법인명과 매칭되는 record 검출
+  //   "스코프랩스" 또는 "스코프랩스(김지훈)" 같은 candidateName이 SatisfactionImportItem 또는
+  //   SatisfactionReviewRegistry에 실제로 있는지 + 매칭 가능 영역 측정
+  // ---------------------------------------------------------------------------
+  if (detail === "corp_name_in_records") {
+    // affiliation 그룹 → 법인명 추출 ("스코프랩스(김지훈)" → "스코프랩스")
+    const all = await prisma.instructor.findMany({
+      select: { id: true, name: true, affiliation: true },
+    });
+    const corpNameToGroup = new Map<string, { affiliation: string; instructors: string[] }>();
+    const affGroupMap = new Map<string, string[]>();
+    for (const i of all) {
+      if (!i.affiliation) continue;
+      const arr = affGroupMap.get(i.affiliation) ?? [];
+      arr.push(i.name);
+      affGroupMap.set(i.affiliation, arr);
+    }
+    for (const [aff, names] of affGroupMap.entries()) {
+      // "스코프랩스(김지훈)" → 법인명 부분만
+      const corpName = aff.split("(")[0].trim();
+      if (corpName.length < 2) continue;
+      // 한 affiliation = 한 법인. 같은 corpName이 여러 affiliation에 나타나도 그룹화
+      const existing = corpNameToGroup.get(corpName);
+      if (existing) {
+        existing.instructors.push(...names);
+      } else {
+        corpNameToGroup.set(corpName, { affiliation: aff, instructors: names });
+      }
+    }
+    const corpNames = Array.from(corpNameToGroup.keys());
+
+    // SatisfactionImportItem.candidateName 또는 candidateCompanyName에서 법인명 매칭
+    const importItems = await prisma.satisfactionImportItem.findMany({
+      where: {
+        OR: [
+          { candidateName: { not: null } },
+          { candidateCompanyName: { not: null } },
+        ],
+      },
+      select: {
+        id: true,
+        candidateName: true,
+        candidateCompanyName: true,
+        candidateCourseName: true,
+        responseDate: true,
+        sourceType: true,
+      },
+    });
+
+    const matchedItems: Array<{
+      corpName: string;
+      itemCount: number;
+      affiliation: string;
+      group_instructors: string[];
+      samples: Array<{
+        candidateName: string | null;
+        candidateCompanyName: string | null;
+        candidateCourseName: string | null;
+        responseDate: string | null;
+        sourceType: string;
+      }>;
+    }> = [];
+    for (const [corp, group] of corpNameToGroup.entries()) {
+      const matches = importItems.filter((it) => {
+        const fields = [it.candidateName, it.candidateCompanyName, it.candidateCourseName]
+          .filter((v): v is string => Boolean(v));
+        return fields.some((f) => f.includes(corp));
+      });
+      if (matches.length > 0) {
+        matchedItems.push({
+          corpName: corp,
+          affiliation: group.affiliation,
+          itemCount: matches.length,
+          group_instructors: group.instructors,
+          samples: matches.slice(0, 5).map((m) => ({
+            candidateName: m.candidateName,
+            candidateCompanyName: m.candidateCompanyName,
+            candidateCourseName: m.candidateCourseName,
+            responseDate: m.responseDate?.toISOString().slice(0, 10) ?? null,
+            sourceType: m.sourceType,
+          })),
+        });
+      }
+    }
+    matchedItems.sort((a, b) => b.itemCount - a.itemCount);
+
+    return NextResponse.json({
+      ok: true,
+      mode: "corp_name_in_records",
+      total_corp_names_in_affiliation: corpNames.length,
+      corp_names: corpNames,
+      matched_corp_name_in_records: matchedItems.length,
+      matches: matchedItems,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // detail=affiliation_groups — Instructor.affiliation 컬럼 분포
   //   사용자 인사이트 후속: 법인은 name보다 affiliation 컬럼에 들어있을 가능성 (예: "알자(이태화)")
   //   같은 affiliation = 같은 사업자 소속 강사 list = γ-C1 B step source

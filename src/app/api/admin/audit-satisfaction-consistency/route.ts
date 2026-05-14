@@ -230,7 +230,16 @@ export async function GET(request: NextRequest) {
     // findMany + JS-side 비교 + 후보 list로 안전하게.
     const candidates = await prisma.instructor.findMany({
       where: { name: { contains: instructorNameQuery } },
-      select: { id: true, name: true, satisfactionAvg: true, satisfactionCount: true },
+      select: {
+        id: true,
+        name: true,
+        contactEmail: true,
+        contactPhone: true,
+        affiliation: true,
+        satisfactionAvg: true,
+        satisfactionCount: true,
+        totalCourses: true,
+      },
     });
     if (candidates.length === 0) {
       return NextResponse.json({
@@ -267,6 +276,10 @@ export async function GET(request: NextRequest) {
         id: c.id,
         name: c.name,
         codepoints: Array.from(c.name).map((ch) => ch.codePointAt(0)),
+        contactEmail: c.contactEmail,
+        contactPhone: c.contactPhone,
+        affiliation: c.affiliation,
+        totalCourses: c.totalCourses,
         satisfactionAvg: c.satisfactionAvg !== null ? Number(c.satisfactionAvg) : null,
         satisfactionCount: c.satisfactionCount,
       })),

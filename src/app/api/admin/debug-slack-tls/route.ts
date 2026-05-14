@@ -4,7 +4,7 @@
  */
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { connect, type TLSSocket, type PeerCertificate } from "tls";
+import { connect, type TLSSocket, type DetailedPeerCertificate } from "tls";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ interface ChainEntry {
   valid_to: string;
 }
 
-function fmtName(n: PeerCertificate["subject"] | PeerCertificate["issuer"] | undefined): string {
+function fmtName(n: DetailedPeerCertificate["subject"] | DetailedPeerCertificate["issuer"] | undefined): string {
   if (!n) return "";
   return Object.entries(n)
     .map(([k, v]) => `${k}=${v}`)
@@ -35,7 +35,7 @@ function fetchChain(host: string, port = 443): Promise<{ host: string; ok: boole
     socket.once("secureConnect", () => {
       try {
         const chain: ChainEntry[] = [];
-        let cert: PeerCertificate | undefined = socket.getPeerCertificate(true);
+        let cert: DetailedPeerCertificate | undefined = socket.getPeerCertificate(true);
         const seen = new Set<string>();
         while (cert && Object.keys(cert).length > 0) {
           const subj = fmtName(cert.subject);

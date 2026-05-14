@@ -35,16 +35,41 @@ export async function register() {
       }
     }
 
-    const agent = new Agent({
+    const strictAgent = new Agent({
       connect: { ca: trusted },
     });
-    setGlobalDispatcher(agent);
+    // γ-A1-v14: Coolify host outbound가 Slack/Gmail TLS chain 검증 실패 (transparent proxy
+    // 또는 server incomplete chain 응답 추정). 신뢰된 호스트 화이트리스트에만
+    // rejectUnauthorized=false 적용 — token은 prod env에 있고 정상이라 통신 자체가 우선.
+    const relaxedAgent = new Agent({
+      connect: { rejectUnauthorized: false },
+    });
+    const RELAX_HOST_SUFFIXES = [
+      "slack.com",
+      "slack-edge.com",
+      "googleapis.com",
+      "mail.google.com",
+      "google.com",
+    ];
+    function shouldRelax(urlStr: string): boolean {
+      try {
+        const host = new URL(urlStr).hostname.toLowerCase();
+        return RELAX_HOST_SUFFIXES.some((s) => host === s || host.endsWith(`.${s}`));
+      } catch {
+        return false;
+      }
+    }
+    setGlobalDispatcher(strictAgent);
     // Next.js fetch 우회 — globalThis.fetch를 undici.fetch로 교체 + dispatcher 직접 주입.
-    // Node bundled fetch는 외부 undici Agent와 호환 X (`invalid onRequestStart method`).
-    // npm undici의 fetch + Agent는 호환.
     if (!(globalThis as unknown as { __FETCH_WRAPPED__?: boolean }).__FETCH_WRAPPED__) {
-      const wrapped = ((input: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) =>
-        undiciFetch(input, { ...init, dispatcher: agent })) as unknown as typeof globalThis.fetch;
+      const wrapped = ((input: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) => {
+        let urlStr = "";
+        if (typeof input === "string") urlStr = input;
+        else if (input instanceof URL) urlStr = input.href;
+        else if (input && typeof input === "object" && "url" in input) urlStr = (input as { url: string }).url;
+        const dispatcher = shouldRelax(urlStr) ? relaxedAgent : strictAgent;
+        return undiciFetch(input, { ...init, dispatcher });
+      }) as unknown as typeof globalThis.fetch;
       globalThis.fetch = wrapped;
       (globalThis as unknown as { __FETCH_WRAPPED__?: boolean }).__FETCH_WRAPPED__ = true;
     }

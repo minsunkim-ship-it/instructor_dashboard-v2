@@ -38,9 +38,6 @@ export async function POST(request: NextRequest) {
       durationMs: Date.now() - startedAt,
       generated_at: snapshot.generated_at,
       list_items_count: snapshot.list_items?.length ?? 0,
-      detail_items_count: snapshot.detail_items
-        ? Object.keys(snapshot.detail_items).length
-        : 0,
     });
   } catch (err) {
     return NextResponse.json(

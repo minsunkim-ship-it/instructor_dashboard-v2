@@ -47,6 +47,248 @@ export async function GET(request: NextRequest) {
   }
 
   const startedAt = Date.now();
+  const detail = request.nextUrl.searchParams.get("detail");
+
+  // ---------------------------------------------------------------------------
+  // detail=teaching_history_source — TeachingHistory.sourceRef structure dump
+  // 계약시트에 "사업자" 정보 컬럼이 있는지 확인 (γ-C1 B step 입력)
+  // ---------------------------------------------------------------------------
+  if (detail === "teaching_history_source") {
+    const sample = await prisma.teachingHistory.findMany({
+      take: 5,
+      select: {
+        instructor: { select: { name: true } },
+        companyName: true,
+        courseName: true,
+        startDate: true,
+        sourceType: true,
+        sourceRef: true,
+      },
+      orderBy: { startDate: "desc" },
+    });
+    return NextResponse.json({
+      ok: true,
+      mode: "teaching_history_source",
+      samples: sample.map((t) => ({
+        instructor: t.instructor.name,
+        company: t.companyName,
+        course: t.courseName,
+        startDate: t.startDate?.toISOString().slice(0, 10) ?? null,
+        sourceType: t.sourceType,
+        sourceRef_keys: t.sourceRef && typeof t.sourceRef === "object" && !Array.isArray(t.sourceRef)
+          ? Object.keys(t.sourceRef as Record<string, unknown>)
+          : null,
+        sourceRef: t.sourceRef,
+      })),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // detail=homonym_disambig — 동명이인 그룹별 disambig 입력 풀 (γ-C1 핵심)
+  // 각 강사의 (회사 set, 시점 range, 에이전시 그룹) + ambiguous candidates 매칭 가능성
+  // ---------------------------------------------------------------------------
+  if (detail === "homonym_disambig") {
+    const instructors = await prisma.instructor.findMany({
+      select: {
+        id: true,
+        name: true,
+        contactEmail: true,
+        contactPhone: true,
+        satisfactionAvg: true,
+        satisfactionCount: true,
+        totalCourses: true,
+        isFulltime: true,
+      },
+    });
+    const allTHs = await prisma.teachingHistory.findMany({
+      select: {
+        instructorDbId: true,
+        companyName: true,
+        startDate: true,
+        endDate: true,
+      },
+    });
+    const thByInst = new Map<
+      string,
+      Array<{ companyName: string | null; startDate: Date | null; endDate: Date | null }>
+    >();
+    for (const t of allTHs) {
+      const list = thByInst.get(t.instructorDbId) ?? [];
+      list.push({
+        companyName: t.companyName,
+        startDate: t.startDate,
+        endDate: t.endDate,
+      });
+      thByInst.set(t.instructorDbId, list);
+    }
+    // 에이전시 그룹 (contactEmail 다수 등록 그룹) 만들기
+    const emailGroupMap = new Map<string, string[]>();
+    for (const inst of instructors) {
+      if (!inst.contactEmail) continue;
+      const key = inst.contactEmail.toLowerCase().trim();
+      const arr = emailGroupMap.get(key) ?? [];
+      arr.push(inst.id);
+      emailGroupMap.set(key, arr);
+    }
+    function agencyGroupFor(instId: string, instContactEmail: string | null): {
+      email: string | null;
+      size: number;
+    } {
+      if (!instContactEmail) return { email: null, size: 1 };
+      const key = instContactEmail.toLowerCase().trim();
+      const ids = emailGroupMap.get(key);
+      return { email: key, size: ids?.length ?? 1 };
+    }
+
+    // homonym 그룹 빌드
+    const byBaseName = new Map<string, typeof instructors>();
+    for (const inst of instructors) {
+      const base = getBaseName(inst.name);
+      if (base.length < 2) continue;
+      const arr = byBaseName.get(base) ?? [];
+      arr.push(inst);
+      byBaseName.set(base, arr);
+    }
+    const homonyms = Array.from(byBaseName.entries())
+      .filter(([, arr]) => arr.length > 1)
+      .map(([base, arr]) => ({
+        baseName: base,
+        instructors: arr.map((i) => {
+          const ths = thByInst.get(i.id) ?? [];
+          const companies = Array.from(
+            new Set(ths.map((t) => t.companyName).filter((v): v is string => Boolean(v)))
+          );
+          const dates = ths
+            .map((t) => t.startDate)
+            .filter((d): d is Date => d !== null)
+            .map((d) => d.toISOString().slice(0, 10))
+            .sort();
+          return {
+            name: i.name,
+            isFulltime: i.isFulltime,
+            satisfactionCount: i.satisfactionCount,
+            totalCourses: i.totalCourses,
+            agency: agencyGroupFor(i.id, i.contactEmail),
+            company_set: companies,
+            teaching_count: ths.length,
+            earliest_teaching: dates[0] ?? null,
+            latest_teaching: dates[dates.length - 1] ?? null,
+          };
+        }),
+      }));
+
+    // ambiguous candidate 별로 disambig 가능성 측정
+    const importItems = await prisma.satisfactionImportItem.findMany({
+      where: { candidateName: { not: null } },
+      select: {
+        candidateName: true,
+        candidateCompanyName: true,
+        responseDate: true,
+      },
+    });
+    const candidateMap = new Map<
+      string,
+      Array<{
+        company: string | null;
+        date: string | null;
+      }>
+    >();
+    for (const it of importItems) {
+      if (!it.candidateName) continue;
+      const arr = candidateMap.get(it.candidateName) ?? [];
+      arr.push({
+        company: it.candidateCompanyName,
+        date: it.responseDate?.toISOString().slice(0, 10) ?? null,
+      });
+      candidateMap.set(it.candidateName, arr);
+    }
+
+    // 각 ambiguous candidate에 대해 → 동명이인 그룹 후보들의 회사·시점 풀과 매칭 시도
+    const ambiguousResolutions: Array<{
+      candidateName: string;
+      homonym_base: string;
+      candidate_records: number;
+      candidate_companies: string[];
+      possible_instructors: Array<{
+        instructor_name: string;
+        company_overlap: string[];
+        time_overlap: boolean;
+        agency_size: number;
+      }>;
+      resolution: "single_instructor" | "multiple_possible" | "no_match";
+    }> = [];
+    for (const [candName, records] of candidateMap.entries()) {
+      const base = getBaseName(candName);
+      const group = byBaseName.get(base);
+      if (!group || group.length < 2) continue; // 동명이인 그룹 아님 — skip
+      const candCompanies = Array.from(
+        new Set(records.map((r) => r.company).filter((v): v is string => Boolean(v)))
+      );
+      const candDates = records
+        .map((r) => r.date)
+        .filter((v): v is string => Boolean(v))
+        .sort();
+      const candEarliest = candDates[0] ?? null;
+      const candLatest = candDates[candDates.length - 1] ?? null;
+
+      const possibles = group.map((inst) => {
+        const ths = thByInst.get(inst.id) ?? [];
+        const instCompanies = Array.from(
+          new Set(ths.map((t) => t.companyName).filter((v): v is string => Boolean(v)))
+        );
+        const companyOverlap = candCompanies.filter((c) =>
+          instCompanies.some((ic) => ic.includes(c) || c.includes(ic))
+        );
+        // 시점 overlap: 강사의 강의 기간 안에 candidate 응답이 들어오는지
+        const instDates = ths
+          .map((t) => t.startDate?.toISOString().slice(0, 10))
+          .filter((v): v is string => Boolean(v));
+        const instEarliest = instDates.sort()[0] ?? null;
+        const instLatest = instDates.sort()[instDates.length - 1] ?? null;
+        const timeOverlap =
+          candEarliest !== null &&
+          candLatest !== null &&
+          instEarliest !== null &&
+          instLatest !== null &&
+          candEarliest <= instLatest &&
+          candLatest >= instEarliest;
+        return {
+          instructor_name: inst.name,
+          company_overlap: companyOverlap,
+          time_overlap: timeOverlap,
+          agency_size: agencyGroupFor(inst.id, inst.contactEmail).size,
+        };
+      });
+      const matched = possibles.filter((p) => p.company_overlap.length > 0 && p.time_overlap);
+      ambiguousResolutions.push({
+        candidateName: candName,
+        homonym_base: base,
+        candidate_records: records.length,
+        candidate_companies: candCompanies,
+        possible_instructors: possibles,
+        resolution:
+          matched.length === 1
+            ? "single_instructor"
+            : matched.length > 1
+              ? "multiple_possible"
+              : "no_match",
+      });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      mode: "homonym_disambig",
+      homonym_groups: homonyms,
+      ambiguous_resolutions: ambiguousResolutions,
+      stats: {
+        homonym_groups: homonyms.length,
+        ambiguous_candidates: ambiguousResolutions.length,
+        single_instructor_disambig: ambiguousResolutions.filter((r) => r.resolution === "single_instructor").length,
+        multiple_possible: ambiguousResolutions.filter((r) => r.resolution === "multiple_possible").length,
+        no_match: ambiguousResolutions.filter((r) => r.resolution === "no_match").length,
+      },
+    });
+  }
 
   // 1) 모든 instructor with TeachingHistory / SatisfactionRecord 카운트
   const instructors = await prisma.instructor.findMany({

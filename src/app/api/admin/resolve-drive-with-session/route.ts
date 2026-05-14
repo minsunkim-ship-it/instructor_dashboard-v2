@@ -35,11 +35,46 @@ function authorize(request: NextRequest): boolean {
 }
 
 const OPS_REPORT_CHANNEL_ID = "C015YD84VGS";
-const WINDOW_DAYS = 7;
+const WINDOW_DAYS = 14; // γ-A1-v4 B: 7→14 (운영보고 비동기 등록 케이스 대응)
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
 const COMPANY_REGEX = /\(B2B\)\s*([^_\n]+?)[\s_]/;
 const SESSION_REGEX_OPS = /(\d+)\s*(?:회차|차수|일차)/;
 const SESSION_REGEX_COURSE = /(\d+)\s*(?:회차|차수|일차)/;
+const COURSE_STOPWORDS = new Set([
+  "review",
+  "raw",
+  "data",
+  "daily",
+  "final",
+  "만족도",
+  "조사",
+  "설문",
+  "응답",
+  "사본",
+  "ai",
+]);
+
+// γ-A1-v4 A: course 핵심 토큰 추출 (registry.courseName 또는 file_name)
+// 'DT기초프로그램 Review' → ['DT기초프로그램'], '생성형 AI와 Copilot을 활용한 업무 자동화' → ['생성형', 'Copilot', '활용한', '업무', '자동화']
+function extractCourseTokens(text: string | null | undefined): string[] {
+  if (!text) return [];
+  return text
+    .split(/[\s_\-(),.]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && !COURSE_STOPWORDS.has(t.toLowerCase()))
+    .slice(0, 8);
+}
+
+function courseTextMatches(opsText: string, registryCourse: string | null | undefined): boolean {
+  if (!registryCourse) return false;
+  const tokens = extractCourseTokens(registryCourse);
+  if (tokens.length === 0) return false;
+  // ops 메시지에 등록 course 토큰 ≥ 1개 포함
+  for (const t of tokens) {
+    if (opsText.includes(t)) return true;
+  }
+  return false;
+}
 
 type RawRecord = { [key: string]: unknown };
 
@@ -175,7 +210,13 @@ export async function GET(request: NextRequest) {
     const firstRef = refs[0] as RawRecord | undefined;
     const responseDateStr = pickString(firstRef, "response_date");
     const responseDate = responseDateStr ? new Date(responseDateStr) : null;
-    const courseSession = extractSessionNumber(reg.courseName);
+    // γ-A1-v4 C: session 정보를 courseName, sheet_title, file_name 순으로 추출
+    const sheetTitle = pickString(firstRef, "sheet_title");
+    const fileName = pickString(firstRef, "file_name");
+    const courseSession =
+      extractSessionNumber(reg.courseName) ??
+      extractSessionNumber(sheetTitle) ??
+      extractSessionNumber(fileName);
 
     if (!reg.companyName) {
       classifications.push({
@@ -228,10 +269,18 @@ export async function GET(request: NextRequest) {
       continue;
     }
 
-    // 차수 매칭 필터 (course에 차수 있으면 ops sessionNumber도 일치 우선)
+    // γ-A1-v4 A: course substring 매칭 (registry.courseName 또는 fileName 토큰이 ops 메시지에 등장)
     let filteredByCourse = matched;
+    const courseRef = reg.courseName ?? fileName;
+    if (courseRef) {
+      const courseFiltered = matched.filter((m) => courseTextMatches(m.text, courseRef));
+      if (courseFiltered.length > 0) {
+        filteredByCourse = courseFiltered;
+      }
+    }
+    // 차수 매칭 (course substring 후에 추가 좁힘)
     if (courseSession !== null) {
-      const sessionFiltered = matched.filter((m) => m.sessionNumber === courseSession);
+      const sessionFiltered = filteredByCourse.filter((m) => m.sessionNumber === courseSession);
       if (sessionFiltered.length > 0) {
         filteredByCourse = sessionFiltered;
       }

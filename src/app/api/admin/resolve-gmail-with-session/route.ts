@@ -179,6 +179,25 @@ export async function GET(request: NextRequest) {
   });
   const instructorByName = new Map(allInstructors.map((i) => [i.name, i]));
 
+  // γ-A1-v4 D: 알려진 회사명 set (TeachingHistory.companyName distinct)
+  // gmail subject/body의 비정형 companyName을 진짜 회사명으로 재추출하는 anchor
+  const thCompaniesRaw = await prisma.teachingHistory.findMany({
+    select: { companyName: true },
+    distinct: ["companyName"],
+  });
+  const knownCompanies = thCompaniesRaw
+    .map((t) => t.companyName)
+    .filter((c): c is string => c !== null && c.length >= 2)
+    .sort((a, b) => b.length - a.length); // 긴 회사명 우선
+
+  function findKnownCompanyInText(text: string | null | undefined): string | null {
+    if (!text) return null;
+    for (const c of knownCompanies) {
+      if (text.includes(c)) return c;
+    }
+    return null;
+  }
+
   // 5) 분류
   interface Classification {
     registryKey: string;
@@ -217,6 +236,15 @@ export async function GET(request: NextRequest) {
     const sessionLabel = item ? pickString(item.normalizedPayload, "session_label") : null;
     const body = item ? pickString(item.rawPayload, "body_excerpt") : null;
 
+    // γ-A1-v4 D: companyName이 비정형(긴 문장)이면 body에서 알려진 TeachingHistory 회사명 재추출
+    // 예: registry.companyName = "금일 말씀주신 원데이 AI 실습 과정"
+    //     body = "...KB국민은행..." → 진짜 회사 = KB국민은행
+    function looksUnparsedCompany(c: string | null | undefined): boolean {
+      if (!c) return true;
+      // 한국어 어구·문장 (말씀 / 금일 / 했던 등) 포함 또는 너무 김 → 정상 회사명 아님
+      return c.length > 20 || /(말씀|금일|어제|진행|관련|드린|좋은|확인)/.test(c);
+    }
+
     // 신호 1: subject 강사명
     const subjectInstructorMatch = subject?.match(SUBJECT_INSTRUCTOR_REGEX);
     const subjectInstructor = subjectInstructorMatch ? subjectInstructorMatch[1] : null;
@@ -229,7 +257,13 @@ export async function GET(request: NextRequest) {
     const sessionNumber =
       extractSessionNumber(sessionLabel) ?? extractSessionNumber(body) ?? extractSessionNumber(reg.courseName);
 
-    const effectiveCompany = reg.companyName ?? subjectCompany;
+    // γ-A1-v4 D: companyName이 비정형이면 subject/body에서 known company 재추출
+    let effectiveCompany = reg.companyName ?? subjectCompany;
+    if (looksUnparsedCompany(effectiveCompany)) {
+      const fromBody = findKnownCompanyInText(body);
+      const fromSubject = findKnownCompanyInText(subject);
+      effectiveCompany = fromBody ?? fromSubject ?? subjectCompany ?? effectiveCompany;
+    }
 
     if (!responseDate) {
       classifications.push({

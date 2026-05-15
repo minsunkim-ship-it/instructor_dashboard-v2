@@ -20,26 +20,41 @@ const CHANNELS = [
   { channelId: "C0AS2VDUXQ8", kind: "dispatch_request", mappedInstructorName: "신동원" },
 ];
 
-const token = process.env.SLACK_BOT_TOKEN;
+const botToken = process.env.SLACK_BOT_TOKEN;
+const xoxcToken = process.env.SLACK_XOXC_TOKEN;
+const dCookie = process.env.SLACK_D_COOKIE;
 const workspaceId = process.env.SLACK_WORKSPACE_ID;
 const ingestUrl = process.env.INGEST_URL;
 const cronSecret = process.env.CRON_SECRET;
 const lookbackDays = Number.parseInt(process.env.LOOKBACK_DAYS ?? "365", 10) || 365;
 
-if (!token || !workspaceId || !ingestUrl || !cronSecret) {
-  console.error("Missing env: SLACK_BOT_TOKEN / SLACK_WORKSPACE_ID / INGEST_URL / CRON_SECRET");
+if ((!botToken && !xoxcToken) || !workspaceId || !ingestUrl || !cronSecret) {
+  console.error("Missing env: (SLACK_BOT_TOKEN | SLACK_XOXC_TOKEN+SLACK_D_COOKIE) / SLACK_WORKSPACE_ID / INGEST_URL / CRON_SECRET");
   process.exit(1);
 }
 
-async function slackGet(path, params) {
-  const qs = new URLSearchParams(params).toString();
-  const res = await fetch(`${SLACK_API_BASE}/${path}?${qs}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "User-Agent": "instructor-db-backfill/1.0",
-    },
-  });
+// xoxc + d cookie 모드: user 권한 (사용자가 멤버인 모든 채널 읽기 가능, #general 포함)
+// bot token 모드: bot이 초대된 채널만
+const useUserMode = Boolean(xoxcToken && dCookie);
+console.log(`[backfill] mode=${useUserMode ? "user(xoxc+d)" : "bot"}`);
+
+async function slackCall(path, params, { method = useUserMode ? "POST" : "GET" } = {}) {
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (instructor-db-backfill)",
+  };
+  let url = `${SLACK_API_BASE}/${path}`;
+  let body;
+  if (useUserMode) {
+    headers["Cookie"] = `d=${dCookie}`;
+    headers["Content-Type"] = "application/x-www-form-urlencoded; charset=utf-8";
+    const form = new URLSearchParams({ token: xoxcToken, ...params });
+    body = form.toString();
+  } else {
+    headers["Authorization"] = `Bearer ${botToken}`;
+    const qs = new URLSearchParams(params).toString();
+    url = `${url}?${qs}`;
+  }
+  const res = await fetch(url, { method, headers, body });
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(`Slack API ${path} HTTP ${res.status}: ${txt.slice(0, 300)}`);
@@ -50,6 +65,8 @@ async function slackGet(path, params) {
   }
   return json;
 }
+// backward compat alias
+const slackGet = slackCall;
 
 async function fetchChannelHistory(channelId, oldestEpoch) {
   const messages = [];

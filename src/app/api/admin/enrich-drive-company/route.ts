@@ -99,10 +99,9 @@ export async function POST(request: NextRequest) {
   const pending = await prisma.satisfactionReviewRegistry.findMany({
     where: {
       matchStatus: "pending",
-      sourceType: "drive_satisfaction",
       OR: [{ companyName: null }, { companyName: "" }],
     },
-    select: { id: true, registryKey: true, sourceRefs: true, courseName: true },
+    select: { id: true, registryKey: true, sourceType: true, sourceRefs: true, courseName: true, candidateName: true },
   });
 
   const token = await exchangeGoogleUserAccessToken();
@@ -119,9 +118,45 @@ export async function POST(request: NextRequest) {
   const skipped: { registryKey: string; reason: string }[] = [];
 
   for (const r of pending) {
+    // γ-A1-v18b: course / candidate / candidate_company에서 알려진 회사 substring 매칭 우선
+    // gmail/google_forms registry 모두 적용 가능.
+    const directMatched =
+      findCompanyInName(r.courseName ?? "", companySet) ||
+      findCompanyInName(r.candidateName ?? "", companySet);
+    if (directMatched) {
+      plans.push({
+        registryKey: r.registryKey,
+        file_id: "(course/candidate)",
+        folder_chain: [],
+        matched_company: directMatched,
+        via_folder: `course/candidate: ${(r.courseName ?? r.candidateName ?? "").slice(0, 60)}`,
+      });
+      continue;
+    }
     const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];
     const firstRef = refs[0];
     const inner = firstRef?.source_ref as RawRecord | undefined;
+    // gmail registry: file_id 없음. subject / snippet / from / to 에서 회사 추출 시도
+    if (r.sourceType !== "drive_satisfaction") {
+      const subj = pickString(inner, "subject") ?? pickString(firstRef, "subject");
+      const snip = pickString(inner, "snippet") ?? pickString(firstRef, "snippet");
+      const fromAddr = pickString(inner, "from") ?? pickString(firstRef, "from");
+      const toAddr = pickString(inner, "to") ?? pickString(firstRef, "to");
+      const haystack = [subj, snip, fromAddr, toAddr].filter(Boolean).join(" | ");
+      const fromHaystack = findCompanyInName(haystack, companySet);
+      if (fromHaystack) {
+        plans.push({
+          registryKey: r.registryKey,
+          file_id: "(gmail-meta)",
+          folder_chain: [],
+          matched_company: fromHaystack,
+          via_folder: `gmail-meta: ${haystack.slice(0, 80)}`,
+        });
+      } else {
+        skipped.push({ registryKey: r.registryKey, reason: "gmail_no_company_in_meta" });
+      }
+      continue;
+    }
     const fileId = pickString(inner, "file_id");
     if (!fileId) {
       skipped.push({ registryKey: r.registryKey, reason: "no_file_id" });

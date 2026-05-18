@@ -362,10 +362,13 @@ export async function GET(request: NextRequest) {
 
     // γ-A1-v8 (general): sheet_title 또는 file_name에 강사명 직접 명시된 케이스
     // "주한나강사님 만족도" 같은 패턴 — 강사 본인이 sheet 만든 경우 또는 운영자가 강사명 라벨
+    // γ-A1-v19: registry.courseName에도 적용 — "X 강사" 명시면 즉시 그 강사 (한민재 vs 변형호 회귀 방지)
     const titleInstructorRegex = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)/;
     const sheetInstructorMatch = sheetTitle?.match(titleInstructorRegex);
     const fileInstructorMatch = fileName?.match(titleInstructorRegex);
-    const titleInstructorName = sheetInstructorMatch?.[1] ?? fileInstructorMatch?.[1] ?? null;
+    const courseInstructorMatch = reg.courseName?.match(titleInstructorRegex);
+    const titleInstructorName =
+      courseInstructorMatch?.[1] ?? sheetInstructorMatch?.[1] ?? fileInstructorMatch?.[1] ?? null;
 
     // γ-A1-v8 신호 0: title에 강사명 명시 → 즉시 단일 강사 매칭 (가장 강한 신호)
     if (titleInstructorName) {

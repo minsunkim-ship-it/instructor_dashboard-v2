@@ -472,7 +472,8 @@ export async function GET(request: NextRequest) {
 
     if (matched.length === 0) {
       // γ-A1-v6: TeachingHistory fallback — ops_report 매칭 0건이면 계약시트로 직접 매칭
-      const thMatched = allTHs.filter((t) => {
+      // γ-A1-v20: course token overlap 필터 추가 — 같은 회사 다강사 다과정 중 정확한 1명 식별
+      let thMatched = allTHs.filter((t) => {
         if (!companyMatches(t.companyName, effectiveCompany)) return false;
         // 강의 기간이 responseDate 포함 ±14일
         const start = t.startDate?.getTime() ?? null;
@@ -486,6 +487,26 @@ export async function GET(request: NextRequest) {
         }
         return false;
       });
+      // v20: course token overlap — TH의 courseName 토큰과 registry.courseName 토큰이 1개+ 일치하는 TH만
+      if (thMatched.length >= 2 && reg.courseName) {
+        const regTokens = extractCourseTokens(reg.courseName).map(normalizeText).filter((t) => t.length >= 2);
+        if (regTokens.length > 0) {
+          const filteredByCourse = thMatched.filter((t) => {
+            if (!t.courseName) return false;
+            const thTokens = extractCourseTokens(t.courseName).map(normalizeText).filter((tt) => tt.length >= 2);
+            return regTokens.some((rt) => thTokens.some((tt) => rt.includes(tt) || tt.includes(rt)));
+          });
+          if (filteredByCourse.length > 0) thMatched = filteredByCourse;
+        }
+      }
+      // v20: courseSession (N차수/N일차)으로 추가 좁힘 — TH.courseName에 같은 차수 토큰 있는지
+      if (thMatched.length >= 2 && courseSession !== null) {
+        const sessionPatterns = [`${courseSession}차수`, `${courseSession}일차`, `${courseSession}기`];
+        const sessionFiltered = thMatched.filter((t) =>
+          t.courseName ? sessionPatterns.some((p) => t.courseName!.includes(p)) : false
+        );
+        if (sessionFiltered.length > 0) thMatched = sessionFiltered;
+      }
       const thInstructorIds = Array.from(new Set(thMatched.map((t) => t.instructorDbId)));
       if (thInstructorIds.length === 1) {
         const inst = instructorById.get(thInstructorIds[0]);

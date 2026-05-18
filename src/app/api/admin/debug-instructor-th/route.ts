@@ -35,7 +35,6 @@ export async function GET(request: NextRequest) {
       startDate: true,
       endDate: true,
       createdAt: true,
-      updatedAt: true,
       sourceRef: true,
     },
   });
@@ -51,7 +50,6 @@ export async function GET(request: NextRequest) {
       start: t.startDate?.toISOString().slice(0, 10) ?? null,
       end: t.endDate?.toISOString().slice(0, 10) ?? null,
       created_at: t.createdAt?.toISOString().slice(0, 19),
-      updated_at: t.updatedAt?.toISOString().slice(0, 19),
       source: t.sourceRef,
     })),
   });

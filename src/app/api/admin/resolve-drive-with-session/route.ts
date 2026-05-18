@@ -23,6 +23,7 @@ import { prisma } from "@/lib/prisma";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
 import { refreshSatisfactionAggregates } from "@/lib/pipeline/satisfaction-applier";
 import { getAllSatisfactionSheetSources } from "@/lib/pipeline/satisfaction-sheets-collector";
+import { companyMatchesWithAlias } from "@/lib/company-aliases";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -117,7 +118,9 @@ function companyMatches(a: string | null, b: string | null): boolean {
   const na = normalizeCompany(a);
   const nb = normalizeCompany(b);
   if (na.length < 2 || nb.length < 2) return false;
-  return na.includes(nb) || nb.includes(na);
+  if (na.includes(nb) || nb.includes(na)) return true;
+  // v21: 그룹사 alias SET (웰컴저축은행 ↔ 웰컴금융그룹 등)
+  return companyMatchesWithAlias(a, b);
 }
 
 function extractSessionNumber(text: string | null | undefined): number | null {

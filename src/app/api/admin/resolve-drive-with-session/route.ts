@@ -528,6 +528,42 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // γ-A1-v16: TH 강의기간 cross-check filter — 강사 후보 중 TH 기간이 응답일자를 cover하는 강사만
+    // 사용자 의도: ops 메시지(강의 시작) + 계약 강의 기간 안에 만족도 응답이 있어야 진짜 매칭.
+    {
+      const candidateNames = new Set<string>();
+      for (const m of filteredByCourse) for (const n of m.instructors) candidateNames.add(n);
+      if (candidateNames.size >= 2) {
+        const FOURTEEN = 14 * 24 * 60 * 60 * 1000;
+        const verifiedNames = new Set<string>();
+        for (const n of candidateNames) {
+          const inst = lookupInstructor(n);
+          if (!inst) continue;
+          const ths = allTHs.filter(
+            (t) =>
+              t.instructorDbId === inst.id &&
+              companyMatches(t.companyName, effectiveCompany) &&
+              t.startDate !== null
+          );
+          for (const t of ths) {
+            const start = t.startDate!.getTime();
+            const end = t.endDate?.getTime() ?? start;
+            const respMs = responseDate.getTime();
+            if (respMs >= start - FOURTEEN && respMs <= end + FOURTEEN) {
+              verifiedNames.add(n);
+              break;
+            }
+          }
+        }
+        if (verifiedNames.size === 1) {
+          // TH 강의기간으로 단일화 성공
+          filteredByCourse = filteredByCourse.filter((m) =>
+            m.instructors.some((n) => verifiedNames.has(n))
+          );
+        }
+      }
+    }
+
     const uniqueInstructors = Array.from(
       new Set(filteredByCourse.flatMap((m) => m.instructors))
     );

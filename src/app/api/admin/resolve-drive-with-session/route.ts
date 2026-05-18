@@ -72,9 +72,14 @@ function extractCourseTokens(text: string | null | undefined): string[] {
 }
 
 function normalizeText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[\s()[\]{}.,:;'"`~!?+\-_/\\|]+/g, "");
+  let v = value.toLowerCase().replace(/[\s()[\]{}.,:;'"`~!?+\-_/\\|]+/g, "");
+  // γ-A1-v17: 모듈명/차수명 한영 통합. Module6 ↔ 모듈6, M6 ↔ 모듈6 등
+  // 7개 한글 모듈명을 영문 form으로 통일
+  for (const m of ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]) {
+    v = v.split(`모듈${m}`).join(`module${m}`);
+    v = v.split(`m${m}`).join(`module${m}`);
+  }
+  return v;
 }
 
 function courseTextMatches(opsText: string, registryCourse: string | null | undefined): boolean {

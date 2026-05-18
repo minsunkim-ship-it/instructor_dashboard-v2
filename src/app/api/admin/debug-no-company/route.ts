@@ -47,12 +47,7 @@ export async function GET(request: NextRequest) {
     }
   }
   const items = await prisma.satisfactionImportItem.findMany({
-    where: {
-      OR: [
-        { sourceRefKey: { in: Array.from(sourceRefKeys) } },
-        { normalizedPayload: { path: ["registry_key"], in: Array.from(registryKeys) } },
-      ],
-    },
+    where: { sourceRefKey: { in: Array.from(sourceRefKeys) } },
     select: { sourceRefKey: true, sourceType: true, rawPayload: true, normalizedPayload: true },
     take: 500,
   });
@@ -63,8 +58,8 @@ export async function GET(request: NextRequest) {
     const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];
     const firstRef = refs[0];
     const inner = firstRef?.source_ref as RawRecord | undefined;
-    const srk = pickString(inner, "source_ref_key", "source_key", "thread_id", "message_id", "file_id");
-    const item = srk ? itemByKey.get(srk) : null;
+    const srk = pickString(inner, "source_ref_key", "source_key", "thread_id", "message_id", "file_id") ?? "";
+    const item = srk ? itemByKey.get(srk) : undefined;
     const raw = (item?.rawPayload as RawRecord | null) ?? null;
     return {
       registry_key: r.registryKey,

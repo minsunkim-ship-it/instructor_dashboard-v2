@@ -35,6 +35,25 @@ const ALIAS_PAIRS: Array<[string, string]> = [
   ["pb", "피비"],
 ];
 
+// v21: 그룹사 자회사 ↔ 모기업/그룹 alias.
+// satisfaction registry는 자회사 명("웰컴저축은행")으로 들어오는데
+// 계약시트(TH)는 모기업/그룹명("웰컴금융그룹")으로 등록되는 케이스 정규화.
+// 양방향 substring 포함 매칭은 [[companyMatchesWithAlias]]에서 이미 처리되지만,
+// 토큰 자체가 완전히 다르면(저축은행 vs 금융그룹) 매칭 안 됨. 동일 그룹 SET으로 명시.
+const GROUP_ALIAS_SETS: Array<Set<string>> = [
+  new Set(["웰컴저축은행", "웰컴금융그룹", "웰컴크레디라인", "웰컴캐피탈"]),
+  // 필요 시 다른 그룹사도 여기에 추가 (BGF/KT/SK/롯데 등은 prefix 매칭으로 이미 처리됨)
+];
+
+function findGroupAliasSet(value: string): Set<string> | null {
+  for (const set of GROUP_ALIAS_SETS) {
+    for (const member of set) {
+      if (value.includes(member) || member.includes(value)) return set;
+    }
+  }
+  return null;
+}
+
 // 정규화된 normalized form (소문자 + special char strip) 후 적용
 export function normalizeCompanyBase(value: string | null | undefined): string {
   return (value ?? "")
@@ -68,5 +87,9 @@ export function companyMatchesWithAlias(
   const na = normalizeCompanyWithAlias(a);
   const nb = normalizeCompanyWithAlias(b);
   if (na.length < 2 || nb.length < 2) return false;
-  return na === nb || na.includes(nb) || nb.includes(na);
+  if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+  // v21: 그룹사 SET 내 member끼리 동일 그룹으로 인정
+  const groupA = findGroupAliasSet(a);
+  if (groupA && groupA === findGroupAliasSet(b)) return true;
+  return false;
 }

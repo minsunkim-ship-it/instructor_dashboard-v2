@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
     take: 500,
   });
   const itemByKey = new Map<string, typeof items[number]>();
-  for (const it of items) itemByKey.set(it.sourceRefKey, it);
+  for (const it of items) if (it.sourceRefKey) itemByKey.set(it.sourceRefKey, it);
 
   const out = rows.map((r) => {
     const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];

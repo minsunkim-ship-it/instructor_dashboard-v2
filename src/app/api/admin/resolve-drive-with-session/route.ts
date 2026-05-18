@@ -554,10 +554,25 @@ export async function GET(request: NextRequest) {
             const start = t.startDate!.getTime();
             const end = t.endDate?.getTime() ?? start;
             const respMs = responseDate.getTime();
-            if (respMs >= start - FOURTEEN && respMs <= end + FOURTEEN) {
-              verifiedNames.add(n);
-              break;
+            if (respMs < start - FOURTEEN || respMs > end + FOURTEEN) continue;
+            // γ-A1-v18: course 일치 검증 — TH course와 registry course 토큰 교집합 1개+
+            // 박상훈 디어포스 PowerBI vs 디어포스 AI리터러시 같은 같은 회사 다른 강의 회귀 방지
+            if (reg.courseName && t.courseName) {
+              const regTokens = extractCourseTokens(reg.courseName);
+              const thTokens = extractCourseTokens(t.courseName);
+              if (regTokens.length > 0 && thTokens.length > 0) {
+                const overlap = regTokens.some((rt) =>
+                  thTokens.some((tt) => {
+                    const ntRt = normalizeText(rt);
+                    const ntTt = normalizeText(tt);
+                    return ntRt.length >= 2 && ntTt.length >= 2 && (ntRt.includes(ntTt) || ntTt.includes(ntRt));
+                  })
+                );
+                if (!overlap) continue;
+              }
             }
+            verifiedNames.add(n);
+            break;
           }
         }
         if (verifiedNames.size === 1) {

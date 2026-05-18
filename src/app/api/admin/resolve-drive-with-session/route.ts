@@ -414,11 +414,53 @@ export async function GET(request: NextRequest) {
     }
 
     // 시점 ±WINDOW_DAYS 내 운영보고 메시지 + 회사 alias 매칭 (effectiveCompany)
-    const matched = opsMessages.filter((m) => {
+    let matched = opsMessages.filter((m) => {
       if (!companyMatches(m.company, effectiveCompany)) return false;
       const diff = Math.abs(m.activityAt.getTime() - responseDate.getTime()) / (1000 * 60 * 60 * 24);
       return diff <= WINDOW_DAYS;
     });
+
+    // γ-A1-v16: narrow window 0건이면 ±60일 wide window + TH 강의기간 cross-check.
+    // 사용자 의도: ops 메시지(강의 시작) + 만족도 응답일자가 TH 강의 기간 안 ± 14일이면 그 강사로 매칭.
+    if (matched.length === 0) {
+      const WIDE_WINDOW_DAYS = 60;
+      const wideOps = opsMessages.filter((m) => {
+        if (!companyMatches(m.company, effectiveCompany)) return false;
+        const diff = Math.abs(m.activityAt.getTime() - responseDate.getTime()) / (1000 * 60 * 60 * 24);
+        return diff <= WIDE_WINDOW_DAYS;
+      });
+      if (wideOps.length > 0) {
+        // wide ops에서 강사 후보 모음 → TH 강의 기간 cross-check
+        const candidateInstructorNames = new Set<string>();
+        for (const m of wideOps) for (const n of m.instructors) candidateInstructorNames.add(n);
+        const verifiedByTh = wideOps.filter((m) => {
+          // 각 ops 메시지마다 그 강사들의 TH가 응답일자 포함하는지
+          for (const instName of m.instructors) {
+            const inst = lookupInstructor(instName);
+            if (!inst) continue;
+            const ths = allTHs.filter(
+              (t) => t.instructorDbId === inst.id && companyMatches(t.companyName, effectiveCompany)
+            );
+            for (const t of ths) {
+              const start = t.startDate?.getTime() ?? null;
+              const end = t.endDate?.getTime() ?? null;
+              const respMs = responseDate.getTime();
+              const FOURTEEN = 14 * 24 * 60 * 60 * 1000;
+              if (start !== null && end !== null) {
+                if (respMs >= start - FOURTEEN && respMs <= end + FOURTEEN) return true;
+              } else if (start !== null) {
+                // endDate null이면 startDate ±60일 (강의 끝 unknown — soft fallback)
+                if (Math.abs(respMs - start) <= 60 * 24 * 60 * 60 * 1000) return true;
+              }
+            }
+          }
+          return false;
+        });
+        if (verifiedByTh.length > 0) {
+          matched = verifiedByTh;
+        }
+      }
+    }
 
     if (matched.length === 0) {
       // γ-A1-v6: TeachingHistory fallback — ops_report 매칭 0건이면 계약시트로 직접 매칭

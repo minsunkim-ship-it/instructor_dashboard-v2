@@ -50,12 +50,27 @@ async function fetchDriveFile(token: string, fileId: string): Promise<DriveFile 
   }
 }
 
+// v20 fix: "라인" 매칭이 "온라인"·"오프라인"의 부분문자열로 잡히는 회귀 차단.
+// 짧은 회사명(3자 이하)은 한글/영문 단어 경계를 강제 (앞/뒤에 한글이 붙어있으면 false).
+const KOREAN_LETTER = /[가-힣]/;
+function isWordBoundaryMatch(haystack: string, needle: string, idx: number): boolean {
+  // 회사명 길이 >= 4면 substring으로 충분 신뢰
+  if (needle.length >= 4) return true;
+  const before = idx > 0 ? haystack[idx - 1] : "";
+  const after = idx + needle.length < haystack.length ? haystack[idx + needle.length] : "";
+  // 한글로 둘러싸여 있으면 거짓 매칭 (예: "온라인" 안의 "라인")
+  if (before && KOREAN_LETTER.test(before)) return false;
+  if (after && KOREAN_LETTER.test(after)) return false;
+  return true;
+}
+
 function findCompanyInName(name: string, companySet: Set<string>): string | null {
   // 알려진 회사명 SET에서 substring 매칭. 가장 긴 매칭 우선.
   const matches: string[] = [];
   for (const c of companySet) {
     if (c.length < 2) continue;
-    if (name.includes(c)) matches.push(c);
+    const idx = name.indexOf(c);
+    if (idx >= 0 && isWordBoundaryMatch(name, c, idx)) matches.push(c);
   }
   if (matches.length === 0) return null;
   return matches.sort((a, b) => b.length - a.length)[0];

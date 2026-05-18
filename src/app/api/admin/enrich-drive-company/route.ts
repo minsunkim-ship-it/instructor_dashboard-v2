@@ -92,6 +92,18 @@ export async function POST(request: NextRequest) {
     "에스원", "에스원블루", "현대건설", "GS건설", "대우건설",
     "동국제강", "동국제강그룹", "TKG태광", "효성ITX", "효성", "한미약품",
     "키움증권", "미래에셋증권", "NH투자증권",
+    // v20: 교육/연구기관·중견기업·기타 추가
+    "한국과학기술원", "KAIST", "서울대학교", "연세대학교", "고려대학교", "한양대학교",
+    "한국전자통신연구원", "ETRI", "한국과학기술연구원", "KIST",
+    "비비엔그루", "디어포스", "풍산", "BGF", "BGF리테일", "BGF에코머티리얼즈",
+    "한국교통안전공단", "교통안전공단", "한국지능정보사회진흥원", "NIA",
+    "한국가스공사", "한국수력원자력", "한수원", "한국도로공사",
+    "현대오토에버", "현대제철", "현대글로비스", "현대백화점",
+    "DL이앤씨", "DL건설", "GS리테일", "GS칼텍스", "SK이노베이션", "SK텔레콤",
+    "LG에너지솔루션", "LG디스플레이", "LG이노텍",
+    "쿠팡이츠", "토스", "토스뱅크", "카카오뱅크", "카카오페이", "카카오엔터프라이즈",
+    "네이버클라우드", "네이버", "라인", "엔씨소프트", "넥슨", "넷마블", "크래프톤",
+    "두산에너빌리티", "두산밥캣", "한화에어로스페이스", "한화솔루션", "한화시스템",
     // "패스트캠퍼스" 제거 — 우리 회사명이 메일 발신자에 등장하면 잘못 매칭 (실제 회사는 메일 본문 안)
   ];
   // 우리 회사 (패스트캠퍼스)는 발신자라 회사명으로 인식 X. SEED에서 명시적 제외.
@@ -106,6 +118,38 @@ export async function POST(request: NextRequest) {
     },
     select: { id: true, registryKey: true, sourceType: true, sourceRefs: true, courseName: true, candidateName: true },
   });
+
+  // v20: gmail body 본문 enrich — sourceRefKey가 `gmail_satisfaction:${threadId}:*`이므로
+  // pending registry의 thread_id를 모아 ImportItem을 prefix로 조회
+  const gmailThreadIds = new Set<string>();
+  for (const r of pending) {
+    if (r.sourceType !== "drive_satisfaction") {
+      const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];
+      const inner = refs[0]?.source_ref as RawRecord | undefined;
+      const tid = pickString(inner, "thread_id");
+      if (tid) gmailThreadIds.add(tid);
+    }
+  }
+  const gmailItems = gmailThreadIds.size
+    ? await prisma.satisfactionImportItem.findMany({
+        where: {
+          OR: Array.from(gmailThreadIds).flatMap((tid) => [
+            { sourceRefKey: { startsWith: `gmail_satisfaction:${tid}:` } },
+          ]),
+        },
+        select: { sourceRefKey: true, rawPayload: true, normalizedPayload: true },
+      })
+    : [];
+  const gmailByThread = new Map<string, typeof gmailItems[number][]>();
+  for (const it of gmailItems) {
+    if (!it.sourceRefKey) continue;
+    const m = it.sourceRefKey.match(/^gmail_satisfaction:([^:]+):/);
+    if (!m) continue;
+    const tid = m[1];
+    const arr = gmailByThread.get(tid) ?? [];
+    arr.push(it);
+    gmailByThread.set(tid, arr);
+  }
 
   const token = await exchangeGoogleUserAccessToken();
   const folderCache = new Map<string, DriveFile | null>();
@@ -139,24 +183,44 @@ export async function POST(request: NextRequest) {
     const refs = Array.isArray(r.sourceRefs) ? (r.sourceRefs as RawRecord[]) : [];
     const firstRef = refs[0];
     const inner = firstRef?.source_ref as RawRecord | undefined;
-    // gmail registry: file_id 없음. subject / snippet / from / to 에서 회사 추출 시도
+    // gmail registry: file_id 없음. subject / snippet / from / to + body 에서 회사 추출 시도
     if (r.sourceType !== "drive_satisfaction") {
       const subj = pickString(inner, "subject") ?? pickString(firstRef, "subject");
       const snip = pickString(inner, "snippet") ?? pickString(firstRef, "snippet");
       const fromAddr = pickString(inner, "from") ?? pickString(firstRef, "from");
       const toAddr = pickString(inner, "to") ?? pickString(firstRef, "to");
       const haystack = [subj, snip, fromAddr, toAddr].filter(Boolean).join(" | ");
-      const fromHaystack = findCompanyInName(haystack, companySet);
+      let fromHaystack = findCompanyInName(haystack, companySet);
+      let viaTag = `gmail-meta: ${haystack.slice(0, 80)}`;
+      // v20: 본문/normalizedPayload 까지 탐색
+      if (!fromHaystack) {
+        const tid = pickString(inner, "thread_id");
+        const items = tid ? gmailByThread.get(tid) ?? [] : [];
+        for (const it of items) {
+          const raw = it.rawPayload as RawRecord | null;
+          const norm = it.normalizedPayload as RawRecord | null;
+          const body = typeof raw?.body === "string" ? (raw.body as string) : "";
+          const company = typeof norm?.company === "string" ? (norm.company as string) : "";
+          const company2 = typeof norm?.companyName === "string" ? (norm.companyName as string) : "";
+          const bodyHay = [body, company, company2].filter(Boolean).join(" | ");
+          const found = findCompanyInName(bodyHay, companySet);
+          if (found) {
+            fromHaystack = found;
+            viaTag = `gmail-body: ${(company || company2 || body).slice(0, 80)}`;
+            break;
+          }
+        }
+      }
       if (fromHaystack) {
         plans.push({
           registryKey: r.registryKey,
-          file_id: "(gmail-meta)",
+          file_id: "(gmail)",
           folder_chain: [],
           matched_company: fromHaystack,
-          via_folder: `gmail-meta: ${haystack.slice(0, 80)}`,
+          via_folder: viaTag,
         });
       } else {
-        skipped.push({ registryKey: r.registryKey, reason: "gmail_no_company_in_meta" });
+        skipped.push({ registryKey: r.registryKey, reason: "gmail_no_company_in_meta_or_body" });
       }
       continue;
     }

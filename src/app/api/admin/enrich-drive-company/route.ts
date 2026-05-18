@@ -92,8 +92,11 @@ export async function POST(request: NextRequest) {
     "에스원", "에스원블루", "현대건설", "GS건설", "대우건설",
     "동국제강", "동국제강그룹", "TKG태광", "효성ITX", "효성", "한미약품",
     "키움증권", "미래에셋증권", "NH투자증권",
-    "패스트캠퍼스",
+    // "패스트캠퍼스" 제거 — 우리 회사명이 메일 발신자에 등장하면 잘못 매칭 (실제 회사는 메일 본문 안)
   ];
+  // 우리 회사 (패스트캠퍼스)는 발신자라 회사명으로 인식 X. SEED에서 명시적 제외.
+  const EXCLUDED_AS_COMPANY = new Set(["패스트캠퍼스", "패스트", "Day1"]);
+  for (const e of EXCLUDED_AS_COMPANY) companySet.delete(e);
   for (const s of SEEDS) companySet.add(s);
 
   const pending = await prisma.satisfactionReviewRegistry.findMany({

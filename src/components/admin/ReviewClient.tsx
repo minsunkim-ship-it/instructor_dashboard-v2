@@ -34,6 +34,14 @@ interface PendingRow {
   resolvedCandidates: InstructorSummary[];
   sourceRefs: unknown;
   createdAt: string;
+  reason: { code: string; label: string; severity: "blocker" | "review" | "info" };
+}
+
+interface ReasonStat {
+  code: string;
+  label: string;
+  severity: string;
+  count: number;
 }
 
 interface ListResponse {
@@ -42,6 +50,7 @@ interface ListResponse {
   offset?: number;
   limit?: number;
   rows?: PendingRow[];
+  reason_distribution?: ReasonStat[];
   error?: string;
 }
 
@@ -170,6 +179,8 @@ export default function ReviewClient() {
     }
   };
 
+  const reasonStats = data?.reason_distribution ?? [];
+
   return (
     <div className="review-shell">
       <header className="review-page-header">
@@ -209,6 +220,20 @@ export default function ReviewClient() {
         </div>
       </header>
 
+      {reasonStats.length > 0 && (
+        <section className="reason-bar">
+          <div className="reason-bar-title">자동 매칭 실패 사유 (이 페이지 기준)</div>
+          <div className="reason-bar-chips">
+            {reasonStats.map((s) => (
+              <span key={s.code} className={`reason-chip reason-chip-${s.severity}`}>
+                <strong>{s.count}</strong>
+                <span>{s.label}</span>
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div className="review-grid">
         <section className="review-table-wrap">
           {loading && rows.length === 0 ? (
@@ -226,6 +251,7 @@ export default function ReviewClient() {
                   <th className="th-company">회사 · 과정</th>
                   <th className="th-score">평균 / N</th>
                   <th className="th-date">응답일자</th>
+                  <th className="th-reason">사유</th>
                   <th className="th-suggestion">자동 추천</th>
                 </tr>
               </thead>
@@ -250,6 +276,11 @@ export default function ReviewClient() {
                       <div className="score-n">N={row.responseCount}</div>
                     </td>
                     <td className="td-date">{row.responseDate?.slice(0, 10) ?? "—"}</td>
+                    <td className="td-reason">
+                      <span className={`reason-chip-mini reason-chip-${row.reason.severity}`} title={row.reason.label}>
+                        {row.reason.label.split(" ")[0].slice(0, 18)}
+                      </span>
+                    </td>
                     <td className="td-suggestion">
                       {row.suggestion ? (
                         <span className="suggestion-chip">{row.suggestion.name}</span>
@@ -344,6 +375,15 @@ function ReviewDetail({ row, onApprove, onReject }: DetailProps) {
           {row.sessionLabel && <DetailItem label="차수">{row.sessionLabel}</DetailItem>}
           <DetailItem label="출처">{sourceTypeLabel(row.sourceType)}</DetailItem>
         </dl>
+      </div>
+
+      <div className="detail-section">
+        <h2 className="detail-section-title">자동 매칭 실패 사유</h2>
+        <div className={`reason-detail reason-chip-${row.reason.severity}`}>
+          <strong>{row.reason.label}</strong>
+          <p className="reason-detail-code">code: <code>{row.reason.code}</code></p>
+          <ReasonHelp code={row.reason.code} />
+        </div>
       </div>
 
       <div className="detail-section">
@@ -481,4 +521,19 @@ function DetailItem({ label, children }: { label: string; children: React.ReactN
       <dd>{children}</dd>
     </div>
   );
+}
+
+function ReasonHelp({ code }: { code: string }) {
+  const TIPS: Record<string, string> = {
+    non_instructor_course: "사이버연수/이러닝 등 강사 출강 없는 콘텐츠. 강사 매칭 의미 없음 → 반려 권장.",
+    no_company: "회사명이 파싱되지 않음. 파일명/시트제목에서 직접 확인 후 수동 지정 또는 반려.",
+    no_response_date: "응답일자가 없어 슬랙/지메일과 시기 매칭 불가. 파일 생성시점 등 참고.",
+    low_evidence: "응답 1건 이하 + 자동 추천 없음. 테스트 응답일 가능성 — 반려 검토.",
+    has_suggestion: "normalizer가 추천한 강사가 있음. 우측 패널 '강사 지정' 영역에서 확인 후 승인.",
+    gmail_no_signal: "메일 본문/제목에 회사·강사 신호 부족. 보낸이/수신인/링크 확인 후 수동 지정.",
+    no_slack_match: "응답일자 기준 ±14일 슬랙(운영보고/일반)에 해당 회사 메시지 없음. 수동 강사 검색.",
+  };
+  const tip = TIPS[code];
+  if (!tip) return null;
+  return <p className="reason-detail-tip">{tip}</p>;
 }

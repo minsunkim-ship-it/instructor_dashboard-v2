@@ -1273,3 +1273,113 @@ textarea {
     padding: 20px;
   }
 }
+
+/* Reason bar (위쪽 분포) */
+.reason-bar {
+  background: #fff;
+  border: 1px solid #ececec;
+  border-radius: 14px;
+  padding: 14px 18px;
+}
+.reason-bar-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.reason-bar-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.reason-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+.reason-chip strong {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.reason-chip-blocker {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+.reason-chip-review {
+  background: #fef3c7;
+  border-color: #fde68a;
+  color: #92400e;
+}
+.reason-chip-info {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: var(--text-secondary);
+}
+
+/* Mini chip in table */
+.th-reason {
+  width: 140px;
+}
+.td-reason {
+  vertical-align: top;
+}
+.reason-chip-mini {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reason-chip-mini.reason-chip-blocker {
+  background: #fef2f2;
+  color: #991b1b;
+}
+.reason-chip-mini.reason-chip-review {
+  background: #fef3c7;
+  color: #92400e;
+}
+.reason-chip-mini.reason-chip-info {
+  background: #f1f5f9;
+  color: var(--text-secondary);
+}
+
+/* Detail reason block */
+.reason-detail {
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+.reason-detail strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.reason-detail-code {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+.reason-detail-code code {
+  font-family: var(--font-mono);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.reason-detail-tip {
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin: 0;
+}

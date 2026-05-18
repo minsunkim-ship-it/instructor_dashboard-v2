@@ -313,10 +313,33 @@ export async function GET(request: NextRequest) {
     const fileName = pickString(firstRef, "file_name");
     // γ-A1-v14: response_date null이면 created_time fallback (drive 파일 생성 시점 = 강의 시작 직후 추정)
     const innerForDate = firstRef && (firstRef as RawRecord).source_ref as RawRecord | undefined;
-    const responseDateStr =
+    let responseDateStr =
       pickString(firstRef, "response_date") ??
       pickString(innerForDate, "created_time") ??
       pickString(firstRef, "created_time");
+    // γ-A1-v15 (general): file_name 끝의 `_MMDD` 또는 `_YYYYMMDD` = 강의 일자 (현대자동차_0731 패턴).
+    // response_date보다 정확한 강의 시점이므로 file_name 날짜 있으면 우선.
+    const fileDateMatch = fileName?.match(/_(\d{4})(\d{2})(\d{2})|_(\d{2})(\d{2})(?:\(|\)|_|$)/);
+    if (fileDateMatch) {
+      let y: string, m: string, d: string;
+      if (fileDateMatch[1]) {
+        // YYYYMMDD
+        y = fileDateMatch[1];
+        m = fileDateMatch[2];
+        d = fileDateMatch[3];
+      } else {
+        // MMDD — year 추정: response_date or created_time year, 없으면 currentYear
+        const ref = responseDateStr ? new Date(responseDateStr) : new Date();
+        y = String(ref.getFullYear());
+        m = fileDateMatch[4];
+        d = fileDateMatch[5];
+      }
+      const candidate = `${y}-${m}-${d}T00:00:00Z`;
+      const candDate = new Date(candidate);
+      if (!Number.isNaN(candDate.getTime())) {
+        responseDateStr = candidate;
+      }
+    }
     const responseDate = responseDateStr ? new Date(responseDateStr) : null;
 
     // γ-A1-v9 (general): 비정형 companyName 검출 + 재추출
@@ -536,12 +559,25 @@ export async function GET(request: NextRequest) {
       if (!reg || reg.avgScore === null) continue;
       const refs = Array.isArray(reg.sourceRefs) ? (reg.sourceRefs as RawRecord[]) : [];
       const firstRef = refs[0] as RawRecord | undefined;
-      // γ-A1-v14: response_date null이면 created_time fallback (dry_run과 동일)
+      // γ-A1-v14/v15: response_date null fallback + file_name _MMDD/_YYYYMMDD 우선
       const innerForDate = firstRef && (firstRef as RawRecord).source_ref as RawRecord | undefined;
-      const responseDateStr =
+      let responseDateStr =
         pickString(firstRef, "response_date") ??
         pickString(innerForDate, "created_time") ??
         pickString(firstRef, "created_time");
+      const fnameApply = pickString(firstRef, "file_name");
+      const fdm = fnameApply?.match(/_(\d{4})(\d{2})(\d{2})|_(\d{2})(\d{2})(?:\(|\)|_|$)/);
+      if (fdm) {
+        let y: string, m: string, d: string;
+        if (fdm[1]) {
+          y = fdm[1]; m = fdm[2]; d = fdm[3];
+        } else {
+          const ref = responseDateStr ? new Date(responseDateStr) : new Date();
+          y = String(ref.getFullYear()); m = fdm[4]; d = fdm[5];
+        }
+        const cand = `${y}-${m}-${d}T00:00:00Z`;
+        if (!Number.isNaN(new Date(cand).getTime())) responseDateStr = cand;
+      }
       if (!responseDateStr) continue;
       const responseDate = new Date(responseDateStr);
       if (Number.isNaN(responseDate.getTime())) continue;

@@ -734,11 +734,22 @@ export async function GET(request: NextRequest) {
     classification_stats: stats,
     applied_summary: appliedSummary,
     samples: {
-      strong_by_session: classifications.filter((c) => c.status === "strong_single_by_session").slice(0, 8),
-      strong_by_date: classifications.filter((c) => c.status === "strong_single_by_date").slice(0, 8),
-      multi_instructors: classifications.filter((c) => c.status === "multi_instructors").slice(0, 5),
-      no_company: classifications.filter((c) => c.status === "no_company").slice(0, 3),
-      no_slack_match: classifications.filter((c) => c.status === "no_slack_match").slice(0, 5),
+      // ?full=1 로 호출 시 전체, 기본 slice
+      strong_by_session: (request.nextUrl.searchParams.get("full") === "1"
+        ? classifications.filter((c) => c.status === "strong_single_by_session")
+        : classifications.filter((c) => c.status === "strong_single_by_session").slice(0, 8)),
+      strong_by_date: (request.nextUrl.searchParams.get("full") === "1"
+        ? classifications.filter((c) => c.status === "strong_single_by_date")
+        : classifications.filter((c) => c.status === "strong_single_by_date").slice(0, 8)),
+      multi_instructors: (request.nextUrl.searchParams.get("full") === "1"
+        ? classifications.filter((c) => c.status === "multi_instructors")
+        : classifications.filter((c) => c.status === "multi_instructors").slice(0, 5)),
+      no_company: (request.nextUrl.searchParams.get("full") === "1"
+        ? classifications.filter((c) => c.status === "no_company")
+        : classifications.filter((c) => c.status === "no_company").slice(0, 3)),
+      no_slack_match: (request.nextUrl.searchParams.get("full") === "1"
+        ? classifications.filter((c) => c.status === "no_slack_match")
+        : classifications.filter((c) => c.status === "no_slack_match").slice(0, 5)),
     },
   });
 }

@@ -131,6 +131,31 @@ export async function GET(request: NextRequest) {
     select: { instructorDbId: true, companyName: true, courseName: true, startDate: true, endDate: true },
   });
 
+  // narrow window candidates (within 14d)
+  const narrowOps = ops.filter((o) => o.distance_days <= 14);
+  const narrowCandidates = new Set<string>();
+  for (const o of narrowOps) for (const n of o.instructors) narrowCandidates.add(n);
+
+  // TH cross-check: 응답일자가 강사 TH 기간 안에 있는 강사
+  const FOURTEEN = 14 * 86400 * 1000;
+  const verifiedNames: string[] = [];
+  for (const n of narrowCandidates) {
+    const i = instByName.get(n) ?? instByName.get(n.normalize("NFC")) ?? instByName.get(n.normalize("NFD"));
+    if (!i) continue;
+    const myTh = ths.filter(
+      (t) => t.instructorDbId === i.id && t.companyName && companyMatches(t.companyName, effectiveCompany) && t.startDate
+    );
+    for (const t of myTh) {
+      const start = t.startDate!.getTime();
+      const end = t.endDate?.getTime() ?? start;
+      const respMs = responseDate.getTime();
+      if (respMs >= start - FOURTEEN && respMs <= end + FOURTEEN) {
+        verifiedNames.push(n);
+        break;
+      }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     effective_company: effectiveCompany,
@@ -138,6 +163,8 @@ export async function GET(request: NextRequest) {
     ops_count: ops.length,
     ops_within_14d: ops.filter((o) => o.distance_days <= 14).length,
     ops_within_60d: ops.filter((o) => o.distance_days <= 60).length,
+    narrow_candidates: Array.from(narrowCandidates),
+    th_verified_candidates: verifiedNames,
     ops_top10: ops.slice(0, 10),
     th_for_candidates: ths.map((t) => {
       const inst = allInstructors.find((i) => i.id === t.instructorDbId);

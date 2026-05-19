@@ -207,6 +207,9 @@ export async function POST(request: NextRequest) {
   }
   const mode = request.nextUrl.searchParams.get("mode") ?? "dry_run";
   const sourceFilter = request.nextUrl.searchParams.get("source") ?? "gmail";
+  // v23 Step 2 batch mode: limit + offset 으로 점진적 apply
+  const limit = parseInt(request.nextUrl.searchParams.get("limit") ?? "5000", 10);
+  const offset = parseInt(request.nextUrl.searchParams.get("offset") ?? "0", 10);
   const startedAt = Date.now();
 
   const sourceTypes =
@@ -216,6 +219,7 @@ export async function POST(request: NextRequest) {
       ? undefined
       : [sourceFilter];
 
+  // 모든 후보 ImportItem을 일관된 순서로 조회 (offset/limit 안정성 보장)
   const items = await prisma.satisfactionImportItem.findMany({
     where: sourceTypes ? { sourceType: { in: sourceTypes } } : {},
     select: {
@@ -228,6 +232,7 @@ export async function POST(request: NextRequest) {
       rawPayload: true,
       normalizedPayload: true,
     },
+    orderBy: { id: "asc" },
     take: 5000,
   });
 
@@ -297,16 +302,28 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const totalChangedAll = updates.length;
+  // batch: 같은 정렬 결과에서 offset~offset+limit slice
+  const batchUpdates = updates.slice(offset, offset + limit);
+  const batchRegistryKeys = new Set<string>();
+  for (const u of batchUpdates) if (u.registryKey) batchRegistryKeys.add(u.registryKey);
+
   const summary = {
     total_scanned: items.length,
-    total_changed: updates.length,
+    total_changed_all: totalChangedAll,
+    batch_size: batchUpdates.length,
+    batch_offset: offset,
+    batch_limit: limit,
+    has_more: offset + limit < totalChangedAll,
+    next_offset: offset + limit < totalChangedAll ? offset + limit : null,
     by_field: {
-      company: updates.filter((u) => u.changedFields.includes("company")).length,
-      course: updates.filter((u) => u.changedFields.includes("course")).length,
-      score: updates.filter((u) => u.changedFields.includes("score")).length,
-      respondent: updates.filter((u) => u.changedFields.includes("respondent")).length,
+      company: batchUpdates.filter((u) => u.changedFields.includes("company")).length,
+      course: batchUpdates.filter((u) => u.changedFields.includes("course")).length,
+      score: batchUpdates.filter((u) => u.changedFields.includes("score")).length,
+      respondent: batchUpdates.filter((u) => u.changedFields.includes("respondent")).length,
     },
-    affected_registries: affectedRegistryKeys.size,
+    affected_registries_all: affectedRegistryKeys.size,
+    affected_registries_batch: batchRegistryKeys.size,
   };
 
   if (mode === "dry_run") {
@@ -315,17 +332,17 @@ export async function POST(request: NextRequest) {
       mode,
       durationMs: Date.now() - startedAt,
       summary,
-      sample: updates.slice(0, 30),
+      sample: batchUpdates.slice(0, 30),
     });
   }
 
-  // ===== apply =====
+  // ===== apply (batch only) =====
   let updatedItems = 0;
   let resetRegistries = 0;
   let deletedRecords = 0;
   const touchedInstructorIds = new Set<string>();
 
-  for (const u of updates) {
+  for (const u of batchUpdates) {
     const newCompany = u.changes.company.new;
     const newCourse = u.changes.course.new;
     const newScore = u.changes.score.new;
@@ -361,10 +378,10 @@ export async function POST(request: NextRequest) {
     updatedItems += 1;
   }
 
-  // 영향 받은 registry pending reset + record 삭제
-  if (affectedRegistryKeys.size > 0) {
+  // 영향 받은 registry pending reset + record 삭제 (batch만)
+  if (batchRegistryKeys.size > 0) {
     const registries = await prisma.satisfactionReviewRegistry.findMany({
-      where: { registryKey: { in: Array.from(affectedRegistryKeys) } },
+      where: { registryKey: { in: Array.from(batchRegistryKeys) } },
       select: { id: true, registryKey: true, matchStatus: true, resolvedInstructorId: true },
     });
     for (const r of registries) {
@@ -379,7 +396,7 @@ export async function POST(request: NextRequest) {
     for (const rec of allRecords) {
       const sr = rec.sourceRef as RawRecord | null;
       const rk = pickString(sr, "registry_key");
-      if (rk && affectedRegistryKeys.has(rk)) {
+      if (rk && batchRegistryKeys.has(rk)) {
         recordsToDelete.push(rec.id);
         touchedInstructorIds.add(rec.instructorDbId);
       }
@@ -390,7 +407,7 @@ export async function POST(request: NextRequest) {
     }
     // registries pending reset
     await prisma.satisfactionReviewRegistry.updateMany({
-      where: { registryKey: { in: Array.from(affectedRegistryKeys) } },
+      where: { registryKey: { in: Array.from(batchRegistryKeys) } },
       data: {
         matchStatus: "pending",
         resolvedInstructorId: null,

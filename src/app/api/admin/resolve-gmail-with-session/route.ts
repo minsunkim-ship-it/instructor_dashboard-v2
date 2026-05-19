@@ -301,7 +301,15 @@ export async function GET(request: NextRequest) {
     function looksUnparsedCompany(c: string | null | undefined): boolean {
       if (!c) return true;
       // 한국어 어구·문장 (말씀 / 금일 / 했던 등) 포함 또는 너무 김 → 정상 회사명 아님
-      return c.length > 20 || /(말씀|금일|어제|진행|관련|드린|좋은|확인)/.test(c);
+      if (c.length > 20) return true;
+      if (/(말씀|금일|어제|진행|관련|드린|좋은|확인|지난|오늘|작일|진행한|진행된|진행하|진행해주신|보내|드립니다)/.test(c)) return true;
+      // 날짜/시간 패턴 + 한글 혼합 (예: "08/16(토)", "8월 5~7일")
+      if (/\d{1,2}[/.\-월일]\d{0,2}/.test(c) && /[가-힣]/.test(c)) return true;
+      // 끝이 숫자 또는 ~만 (예: "지난 주 19", "8월 5~7일")
+      if (/[\s]\d+$/.test(c) || /[~\-]/.test(c)) return true;
+      // 시작이 대괄호/괄호 + 비정형 (예: "[ 신한금융지주회사")
+      if (/^[\s\[\(]/.test(c)) return true;
+      return false;
     }
 
     // 신호 1: subject 강사명

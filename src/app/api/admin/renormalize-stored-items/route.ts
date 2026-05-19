@@ -220,6 +220,33 @@ function newParseRespondentCount(text: string): number | null {
   }
   return null;
 }
+
+// v23 Drive: drive 회사명·과정명 가드 (drive-normalizer와 동일 정책)
+const DRIVE_COURSE_BLOCKLIST = new Set<string>([
+  "UXUI", "디자인씽킹", "DesignThinking", "프로덕트", "Product",
+  "비즈니스매너", "비즈니스",
+  "2024", "2025", "2026", "2027",
+]);
+function isLikelyDriveCompanyName(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return false;
+  if (COMPANY_BLOCKLIST.has(trimmed)) return false;
+  if (DRIVE_COURSE_BLOCKLIST.has(trimmed)) return false;
+  const knownShort = new Set(["KT", "CJ", "LG", "SK", "GS", "BC", "DB", "LS", "HL", "MG", "KB", "NH", "JB", "DK", "DL", "MS", "TS", "BH", "EM"]);
+  if (/^[A-Za-z]{2,3}$/.test(trimmed) && !knownShort.has(trimmed.toUpperCase())) return false;
+  if (/^[\d]+/.test(trimmed)) return false;
+  if (/^(지난|오늘|어제|작일|금일|이번주|작년|올해|내년)/.test(trimmed)) return false;
+  return true;
+}
+function isLikelyDriveCourseName(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 3) return false;
+  if (/^\d+\s*(일차|차수|회차|기)$/.test(trimmed)) return false;
+  if (/^\d{1,2}\s*월[_\s]/.test(trimmed)) return false;
+  return true;
+}
 // ============ END inline ============
 
 interface ItemUpdate {
@@ -285,18 +312,26 @@ export async function POST(request: NextRequest) {
     const oldScore = pickNumber(norm, "score_normalized", "scoreNormalized");
     const oldRespondent = pickNumber(norm, "respondent_count", "respondentCount");
 
-    // 새 normalize
-    const newCompanyFromCourse = newParseCompanyHintFromCourseName(oldCourse);
-    const newCompanyFromSubject = newParseCompanyHintFromSubject(subject);
-    const newCompany = newCompanyFromCourse ?? newCompanyFromSubject ?? oldCompany;
+    const isDrive = it.sourceType === "drive_satisfaction";
+
+    // 새 normalize — drive vs gmail 다르게
+    let newCompany: string | null;
+    let newCourse: string | null = oldCourse;
+    if (isDrive) {
+      // drive: 추출 결과를 가드로 검증. 추출 자체는 안 다시 함 (parseFileName은 ImportItem 생성 시점에만)
+      // 따라서 stored old 값을 가드로 정정만
+      newCompany = isLikelyDriveCompanyName(oldCompany) ? oldCompany : null;
+      newCourse = isLikelyDriveCourseName(oldCourse) ? oldCourse : null;
+    } else {
+      const newCompanyFromCourse = newParseCompanyHintFromCourseName(oldCourse);
+      const newCompanyFromSubject = newParseCompanyHintFromSubject(subject);
+      newCompany = newCompanyFromCourse ?? newCompanyFromSubject ?? oldCompany;
+      if (oldCourse && looksLikeKoreanPhrasePrefix(oldCourse)) {
+        newCourse = null;
+      }
+    }
     const newScore = newParseScoreFromText(haystack);
     const newRespondent = newParseRespondentCount(haystack);
-
-    // course rewrite: 비정형 시간 어구면 정리 (null로) — 단 정상 course면 유지
-    let newCourse = oldCourse;
-    if (oldCourse && looksLikeKoreanPhrasePrefix(oldCourse)) {
-      newCourse = null;
-    }
 
     // 변경된 필드 식별
     const changedFields: string[] = [];

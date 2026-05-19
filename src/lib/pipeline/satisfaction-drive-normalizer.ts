@@ -15,6 +15,51 @@ interface FileNameMetadata {
 
 const PLATFORM_NAMES = ["패스트캠퍼스", "마이써니", "엔무브"];
 
+// v23 Drive: 회사명/과정명 검증 가드 (gmail-normalizer와 동일 정책)
+const DRIVE_COMPANY_BLOCKLIST = new Set<string>([
+  "AI", "DX", "AX", "ML", "DL", "BI", "RPA", "OT", "IT", "HR", "PB", "MX",
+  "데이터", "Data", "BIZ", "Biz",
+  "기획", "영업", "인사", "R&D",
+  "교육", "과정", "강의", "전문가", "양성", "기초", "심화",
+  "25년", "25년도", "26년", "26년도", "올해", "내년", "작년",
+  "1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월", "9월", "10월", "11월", "12월",
+  "기업", "법인", "직원", "수강생", "참여자", "사원",
+  "학원", "센터", "본부", "팀",
+  "패스트캠퍼스", "패스트", "Day1", "day1", "fastcampus", "FastCampus",
+  // Drive 특수: course type이 회사로 잘못 들어가는 케이스
+  "UXUI", "디자인씽킹", "DesignThinking", "프로덕트", "Product",
+  "비즈니스매너", "비즈니스",
+  // 연도만 (companyName 자리에 절대 안 옴)
+  "2024", "2025", "2026", "2027",
+]);
+const DRIVE_KNOWN_SHORT_COMPANIES = new Set([
+  "KT", "CJ", "LG", "SK", "GS", "BC", "DB", "LS", "HL", "MG", "KB", "NH", "JB", "DK", "DL", "MS", "TS", "BH", "EM",
+]);
+
+function isLikelyDriveCompanyName(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return false;
+  if (DRIVE_COMPANY_BLOCKLIST.has(trimmed)) return false;
+  if (/^[A-Za-z]{2,3}$/.test(trimmed) && !DRIVE_KNOWN_SHORT_COMPANIES.has(trimmed.toUpperCase())) return false;
+  // 숫자만 / 숫자 시작 (예: "2026", "25년")
+  if (/^[\d]+/.test(trimmed)) return false;
+  // 한국어 시간/상태 어구 시작
+  if (/^(지난|오늘|어제|작일|금일|이번주|작년|올해|내년)/.test(trimmed)) return false;
+  return true;
+}
+
+function isLikelyDriveCourseName(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 3) return false;
+  // course가 차수/일차 표기만 남은 경우 (예: "1일차", "3차수")
+  if (/^\d+\s*(일차|차수|회차|기)$/.test(trimmed)) return false;
+  // "9월_토지인허가" 같은 월별 표기 시작
+  if (/^\d{1,2}\s*월[_\s]/.test(trimmed)) return false;
+  return true;
+}
+
 function parseFileName(fileName: string): FileNameMetadata {
   let name = fileName
     .replace(/\(응답\)/g, "")
@@ -123,7 +168,18 @@ function parseFileName(fileName: string): FileNameMetadata {
     }
   }
 
-  const courseName = name || null;
+  let courseName: string | null = name || null;
+
+  // v23 Drive: 추출 결과 검증
+  // 1. companyName이 비정상이면 null로 (UXUI/디자인씽킹/2026/AI 등)
+  if (companyName && !isLikelyDriveCompanyName(companyName)) {
+    companyName = null;
+  }
+  // 2. courseName이 차수/일차만 남거나 비정상이면 null로
+  if (courseName && !isLikelyDriveCourseName(courseName)) {
+    courseName = null;
+  }
+
   return { courseName, companyName, instructorNameHint };
 }
 

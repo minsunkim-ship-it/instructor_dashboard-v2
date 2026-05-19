@@ -46,7 +46,8 @@ const ALLOWED_RESOLVER_CHANNEL_IDS = new Set<string>([
 ]);
 const WINDOW_DAYS = 7;
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
-const SUBJECT_INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님께/;
+// v22 A: subject regex 확장 — "님께" / "님" / 단독 "강사" 모두 매칭 (subject에 "만족도" 또는 "강의" 같은 강한 신호가 있을 때만 strong)
+const SUBJECT_INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)\s*(?:님께|님|$|[\s.,\-:|])/;
 const COMPANY_REGEX = /\(B2B\)\s*([^_\n]+?)[\s_]/;
 const SUBJECT_COMPANY_REGEX = /[-_]\s*([가-힣A-Za-z0-9()][^_\-\n]{1,30}?)[_\s]/;
 const SESSION_REGEX = /(\d+)\s*(?:회차|차수|일차)/;
@@ -283,7 +284,16 @@ export async function GET(request: NextRequest) {
     const item = itemByRegKey.get(reg.registryKey);
     const subject = item ? pickString(item.rawPayload, "subject") : null;
     const sessionLabel = item ? pickString(item.normalizedPayload, "session_label") : null;
-    const body = item ? pickString(item.rawPayload, "body_excerpt") : null;
+    // v22 A: body_excerpt + body + snippet 모두 시도 (실제 rawPayload key가 case마다 다름)
+    const body = item
+      ? [
+          pickString(item.rawPayload, "body_excerpt"),
+          pickString(item.rawPayload, "body"),
+          pickString(item.rawPayload, "snippet"),
+        ]
+          .filter((v): v is string => !!v)
+          .join("\n") || null
+      : null;
 
     // γ-A1-v4 D: companyName이 비정형(긴 문장)이면 body에서 알려진 TeachingHistory 회사명 재추출
     // 예: registry.companyName = "금일 말씀주신 원데이 AI 실습 과정"

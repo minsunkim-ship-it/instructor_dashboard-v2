@@ -476,6 +476,8 @@ export async function GET(request: NextRequest) {
     if (matched.length === 0) {
       // γ-A1-v6: TeachingHistory fallback — ops_report 매칭 0건이면 계약시트로 직접 매칭
       // γ-A1-v20: course token overlap 필터 추가 — 같은 회사 다강사 다과정 중 정확한 1명 식별
+      const NARROW_DAYS = 14 * 24 * 60 * 60 * 1000;
+      const WIDE_DELAY_DAYS = 30 * 24 * 60 * 60 * 1000; // v22 D: 응답 지연 ±30일
       let thMatched = allTHs.filter((t) => {
         if (!companyMatches(t.companyName, effectiveCompany)) return false;
         // 강의 기간이 responseDate 포함 ±14일
@@ -483,7 +485,7 @@ export async function GET(request: NextRequest) {
         const end = t.endDate?.getTime() ?? null;
         const respMs = responseDate.getTime();
         if (start !== null && end !== null) {
-          return respMs >= start - 14 * 24 * 60 * 60 * 1000 && respMs <= end + 14 * 24 * 60 * 60 * 1000;
+          return respMs >= start - NARROW_DAYS && respMs <= end + NARROW_DAYS;
         }
         if (start !== null) {
           return Math.abs(respMs - start) <= 30 * 24 * 60 * 60 * 1000;
@@ -491,24 +493,61 @@ export async function GET(request: NextRequest) {
         return false;
       });
       // v20: course token overlap — TH의 courseName 토큰과 registry.courseName 토큰이 1개+ 일치하는 TH만
-      if (thMatched.length >= 2 && reg.courseName) {
-        const regTokens = extractCourseTokens(reg.courseName).map(normalizeText).filter((t) => t.length >= 2);
-        if (regTokens.length > 0) {
-          const filteredByCourse = thMatched.filter((t) => {
-            if (!t.courseName) return false;
-            const thTokens = extractCourseTokens(t.courseName).map(normalizeText).filter((tt) => tt.length >= 2);
-            return regTokens.some((rt) => thTokens.some((tt) => rt.includes(tt) || tt.includes(rt)));
-          });
-          if (filteredByCourse.length > 0) thMatched = filteredByCourse;
-        }
-      }
-      // v20: courseSession (N차수/N일차)으로 추가 좁힘 — TH.courseName에 같은 차수 토큰 있는지
-      if (thMatched.length >= 2 && courseSession !== null) {
+      const filterByCourseToken = (ths: typeof thMatched): typeof thMatched => {
+        if (!reg.courseName) return ths;
+        const regTokens = extractCourseTokens(reg.courseName)
+          .map(normalizeText)
+          .filter((t) => t.length >= 2);
+        if (regTokens.length === 0) return ths;
+        return ths.filter((t) => {
+          if (!t.courseName) return false;
+          const thTokens = extractCourseTokens(t.courseName)
+            .map(normalizeText)
+            .filter((tt) => tt.length >= 2);
+          return regTokens.some((rt) => thTokens.some((tt) => rt.includes(tt) || tt.includes(rt)));
+        });
+      };
+      // v20: courseSession (N차수/N일차)으로 추가 좁힘
+      const filterBySession = (ths: typeof thMatched): typeof thMatched => {
+        if (courseSession === null) return ths;
         const sessionPatterns = [`${courseSession}차수`, `${courseSession}일차`, `${courseSession}기`];
-        const sessionFiltered = thMatched.filter((t) =>
+        return ths.filter((t) =>
           t.courseName ? sessionPatterns.some((p) => t.courseName!.includes(p)) : false
         );
+      };
+      if (thMatched.length >= 2) {
+        const filteredByCourse = filterByCourseToken(thMatched);
+        if (filteredByCourse.length > 0) thMatched = filteredByCourse;
+      }
+      if (thMatched.length >= 2) {
+        const sessionFiltered = filterBySession(thMatched);
         if (sessionFiltered.length > 0) thMatched = sessionFiltered;
+      }
+      // v22 D: narrow ±14일 매칭 0건이면 wide endDate+14~30일 응답 지연 attempt.
+      // 조건: 회사 alias + course token + (courseSession 일치 OR responseDate가 end+14~30일 구간)
+      //       triple match로 false positive 차단. 응답 지연 케이스만 회복.
+      if (thMatched.length === 0 && reg.courseName) {
+        const wideCands = allTHs.filter((t) => {
+          if (!companyMatches(t.companyName, effectiveCompany)) return false;
+          const start = t.startDate?.getTime() ?? null;
+          const end = t.endDate?.getTime() ?? start;
+          if (start === null || end === null) return false;
+          const respMs = responseDate.getTime();
+          // 응답이 endDate +14~+30일 사이일 때만 (narrow 통과 못한 지연 응답)
+          return respMs > end + NARROW_DAYS && respMs <= end + WIDE_DELAY_DAYS;
+        });
+        if (wideCands.length > 0) {
+          let narrowed = filterByCourseToken(wideCands);
+          // course token이 0이면 매칭 거부 (triple match 강제)
+          if (narrowed.length === 0) narrowed = [];
+          if (narrowed.length >= 2) {
+            const sessNarrow = filterBySession(narrowed);
+            if (sessNarrow.length > 0) narrowed = sessNarrow;
+          }
+          // wide 매칭은 1명일 때만 채택 (보수적)
+          const wideIds = Array.from(new Set(narrowed.map((t) => t.instructorDbId)));
+          if (wideIds.length === 1) thMatched = narrowed;
+        }
       }
       const thInstructorIds = Array.from(new Set(thMatched.map((t) => t.instructorDbId)));
       if (thInstructorIds.length === 1) {

@@ -54,6 +54,9 @@ const EMPTY_NOTION_MEMO_DIAGNOSTICS: InstructorDetailData["notion_memo_diagnosti
   block_comment_count: 0,
   block_text_count: 0,
   incoming_line_count: 0,
+  page_body_updated: false,
+  page_title_line_count: 0,
+  block_text_line_count: 0,
   error_message: null,
 };
 
@@ -261,6 +264,7 @@ export function getFallbackInstructorDetail(
     specialties: item.specialties,
     profile_summary: item.profile_summary,
     memo: item.memo,
+    notion_page_body: null,
     notion_memo_diagnostics: EMPTY_NOTION_MEMO_DIAGNOSTICS,
     is_fulltime: item.is_fulltime,
     is_practice_coach: item.is_practice_coach,

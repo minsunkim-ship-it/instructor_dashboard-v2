@@ -553,6 +553,7 @@ export async function GET(
       untilDate: today,
     });
     let memoRaw = inst.memoRaw;
+    let notionPageBodyRaw: string | null = inst.notionPageBodyRaw ?? null;
     const notionMemoDiagnostics: NotionMemoDiagnostics = {
       source_linked: Boolean(
         inst.sourceLinks.find((item) => item.sourceType === "notion" && item.externalKey)
@@ -565,6 +566,9 @@ export async function GET(
       block_comment_count: 0,
       block_text_count: 0,
       incoming_line_count: 0,
+      page_body_updated: false,
+      page_title_line_count: 0,
+      block_text_line_count: 0,
       error_message: null,
     };
     const notionSourceLink = inst.sourceLinks.find(
@@ -590,13 +594,29 @@ export async function GET(
         notionMemoDiagnostics.block_comment_count = enriched.blockCommentCount;
         notionMemoDiagnostics.block_text_count = enriched.blockTextCount;
         notionMemoDiagnostics.incoming_line_count = enriched.incomingLineCount;
+        notionMemoDiagnostics.page_title_line_count = enriched.pageTitleLineCount;
+        notionMemoDiagnostics.block_text_line_count = enriched.blockTextLineCount;
 
-        if (enriched.updated) {
+        const memoChanged = enriched.updated;
+        const bodyChanged =
+          enriched.incomingPageBody !== null &&
+          enriched.incomingPageBody !== notionPageBodyRaw;
+
+        if (memoChanged || bodyChanged) {
           await prisma.instructor.update({
             where: { id: inst.id },
-            data: { memoRaw: enriched.mergedMemo },
+            data: {
+              ...(memoChanged ? { memoRaw: enriched.mergedMemo } : {}),
+              ...(bodyChanged
+                ? { notionPageBodyRaw: enriched.incomingPageBody }
+                : {}),
+            },
           });
-          memoRaw = enriched.mergedMemo;
+          if (memoChanged) memoRaw = enriched.mergedMemo;
+          if (bodyChanged) {
+            notionPageBodyRaw = enriched.incomingPageBody;
+            notionMemoDiagnostics.page_body_updated = true;
+          }
         }
       } catch (error) {
         notionMemoDiagnostics.error_message =
@@ -878,6 +898,7 @@ export async function GET(
         specialties: inst.specialties,
         profile_summary: inst.profileSummary,
         memo: stripGoogleLinks(memoRaw),
+        notion_page_body: notionPageBodyRaw,
         notion_memo_diagnostics: notionMemoDiagnostics,
         is_fulltime: isFulltime,
         is_practice_coach: inst.isPracticeCoach,

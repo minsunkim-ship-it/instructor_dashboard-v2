@@ -50,6 +50,14 @@ export interface NotionMemoEnrichmentResult {
   blockCommentCount: number;
   blockTextCount: number;
   incomingLineCount: number;
+  /**
+   * 노션 페이지 본문(pageTitleLines + blockLines) 합본.
+   * memoRaw에는 더 이상 merge되지 않으며, 강사 프로필성 본문으로 분리 저장 대상.
+   * 다른 섹션이 강사 프로필 본문을 구조적으로 읽도록 별도 컬럼(notion_page_body_raw)에 저장.
+   */
+  incomingPageBody: string | null;
+  pageTitleLineCount: number;
+  blockTextLineCount: number;
 }
 
 function getNotionHeaders(): HeadersInit {
@@ -426,13 +434,18 @@ export async function enrichMemoFromNotionPage(args: {
     notionPageId: args.notionPageId,
   });
 
+  // 운영 메모(=피드백)는 코멘트만 — 노션 페이지 본문(pageTitle + blockLines)은
+  // 분리해 별도 컬럼(notion_page_body_raw)에 저장한다. (강사 프로필 누출 차단)
   const incomingMemo = buildMemoCandidate([
-    ...contentLines.pageTitleLines,
     ...contentLines.pageCommentLines,
-    ...contentLines.blockLines,
     ...contentLines.blockCommentLines,
   ]);
   const mergedMemo = mergeMemoNonDestructive(sanitizedExistingMemo, incomingMemo);
+
+  const incomingPageBody = buildMemoCandidate([
+    ...contentLines.pageTitleLines,
+    ...contentLines.blockLines,
+  ]);
 
   return {
     mergedMemo,
@@ -448,5 +461,8 @@ export async function enrichMemoFromNotionPage(args: {
     blockCommentCount: contentLines.blockCommentCount,
     blockTextCount: contentLines.blockTextCount,
     incomingLineCount: incomingMemo ? incomingMemo.split("\n").length : 0,
+    incomingPageBody,
+    pageTitleLineCount: contentLines.pageTitleLines.length,
+    blockTextLineCount: contentLines.blockLines.length,
   };
 }

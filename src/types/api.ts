@@ -78,6 +78,7 @@ export interface InstructorDetailData {
   specialties: string[];
   profile_summary: string | null;
   memo: string | null;
+  notion_page_body: string | null;
   notion_memo_diagnostics: NotionMemoDiagnostics;
   is_fulltime: boolean;
   is_practice_coach: boolean;
@@ -144,6 +145,9 @@ export interface NotionMemoDiagnostics {
   block_comment_count: number;
   block_text_count: number;
   incoming_line_count: number;
+  page_body_updated: boolean;
+  page_title_line_count: number;
+  block_text_line_count: number;
   error_message: string | null;
 }
 

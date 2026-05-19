@@ -68,6 +68,7 @@ function sanitizeInstructorDetailData(
   return {
     ...detail,
     memo: stripGoogleLinks(detail.memo),
+    notion_page_body: detail.notion_page_body ?? null,
     behavioral_intelligence: {
       ...detail.behavioral_intelligence,
       source_refs: {
@@ -303,6 +304,7 @@ export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnaps
         specialties: inst.specialties,
         profile_summary: inst.profileSummary,
         memo: stripGoogleLinks(inst.memoRaw),
+        notion_page_body: inst.notionPageBodyRaw ?? null,
         notion_memo_diagnostics: {
           source_linked: false,
           notion_page_id: null,
@@ -313,6 +315,9 @@ export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnaps
           block_comment_count: 0,
           block_text_count: 0,
           incoming_line_count: 0,
+          page_body_updated: false,
+          page_title_line_count: 0,
+          block_text_line_count: 0,
           error_message: null,
         },
         is_fulltime: inst.isFulltime,

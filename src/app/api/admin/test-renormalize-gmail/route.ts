@@ -88,18 +88,18 @@ function newParseCompanyHintFromSubject(subject: string | null | undefined): str
     return bracketDashMatch[1].trim();
   }
   const COURSE_KEYWORD = "(?:강의|교육|과정|연수|워크숍|특강|수업|클래스|아카데미|커리큘럼)";
+  const shortNameDashMatch = cleaned.match(/[-–]\s*([가-힣A-Za-z0-9]{2,4})\s*[-–]/);
+  if (shortNameDashMatch?.[1]) {
+    const c = shortNameDashMatch[1].trim();
+    if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) return c;
+  }
   const afterDashWithBufferMatch = cleaned.match(
     new RegExp(
-      `[-–]\\s*([가-힣A-Za-z0-9()]{2,12})[\\s가-힣A-Za-z0-9()_./,]{0,50}?${COURSE_KEYWORD}`
+      `[-–]\\s*([가-힣A-Za-z0-9]{2,12})(?:\\s*\\([^)]+\\))?[\\s가-힣A-Za-z0-9()_./,]{0,50}?${COURSE_KEYWORD}`
     )
   );
   if (afterDashWithBufferMatch?.[1]) {
     const c = afterDashWithBufferMatch[1].trim();
-    if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) return c;
-  }
-  const shortNameDashMatch = cleaned.match(/[-–]\s*([가-힣A-Za-z0-9]{2,4})\s*[-–]/);
-  if (shortNameDashMatch?.[1]) {
-    const c = shortNameDashMatch[1].trim();
     if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) return c;
   }
   const directDashMatch = cleaned.match(/^([가-힣A-Za-z0-9()]{2,30})\s*[-–_]\s*/);

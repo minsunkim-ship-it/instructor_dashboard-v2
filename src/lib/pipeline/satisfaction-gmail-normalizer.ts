@@ -452,23 +452,28 @@ function parseCompanyHintFromSubject(subject: string | null | undefined): string
   // 김건태: "김건태 과장님께 - KT - RAG 기법 이해 및 실전 적용 과정..." → KT
   const COURSE_KEYWORD = "(?:강의|교육|과정|연수|워크숍|특강|수업|클래스|아카데미|커리큘럼)";
 
-  // 패턴 1: dash + 회사명(2-12자) + buffer(공백/괄호/한글/영문/숫자 0-50자) + course keyword
-  const afterDashWithBufferMatch = cleaned.match(
-    new RegExp(
-      `[-–]\\s*([가-힣A-Za-z0-9()]{2,12})[\\s가-힣A-Za-z0-9()_./,]{0,50}?${COURSE_KEYWORD}`
-    )
-  );
-  if (afterDashWithBufferMatch?.[1]) {
-    const c = afterDashWithBufferMatch[1].trim();
+  // 우선순위 1: dash + 짧은 회사명(2-4자) + 다시 dash (KT, BC, CJ 케이스)
+  // "김건태 과장님께 - KT - RAG..." → KT
+  const shortNameDashMatch = cleaned.match(/[-–]\s*([가-힣A-Za-z0-9]{2,4})\s*[-–]/);
+  if (shortNameDashMatch?.[1]) {
+    const c = shortNameDashMatch[1].trim();
     if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) {
       return c;
     }
   }
 
-  // 패턴 2: dash + 짧은 회사명(2-4자 영문/한글) + 다시 dash (예: "KT - RAG..." / "BC - 데이터...")
-  const shortNameDashMatch = cleaned.match(/[-–]\s*([가-힣A-Za-z0-9]{2,4})\s*[-–]/);
-  if (shortNameDashMatch?.[1]) {
-    const c = shortNameDashMatch[1].trim();
+  // 우선순위 2: dash + 회사명(괄호 제외 2-12자) + 옵셔널 괄호부연 + buffer + course keyword
+  // 송선영: "- 세방전지 강의..." → 세방전지
+  // 변형호: "- 신한금융지주 AI Agent 실전역량 과정..." → 신한금융지주
+  // 유종훈: "- 삼성물산(생성형 AI 기초) 과정..." → 삼성물산 (괄호 부연 제외)
+  // 이한준: "- 피에스텍 25년 직무 통합 교육..." → 피에스텍
+  const afterDashWithBufferMatch = cleaned.match(
+    new RegExp(
+      `[-–]\\s*([가-힣A-Za-z0-9]{2,12})(?:\\s*\\([^)]+\\))?[\\s가-힣A-Za-z0-9()_./,]{0,50}?${COURSE_KEYWORD}`
+    )
+  );
+  if (afterDashWithBufferMatch?.[1]) {
+    const c = afterDashWithBufferMatch[1].trim();
     if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) {
       return c;
     }

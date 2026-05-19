@@ -54,6 +54,36 @@ interface ListResponse {
   error?: string;
 }
 
+// v22 C: 신뢰도 낮은 record (score≤2.5 + n≤2)
+interface SuspectRecord {
+  record_id: string;
+  matched_instructor: string | null;
+  matched_instructor_id: string;
+  score: number;
+  respondent_count: number;
+  company: string | null;
+  course: string | null;
+  response_date: string | null;
+  source_type: string;
+  th_candidates: Array<{
+    instructor_id: string;
+    instructor_name: string;
+    company: string | null;
+    course: string | null;
+    start: string | null;
+    end: string | null;
+    days_from_response: number | null;
+  }>;
+  instructor_in_candidates: boolean;
+  suggested_alternative: { instructor_id: string; instructor_name: string } | null;
+}
+interface SuspectResponse {
+  ok: boolean;
+  total?: number;
+  records?: SuspectRecord[];
+  error?: string;
+}
+
 const LIMIT = 25;
 
 function sourceTypeLabel(t: string): string {
@@ -77,6 +107,53 @@ export default function ReviewClient() {
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+  // v22 C: 신뢰도 낮은 record 큐
+  const [suspectData, setSuspectData] = useState<SuspectResponse | null>(null);
+  const [suspectOpen, setSuspectOpen] = useState(false);
+  const [suspectLoading, setSuspectLoading] = useState(false);
+
+  const fetchSuspect = useCallback(async () => {
+    setSuspectLoading(true);
+    try {
+      const res = await fetch("/api/backoffice/suspect-records?score_lte=2.5&n_lte=2&limit=50");
+      const j: SuspectResponse = await res.json();
+      setSuspectData(j);
+    } catch {
+      setSuspectData({ ok: false, error: "fetch_failed" });
+    } finally {
+      setSuspectLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSuspect();
+  }, [fetchSuspect]);
+
+  const handleSuspectCleanup = async (recordId: string) => {
+    try {
+      const res = await fetch("/api/backoffice/cleanup-record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recordId }),
+      });
+      const j = await res.json();
+      if (!j.ok) {
+        setToast({ kind: "error", message: `삭제 실패: ${j.error || res.status}` });
+        setTimeout(() => setToast(null), 3500);
+        return;
+      }
+      setToast({ kind: "success", message: "record 삭제됨 (registry pending 복원)" });
+      setTimeout(() => setToast(null), 3500);
+      setSuspectData((prev) =>
+        prev?.records
+          ? { ...prev, records: prev.records.filter((r) => r.record_id !== recordId) }
+          : prev
+      );
+    } catch {
+      setToast({ kind: "error", message: "네트워크 오류" });
+      setTimeout(() => setToast(null), 3500);
+    }
+  };
 
   const fetchPage = useCallback(async (nextOffset: number) => {
     setLoading(true);
@@ -233,6 +310,106 @@ export default function ReviewClient() {
           </div>
         </section>
       )}
+
+      {/* v22 C: 신뢰도 낮은 record 검토 큐 — score≤2.5 + n≤2 */}
+      <section className="suspect-bar" style={{
+        marginTop: "0.75rem",
+        padding: "0.875rem 1rem",
+        background: "#fff7ed",
+        border: "1px solid #fdba74",
+        borderRadius: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <strong style={{ color: "#9a3412", fontSize: "0.9rem" }}>
+              ⚠️ 신뢰도 낮은 record ({suspectLoading ? "..." : suspectData?.records?.length ?? 0}건)
+            </strong>
+            <span style={{ marginLeft: "0.5rem", color: "#7c2d12", fontSize: "0.8rem" }}>
+              score≤2.5 + 응답자 수≤2 — 매칭 오류 의심
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSuspectOpen((v) => !v)}
+            style={{
+              padding: "0.25rem 0.75rem",
+              fontSize: "0.8rem",
+              background: "#fed7aa",
+              border: "1px solid #fb923c",
+              borderRadius: 4,
+              cursor: "pointer",
+              color: "#7c2d12",
+            }}
+          >
+            {suspectOpen ? "접기" : "펼치기"}
+          </button>
+        </div>
+        {suspectOpen && (suspectData?.records?.length ?? 0) > 0 && (
+          <table className="review-table" style={{ marginTop: "0.75rem", fontSize: "0.82rem" }}>
+            <thead>
+              <tr>
+                <th>현재 강사</th>
+                <th>회사 · 과정</th>
+                <th>score / n</th>
+                <th>응답일</th>
+                <th>TH 후보 (가까운 순)</th>
+                <th>액션</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(suspectData?.records ?? []).map((r) => (
+                <tr key={r.record_id} style={!r.instructor_in_candidates ? { background: "#fee2e2" } : undefined}>
+                  <td>
+                    <strong>{r.matched_instructor ?? "—"}</strong>
+                    {!r.instructor_in_candidates && (
+                      <div style={{ fontSize: "0.7rem", color: "#dc2626" }}>TH 후보에 없음</div>
+                    )}
+                  </td>
+                  <td>
+                    <div>{r.company ?? "—"}</div>
+                    <div style={{ fontSize: "0.7rem", color: "#6b7280" }}>{r.course?.slice(0, 50) ?? "—"}</div>
+                  </td>
+                  <td>
+                    <strong>{r.score.toFixed(2)}</strong> / {r.respondent_count}
+                  </td>
+                  <td>{r.response_date ?? "—"}</td>
+                  <td style={{ fontSize: "0.72rem" }}>
+                    {r.th_candidates.length === 0
+                      ? <span style={{ color: "#9ca3af" }}>없음</span>
+                      : r.th_candidates.slice(0, 3).map((c, i) => (
+                          <div key={i} style={c.instructor_name === r.matched_instructor ? { fontWeight: 600 } : undefined}>
+                            {c.instructor_name} · {c.days_from_response}일차
+                          </div>
+                        ))}
+                    {r.suggested_alternative && (
+                      <div style={{ marginTop: 4, color: "#0369a1" }}>
+                        제안: <strong>{r.suggested_alternative.instructor_name}</strong>
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => handleSuspectCleanup(r.record_id)}
+                      style={{
+                        padding: "0.2rem 0.5rem",
+                        fontSize: "0.75rem",
+                        background: "#dc2626",
+                        color: "white",
+                        border: "none",
+                        borderRadius: 3,
+                        cursor: "pointer",
+                      }}
+                    >
+                      삭제 + pending 복원
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       <div className="review-grid">
         <section className="review-table-wrap">

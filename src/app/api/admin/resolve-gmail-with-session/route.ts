@@ -378,13 +378,14 @@ export async function GET(request: NextRequest) {
       continue;
     }
 
-    // v22 F: 비정형 reg.companyName + score 매우 낮음(<3) → 매칭 reject (gmail-normalizer 결함 회피)
-    // 결함 사례: registry.companyName "지난 주 19" / "8월 5~7일 진행하였던, [삼성물산" 등 메일 본문 첫 줄 파싱 실패.
-    // 이런 case는 score 1~2 짜리가 강사 평균을 왜곡함. body에서 회사 재파싱(effectiveCompany)되어도
-    // 원본 registry.companyName이 비정형이면 score 자체 신뢰성 의심 — 자동 매칭 skip.
+    // v22 F: 비정형 reg.companyName + score 매우 낮음(<3) → 매칭 reject
+    // v23 F.3 강화: score≤2.5 + n≤2 의심 record는 회사 정상이어도 자동 매칭 reject
+    //   → 운영자가 /admin/review 신뢰도 낮은 record 큐(v22 C)에서 검수 필수
     const avgScoreNum = reg.avgScore !== null ? Number(reg.avgScore) : null;
-    const regCompanyUnparsed = looksUnparsedCompany(reg.companyName); // effective가 아니라 원본 registry 기준
-    if (regCompanyUnparsed && avgScoreNum !== null && avgScoreNum < 3) {
+    const respCount = reg.responseCount ?? 0;
+    const lowScoreSparseSignal = avgScoreNum !== null && avgScoreNum <= 2.5 && respCount <= 2;
+    const regCompanyUnparsed = looksUnparsedCompany(reg.companyName);
+    if (lowScoreSparseSignal || (regCompanyUnparsed && avgScoreNum !== null && avgScoreNum < 3)) {
       classifications.push({
         registryKey: reg.registryKey,
         company: effectiveCompany,

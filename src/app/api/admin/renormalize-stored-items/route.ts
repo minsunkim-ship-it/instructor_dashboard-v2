@@ -53,6 +53,28 @@ function parseNumber(value: string): number | null {
 }
 
 // ============ v23 새 normalize 로직 inline ============
+const COMPANY_BLOCKLIST = new Set<string>([
+  "AI", "DX", "AX", "ML", "DL", "BI", "RPA", "OT", "IT", "HR", "PB", "MX",
+  "데이터", "Data", "BIZ", "Biz",
+  "기획", "영업", "인사", "R&D",
+  "교육", "과정", "강의", "전문가", "양성", "기초", "심화",
+  "25년", "25년도", "26년", "26년도", "올해", "내년", "작년",
+  "1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월", "9월", "10월", "11월", "12월",
+  "기업", "법인", "직원", "수강생", "참여자", "사원",
+  "학원", "센터", "본부", "팀",
+  "패스트캠퍼스", "패스트", "Day1", "day1", "fastcampus", "FastCampus",
+]);
+function isLikelyCompanyName(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return false;
+  if (COMPANY_BLOCKLIST.has(trimmed)) return false;
+  const knownShortCompanies = new Set(["KT", "CJ", "LG", "SK", "GS", "BC", "DB", "LS", "HL", "MG", "KB", "NH", "JB", "DK", "DL", "MS", "TS", "BH", "EM"]);
+  if (/^[A-Za-z]{2,3}$/.test(trimmed) && !knownShortCompanies.has(trimmed.toUpperCase())) return false;
+  if (/^[\d]+/.test(trimmed)) return false;
+  return true;
+}
+
 function looksLikeKoreanPhrasePrefix(value: string): boolean {
   if (/(지난|오늘|어제|작일|금일|이번주|이번\s*주|작년|올해|내년)/.test(value)) return true;
   if (/(진행한|진행된|진행하|진행해주신|진행하였|진행됐|진행됬|보내|드립니다|드린|작성해|말씀|확인)/.test(value)) return true;
@@ -75,12 +97,14 @@ function newParseCompanyHintFromCourseName(courseName: string | null | undefined
   if (dashMatch?.[1]) {
     const c = dashMatch[1].trim();
     if (looksLikeKoreanPhrasePrefix(c)) return null;
+    if (!isLikelyCompanyName(c)) return null;
     return c;
   }
   const underscoreMatch = cleaned.match(/^([^_\n]{2,30}?)_/);
   if (underscoreMatch?.[1]) {
     const c = underscoreMatch[1].trim();
     if (looksLikeKoreanPhrasePrefix(c)) return null;
+    if (!isLikelyCompanyName(c)) return null;
     return c;
   }
   return null;
@@ -90,16 +114,20 @@ function newParseCompanyHintFromSubject(subject: string | null | undefined): str
   const cleaned = (subject ?? "").trim();
   if (!cleaned) return null;
   const bracketMatch = cleaned.match(/^\[[^/\]]+\/([^\]]+)\]/);
-  if (bracketMatch?.[1]) return bracketMatch[1].trim();
+  if (bracketMatch?.[1]) {
+    const c = bracketMatch[1].trim();
+    if (isLikelyCompanyName(c)) return c;
+  }
   const bracketDashMatch = cleaned.match(/^\[[^\]]+\]\s*([^-\n]{2,30}?)\s*-/);
   if (bracketDashMatch?.[1] && !bracketDashMatch[1].includes("님께") && !bracketDashMatch[1].includes("강사")) {
-    return bracketDashMatch[1].trim();
+    const c = bracketDashMatch[1].trim();
+    if (isLikelyCompanyName(c)) return c;
   }
   const COURSE_KEYWORD = "(?:강의|교육|과정|연수|워크숍|특강|수업|클래스|아카데미|커리큘럼)";
   const shortNameDashMatch = cleaned.match(/[-–]\s*([가-힣A-Za-z0-9]{2,4})\s*[-–]/);
   if (shortNameDashMatch?.[1]) {
     const c = shortNameDashMatch[1].trim();
-    if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) return c;
+    if (isLikelyCompanyName(c)) return c;
   }
   const afterDashWithBufferMatch = cleaned.match(
     new RegExp(
@@ -108,17 +136,22 @@ function newParseCompanyHintFromSubject(subject: string | null | undefined): str
   );
   if (afterDashWithBufferMatch?.[1]) {
     const c = afterDashWithBufferMatch[1].trim();
-    if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) return c;
+    if (isLikelyCompanyName(c)) return c;
   }
   const directDashMatch = cleaned.match(/^([가-힣A-Za-z0-9()]{2,30})\s*[-–_]\s*/);
   if (directDashMatch?.[1] && !directDashMatch[1].includes("강사") && !directDashMatch[1].includes("님께")) {
-    return directDashMatch[1].trim();
+    const c = directDashMatch[1].trim();
+    if (isLikelyCompanyName(c)) return c;
   }
   const underscoreMatch = cleaned.match(/-\s*([^_]+)_/);
-  if (underscoreMatch?.[1]) return underscoreMatch[1].trim();
+  if (underscoreMatch?.[1]) {
+    const c = underscoreMatch[1].trim();
+    if (isLikelyCompanyName(c)) return c;
+  }
   const singleBracket = cleaned.match(/^\[([가-힣A-Za-z0-9()]{2,30})\]\s/);
-  if (singleBracket?.[1] && !/(패스트캠퍼스|day1|Day1)/i.test(singleBracket[1])) {
-    return singleBracket[1].trim();
+  if (singleBracket?.[1]) {
+    const c = singleBracket[1].trim();
+    if (isLikelyCompanyName(c)) return c;
   }
   return null;
 }

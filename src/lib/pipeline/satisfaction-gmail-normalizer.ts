@@ -436,12 +436,16 @@ function parseCompanyHintFromSubject(subject: string | null | undefined): string
   if (!cleaned) return null;
   // 구조: "[패스트캠퍼스/회사명] ..." — slash 뒤 회사
   const bracketMatch = cleaned.match(/^\[[^/\]]+\/([^\]]+)\]/);
-  if (bracketMatch?.[1]) return bracketMatch[1].trim();
+  if (bracketMatch?.[1]) {
+    const c = bracketMatch[1].trim();
+    if (isLikelyCompanyName(c)) return c;
+  }
 
   // "[패스트캠퍼스] 회사명 - 본문" or "[패스트캠퍼스] 강사X 강사님께 - ..."
   const bracketDashMatch = cleaned.match(/^\[[^\]]+\]\s*([^-\n]{2,30}?)\s*-/);
   if (bracketDashMatch?.[1] && !bracketDashMatch[1].includes("님께") && !bracketDashMatch[1].includes("강사")) {
-    return bracketDashMatch[1].trim();
+    const c = bracketDashMatch[1].trim();
+    if (isLikelyCompanyName(c)) return c;
   }
 
   // v23 A3 (개선 v2): "[패스트캠퍼스] X 강사님께 - 회사명 ..." → dash **뒤** 회사
@@ -453,20 +457,13 @@ function parseCompanyHintFromSubject(subject: string | null | undefined): string
   const COURSE_KEYWORD = "(?:강의|교육|과정|연수|워크숍|특강|수업|클래스|아카데미|커리큘럼)";
 
   // 우선순위 1: dash + 짧은 회사명(2-4자) + 다시 dash (KT, BC, CJ 케이스)
-  // "김건태 과장님께 - KT - RAG..." → KT
   const shortNameDashMatch = cleaned.match(/[-–]\s*([가-힣A-Za-z0-9]{2,4})\s*[-–]/);
   if (shortNameDashMatch?.[1]) {
     const c = shortNameDashMatch[1].trim();
-    if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) {
-      return c;
-    }
+    if (isLikelyCompanyName(c)) return c;
   }
 
   // 우선순위 2: dash + 회사명(괄호 제외 2-12자) + 옵셔널 괄호부연 + buffer + course keyword
-  // 송선영: "- 세방전지 강의..." → 세방전지
-  // 변형호: "- 신한금융지주 AI Agent 실전역량 과정..." → 신한금융지주
-  // 유종훈: "- 삼성물산(생성형 AI 기초) 과정..." → 삼성물산 (괄호 부연 제외)
-  // 이한준: "- 피에스텍 25년 직무 통합 교육..." → 피에스텍
   const afterDashWithBufferMatch = cleaned.match(
     new RegExp(
       `[-–]\\s*([가-힣A-Za-z0-9]{2,12})(?:\\s*\\([^)]+\\))?[\\s가-힣A-Za-z0-9()_./,]{0,50}?${COURSE_KEYWORD}`
@@ -474,28 +471,65 @@ function parseCompanyHintFromSubject(subject: string | null | undefined): string
   );
   if (afterDashWithBufferMatch?.[1]) {
     const c = afterDashWithBufferMatch[1].trim();
-    if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) {
-      return c;
-    }
+    if (isLikelyCompanyName(c)) return c;
   }
 
   // v23 A3: "회사명 - 본문" (대괄호 없이 회사명으로 시작)
   const directDashMatch = cleaned.match(/^([가-힣A-Za-z0-9()]{2,30})\s*[-–_]\s*/);
   if (directDashMatch?.[1] && !directDashMatch[1].includes("강사") && !directDashMatch[1].includes("님께")) {
-    return directDashMatch[1].trim();
+    const c = directDashMatch[1].trim();
+    if (isLikelyCompanyName(c)) return c;
   }
 
   // "본문 - 회사명_..." 패턴
   const underscoreMatch = cleaned.match(/-\s*([^_]+)_/);
-  if (underscoreMatch?.[1]) return underscoreMatch[1].trim();
+  if (underscoreMatch?.[1]) {
+    const c = underscoreMatch[1].trim();
+    if (isLikelyCompanyName(c)) return c;
+  }
 
   // v23 A3: "[회사명] ..." — slash 없이 단일 회사명만 (예: "[BC카드] 만족도 결과 ...")
   const singleBracket = cleaned.match(/^\[([가-힣A-Za-z0-9()]{2,30})\]\s/);
-  if (singleBracket?.[1] && !/(패스트캠퍼스|day1|Day1)/i.test(singleBracket[1])) {
-    return singleBracket[1].trim();
+  if (singleBracket?.[1]) {
+    const c = singleBracket[1].trim();
+    if (isLikelyCompanyName(c)) return c;
   }
 
   return null;
+}
+
+// v23: 회사명이 아닌 일반 명사·약어·시간 표기 blocklist
+// false positive 차단: "AI", "DX", "기업", "25년도", "데이터" 등이 회사명으로 잘못 추출되는 케이스
+const COMPANY_BLOCKLIST = new Set<string>([
+  // 기술·도메인 약어
+  "AI", "DX", "AX", "ML", "DL", "BI", "RPA", "OT", "IT", "HR", "PB", "MX",
+  // 산업·직무 키워드
+  "데이터", "Data", "BIZ", "Biz",
+  "기획", "영업", "인사", "R&D",
+  "교육", "과정", "강의", "전문가", "양성", "기초", "심화",
+  // 시간·연도 (단독 토큰)
+  "25년", "25년도", "26년", "26년도", "올해", "내년", "작년",
+  "1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월", "9월", "10월", "11월", "12월",
+  // 일반 명사 (회사 아님)
+  "기업", "법인", "직원", "수강생", "참여자", "사원",
+  "학원", "센터", "본부", "팀",
+  // 공통 표현
+  "패스트캠퍼스", "패스트", "Day1", "day1", "fastcampus", "FastCampus",
+]);
+
+function isLikelyCompanyName(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return false;
+  if (COMPANY_BLOCKLIST.has(trimmed)) return false;
+  // 영문 약어이고 길이 2-3자면 의심 (단 알려진 한국 회사 KT/CJ/LG/SK 등은 통과)
+  const knownShortCompanies = new Set(["KT", "CJ", "LG", "SK", "GS", "BC", "DB", "LS", "HL", "MG", "KB", "NH", "JB", "DK", "DL", "MS", "TS", "BH", "EM"]);
+  if (/^[A-Za-z]{2,3}$/.test(trimmed) && !knownShortCompanies.has(trimmed.toUpperCase())) {
+    return false;
+  }
+  // 숫자만 또는 숫자+한글 시작 (예: "25년도", "3차수")
+  if (/^[\d]+/.test(trimmed)) return false;
+  return true;
 }
 
 // v23 A2: 한국어 시간/상태 어구가 첫 토큰에 등장하면 회사명 추출 거부

@@ -433,17 +433,31 @@ function parseInstructorHintFromSubject(subject: string | null | undefined): str
 
 function parseCompanyHintFromSubject(subject: string | null | undefined): string | null {
   const cleaned = cleanText(subject);
+  if (!cleaned) return null;
   // 구조: "[패스트캠퍼스/회사명] ..." — slash 뒤 회사
   const bracketMatch = cleaned.match(/^\[[^/\]]+\/([^\]]+)\]/);
   if (bracketMatch?.[1]) return bracketMatch[1].trim();
 
   // "[패스트캠퍼스] 회사명 - 본문" or "[패스트캠퍼스] 강사X 강사님께 - ..."
   const bracketDashMatch = cleaned.match(/^\[[^\]]+\]\s*([^-\n]{2,30}?)\s*-/);
-  if (bracketDashMatch?.[1] && !bracketDashMatch[1].includes("님께")) {
+  if (bracketDashMatch?.[1] && !bracketDashMatch[1].includes("님께") && !bracketDashMatch[1].includes("강사")) {
     return bracketDashMatch[1].trim();
   }
 
-  // v23 A3: "회사명 - 본문" (대괄호 없이도 회사명으로 시작하는 패턴)
+  // v23 A3 (개선): "[패스트캠퍼스] X 강사님께 - 회사명 ..." → dash **뒤** 회사
+  // 송선영 케이스: "[패스트캠퍼스] 송선영 강사님께 - 세방전지 강의 사후 만족도 결과 전달 드립니다."
+  const afterDashCompanyMatch = cleaned.match(
+    /[-–]\s*([가-힣A-Za-z0-9()]{2,20}?)\s*(?:강의|교육|과정|연수|워크숍|특강|수업|클래스)/
+  );
+  if (afterDashCompanyMatch?.[1]) {
+    const c = afterDashCompanyMatch[1].trim();
+    // 패스트캠퍼스/Day1 제외 + 너무 짧은 토큰 제외
+    if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) {
+      return c;
+    }
+  }
+
+  // v23 A3: "회사명 - 본문" (대괄호 없이 회사명으로 시작)
   const directDashMatch = cleaned.match(/^([가-힣A-Za-z0-9()]{2,30})\s*[-–_]\s*/);
   if (directDashMatch?.[1] && !directDashMatch[1].includes("강사") && !directDashMatch[1].includes("님께")) {
     return directDashMatch[1].trim();
@@ -529,30 +543,37 @@ function parseCompanyHintFromCourseName(courseName: string | null | undefined): 
 function parseScoreFromText(text: string): number | null {
   // v23 A1: 10점 척도 우선 검출 + 5점 환산
   // 송선영 사례: "10점 척도 (10점 만족) 중 8점" → 8/2 = 4.0
-  // 다른 패턴: "8/10", "8점/10", "10점 만점 중 8.5", "8 / 10점"
+  // 함정: "10점 척도 (10점 만족) 중 8점" — "10" 만점 표현(10점/10점) skip 필수
+  //
+  // 핵심: "중 X점" / "X점/10" / "총점 X" 같이 "10이 아닌 실제 점수"만 잡음.
+  // 일반 "10점 척도" + 단독 10점은 거짓 매칭 위험.
   const tenScalePatterns = [
-    // "10점 척도" 명시 + 점수 (앞·뒤 어디든)
-    /10\s*점\s*척도[\s\S]{0,80}?(?:중|에서|기준)?\s*([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
-    // "10점 만점" / "10점 만족" 명시
-    /10\s*점\s*(?:만점|만족)[\s\S]{0,40}?(?:중|에서)?\s*([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점?/i,
-    // "X/10" 또는 "X / 10" or "X / 10점" 직접
+    // "중 N점" (10점 척도 컨텍스트 + "중" 뒤 실제 점수)
+    /10\s*점\s*(?:척도|만점|만족)[\s\S]{0,80}?중\s*([1-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
+    // "기준 N점"
+    /10\s*점\s*(?:척도|만점|만족)[\s\S]{0,80}?기준\s*([1-9](?:\.\d+)?)\s*점/i,
+    // "에서 N점"
+    /10\s*점\s*(?:척도|만점|만족)[\s\S]{0,80}?에서\s*([1-9](?:\.\d+)?)\s*점/i,
+    // "X/10" 직접 (X는 6-10 또는 1-5; 8/10, 9.5/10)
     /(\d+(?:\.\d+)?)\s*\/\s*10\s*점?(?!\d)/,
-    // "X점 / 10" 또는 "X점/10점"
+    // "X점 / 10"
     /(\d+(?:\.\d+)?)\s*점\s*\/\s*10\s*점?/,
-    // 만족도 ... 10점 척도/만점 ... X점 형태 (인접)
-    /만족도[\s\S]{0,40}?10\s*점\s*(?:척도|만점|만족)[\s\S]{0,40}?([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
+    // 만족도 + 10점 척도/만점 + "중 X점" (인접 strict)
+    /만족도[\s\S]{0,40}?10\s*점\s*(?:척도|만점|만족)[\s\S]{0,40}?중\s*([1-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
+    // "총점 X (10점 만점)" 또는 "X점 (10점 만점)"
+    /(\d+(?:\.\d+)?)\s*점\s*\(\s*10\s*점\s*(?:만점|척도)\s*\)/i,
   ];
   for (const pattern of tenScalePatterns) {
     const match = text.match(pattern);
     if (!match?.[1]) continue;
     const parsed = parseNumber(match[1]);
     if (parsed === null) continue;
-    // 1~10 범위면 2로 나눠서 5점 척도 환산. 단 이미 5 이하는 그대로 (5점 척도 명시 케이스)
-    if (parsed > 5 && parsed <= 10) {
+    // 10점 만점 표현은 skip (false positive 차단)
+    if (parsed === 10) continue;
+    if (parsed > 5 && parsed < 10) {
       return Math.round((parsed / 2) * 100) / 100;
     }
     if (parsed >= 1 && parsed <= 5) {
-      // X/10에서 X가 1-5라면 → 10점 만점 기준이라도 5점 환산해야 (e.g. 3/10 = 1.5)
       return Math.round((parsed / 2) * 100) / 100;
     }
   }

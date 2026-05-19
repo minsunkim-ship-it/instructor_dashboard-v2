@@ -84,8 +84,15 @@ function newParseCompanyHintFromSubject(subject: string | null | undefined): str
   const bracketMatch = cleaned.match(/^\[[^/\]]+\/([^\]]+)\]/);
   if (bracketMatch?.[1]) return bracketMatch[1].trim();
   const bracketDashMatch = cleaned.match(/^\[[^\]]+\]\s*([^-\n]{2,30}?)\s*-/);
-  if (bracketDashMatch?.[1] && !bracketDashMatch[1].includes("님께")) {
+  if (bracketDashMatch?.[1] && !bracketDashMatch[1].includes("님께") && !bracketDashMatch[1].includes("강사")) {
     return bracketDashMatch[1].trim();
+  }
+  const afterDashCompanyMatch = cleaned.match(
+    /[-–]\s*([가-힣A-Za-z0-9()]{2,20}?)\s*(?:강의|교육|과정|연수|워크숍|특강|수업|클래스)/
+  );
+  if (afterDashCompanyMatch?.[1]) {
+    const c = afterDashCompanyMatch[1].trim();
+    if (!/(패스트캠퍼스|Day1|day1|fastcampus)/i.test(c) && c.length >= 2) return c;
   }
   const directDashMatch = cleaned.match(/^([가-힣A-Za-z0-9()]{2,30})\s*[-–_]\s*/);
   if (directDashMatch?.[1] && !directDashMatch[1].includes("강사") && !directDashMatch[1].includes("님께")) {
@@ -103,18 +110,21 @@ function newParseCompanyHintFromSubject(subject: string | null | undefined): str
 function newParseScoreFromText(text: string): { score: number | null; scale: "10" | "5" | null; matched_text: string | null } {
   if (!text) return { score: null, scale: null, matched_text: null };
   const tenScalePatterns = [
-    /10\s*점\s*척도[\s\S]{0,80}?(?:중|에서|기준)?\s*([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
-    /10\s*점\s*(?:만점|만족)[\s\S]{0,40}?(?:중|에서)?\s*([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점?/i,
+    /10\s*점\s*(?:척도|만점|만족)[\s\S]{0,80}?중\s*([1-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
+    /10\s*점\s*(?:척도|만점|만족)[\s\S]{0,80}?기준\s*([1-9](?:\.\d+)?)\s*점/i,
+    /10\s*점\s*(?:척도|만점|만족)[\s\S]{0,80}?에서\s*([1-9](?:\.\d+)?)\s*점/i,
     /(\d+(?:\.\d+)?)\s*\/\s*10\s*점?(?!\d)/,
     /(\d+(?:\.\d+)?)\s*점\s*\/\s*10\s*점?/,
-    /만족도[\s\S]{0,40}?10\s*점\s*(?:척도|만점|만족)[\s\S]{0,40}?([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
+    /만족도[\s\S]{0,40}?10\s*점\s*(?:척도|만점|만족)[\s\S]{0,40}?중\s*([1-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
+    /(\d+(?:\.\d+)?)\s*점\s*\(\s*10\s*점\s*(?:만점|척도)\s*\)/i,
   ];
   for (const pattern of tenScalePatterns) {
     const match = text.match(pattern);
     if (!match?.[1]) continue;
     const parsed = parseNumber(match[1]);
     if (parsed === null) continue;
-    if (parsed > 5 && parsed <= 10) {
+    if (parsed === 10) continue; // 만점 표현 skip
+    if (parsed > 5 && parsed < 10) {
       return { score: Math.round((parsed / 2) * 100) / 100, scale: "10", matched_text: match[0]?.slice(0, 80) ?? null };
     }
     if (parsed >= 1 && parsed <= 5) {

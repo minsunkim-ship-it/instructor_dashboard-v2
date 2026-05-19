@@ -433,18 +433,53 @@ function parseInstructorHintFromSubject(subject: string | null | undefined): str
 
 function parseCompanyHintFromSubject(subject: string | null | undefined): string | null {
   const cleaned = cleanText(subject);
+  // 구조: "[패스트캠퍼스/회사명] ..." — slash 뒤 회사
   const bracketMatch = cleaned.match(/^\[[^/\]]+\/([^\]]+)\]/);
   if (bracketMatch?.[1]) return bracketMatch[1].trim();
 
+  // "[패스트캠퍼스] 회사명 - 본문" or "[패스트캠퍼스] 강사X 강사님께 - ..."
   const bracketDashMatch = cleaned.match(/^\[[^\]]+\]\s*([^-\n]{2,30}?)\s*-/);
   if (bracketDashMatch?.[1] && !bracketDashMatch[1].includes("님께")) {
     return bracketDashMatch[1].trim();
   }
 
+  // v23 A3: "회사명 - 본문" (대괄호 없이도 회사명으로 시작하는 패턴)
+  const directDashMatch = cleaned.match(/^([가-힣A-Za-z0-9()]{2,30})\s*[-–_]\s*/);
+  if (directDashMatch?.[1] && !directDashMatch[1].includes("강사") && !directDashMatch[1].includes("님께")) {
+    return directDashMatch[1].trim();
+  }
+
+  // "본문 - 회사명_..." 패턴
   const underscoreMatch = cleaned.match(/-\s*([^_]+)_/);
   if (underscoreMatch?.[1]) return underscoreMatch[1].trim();
 
+  // v23 A3: "[회사명] ..." — slash 없이 단일 회사명만 (예: "[BC카드] 만족도 결과 ...")
+  const singleBracket = cleaned.match(/^\[([가-힣A-Za-z0-9()]{2,30})\]\s/);
+  if (singleBracket?.[1] && !/(패스트캠퍼스|day1|Day1)/i.test(singleBracket[1])) {
+    return singleBracket[1].trim();
+  }
+
   return null;
+}
+
+// v23 A2: 한국어 시간/상태 어구가 첫 토큰에 등장하면 회사명 추출 거부
+// 결함 사례: "지난 주 19-20일 진행해주신 [세방전지...]" → "지난 주 19" 회사명으로 추출 → 잘못
+//          "8월 5~7일 진행하였던, [삼성물산..." → "8월 5~7일 진행하였던, [삼성물산" 회사명
+//          "08/16(토)에 진행하셨던 [신한금융지주회사..." → "08/16(토)에 진행하셨던 [ 신한금융지주회사"
+function looksLikeKoreanPhrasePrefix(value: string): boolean {
+  // 한국어 시간/상태/접속 어구 (회사명으로는 안 등장)
+  if (/(지난|오늘|어제|작일|금일|이번주|이번\s*주|작년|올해|내년)/.test(value)) return true;
+  // "진행한/진행된/진행하/진행해주신/진행하였던/진행됐던/진행됬던" — 메일 본문 시작 어구
+  if (/(진행한|진행된|진행하|진행해주신|진행하였|진행됐|진행됬|보내|드립니다|드린|작성해|말씀|확인)/.test(value)) return true;
+  // 날짜 패턴 시작 (X월 X일 / X/X / YYYY-MM-DD / MM/DD(요일))
+  if (/^\d{1,4}\s*[월\/\-.]\s*\d{1,2}/.test(value)) return true;
+  if (/^\d{1,2}\s*월\s*\d{1,2}\s*일/.test(value)) return true;
+  // tilde 또는 끝이 숫자/공백 (예: "지난 주 19", "8월 5~7일")
+  if (/[~]/.test(value)) return true;
+  if (/^[\s\d~월일\/\-.,()]+$/.test(value)) return true;
+  // 첫 글자 비정형 (대괄호·괄호·공백 시작)
+  if (/^[\s\[\(]/.test(value)) return true;
+  return false;
 }
 
 function parseCompanyHintFromCourseName(courseName: string | null | undefined): string | null {
@@ -457,12 +492,23 @@ function parseCompanyHintFromCourseName(courseName: string | null | undefined): 
   ) {
     return null;
   }
+  // v23 A2: 한국어 어구로 시작하는 courseName 거부 (시간/날짜/메일본문 첫 줄)
+  if (looksLikeKoreanPhrasePrefix(cleaned)) return null;
 
   const dashMatch = cleaned.match(/^([^-\n]{2,30}?)\s*-\s*/);
-  if (dashMatch?.[1]) return dashMatch[1].trim();
+  if (dashMatch?.[1]) {
+    const candidate = dashMatch[1].trim();
+    // 추출 결과도 비정형이면 거부
+    if (looksLikeKoreanPhrasePrefix(candidate)) return null;
+    return candidate;
+  }
 
   const underscoreMatch = cleaned.match(/^([^_\n]{2,30}?)_/);
-  if (underscoreMatch?.[1]) return underscoreMatch[1].trim();
+  if (underscoreMatch?.[1]) {
+    const candidate = underscoreMatch[1].trim();
+    if (looksLikeKoreanPhrasePrefix(candidate)) return null;
+    return candidate;
+  }
 
   const prefixPatterns = [
     /^(JB금융지주)\b/,
@@ -481,6 +527,36 @@ function parseCompanyHintFromCourseName(courseName: string | null | undefined): 
 }
 
 function parseScoreFromText(text: string): number | null {
+  // v23 A1: 10점 척도 우선 검출 + 5점 환산
+  // 송선영 사례: "10점 척도 (10점 만족) 중 8점" → 8/2 = 4.0
+  // 다른 패턴: "8/10", "8점/10", "10점 만점 중 8.5", "8 / 10점"
+  const tenScalePatterns = [
+    // "10점 척도" 명시 + 점수 (앞·뒤 어디든)
+    /10\s*점\s*척도[\s\S]{0,80}?(?:중|에서|기준)?\s*([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
+    // "10점 만점" / "10점 만족" 명시
+    /10\s*점\s*(?:만점|만족)[\s\S]{0,40}?(?:중|에서)?\s*([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점?/i,
+    // "X/10" 또는 "X / 10" or "X / 10점" 직접
+    /(\d+(?:\.\d+)?)\s*\/\s*10\s*점?(?!\d)/,
+    // "X점 / 10" 또는 "X점/10점"
+    /(\d+(?:\.\d+)?)\s*점\s*\/\s*10\s*점?/,
+    // 만족도 ... 10점 척도/만점 ... X점 형태 (인접)
+    /만족도[\s\S]{0,40}?10\s*점\s*(?:척도|만점|만족)[\s\S]{0,40}?([6-9](?:\.\d+)?|10(?:\.0+)?)\s*점/i,
+  ];
+  for (const pattern of tenScalePatterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+    const parsed = parseNumber(match[1]);
+    if (parsed === null) continue;
+    // 1~10 범위면 2로 나눠서 5점 척도 환산. 단 이미 5 이하는 그대로 (5점 척도 명시 케이스)
+    if (parsed > 5 && parsed <= 10) {
+      return Math.round((parsed / 2) * 100) / 100;
+    }
+    if (parsed >= 1 && parsed <= 5) {
+      // X/10에서 X가 1-5라면 → 10점 만점 기준이라도 5점 환산해야 (e.g. 3/10 = 1.5)
+      return Math.round((parsed / 2) * 100) / 100;
+    }
+  }
+
   const linePatterns = [
     /강의\s*만족도(?:\s*평가)?[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
     /전반적인\s*강사\s*만족도[^\d]{0,10}([1-5](?:\.\d+)?)(?:\s*\/\s*5(?:\.0)?)?/i,
@@ -563,6 +639,12 @@ function parseRespondentCountFromText(text: string): number | null {
     /응답 평균\s*\(n\s*=\s*(\d+)\)/i,
     /\(n\s*=\s*(\d+)\)[^\n]{0,80}종합 평균 만족도/i,
     /n\s*=\s*(\d+)/i,
+    // v23 A4: 추가 패턴
+    /참여\s*인원[^\d]*(\d+)명?/i,
+    /수강\s*인원[^\d]*(\d+)명?/i,
+    /응답한\s*인원[^\d]*(\d+)명?/i,
+    /(\d+)\s*명\s*(?:응답|참여|수강)/i,
+    /총\s*응답[^\d]*(\d+)/i,
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -571,7 +653,8 @@ function parseRespondentCountFromText(text: string): number | null {
       if (parsed !== null) return parsed;
     }
   }
-  return 1;
+  // v23 A4: 매칭 실패 시 null (caller가 `?? 1`로 fallback 명시). 정확성 신호 보존.
+  return null;
 }
 
 function parseSingleCourseName(bodyText: string): string | null {

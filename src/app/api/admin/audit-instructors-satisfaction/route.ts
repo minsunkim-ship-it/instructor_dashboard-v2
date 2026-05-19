@@ -80,9 +80,10 @@ export async function GET(request: NextRequest) {
       createdAt: true,
     },
   });
-  const recordsBy = new Map<string, typeof records>();
+  type RecordRow = (typeof records)[number];
+  const recordsBy = new Map<string, RecordRow[]>();
   for (const r of records) {
-    const arr = recordsBy.get(r.instructorDbId) ?? [];
+    const arr = recordsBy.get(r.instructorDbId) ?? ([] as RecordRow[]);
     arr.push(r);
     recordsBy.set(r.instructorDbId, arr);
   }
@@ -104,9 +105,10 @@ export async function GET(request: NextRequest) {
       endDate: true,
     },
   });
-  const thBy = new Map<string, typeof ths>();
+  type ThRow = (typeof ths)[number];
+  const thBy = new Map<string, ThRow[]>();
   for (const t of ths) {
-    const arr = thBy.get(t.instructorDbId) ?? [];
+    const arr = thBy.get(t.instructorDbId) ?? ([] as ThRow[]);
     arr.push(t);
     thBy.set(t.instructorDbId, arr);
   }

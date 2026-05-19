@@ -61,7 +61,15 @@ export async function GET(request: NextRequest) {
   });
 
   const respDates = records.map((r) => r.responseDate).filter((d): d is Date => !!d);
-  let candidateTHs: Awaited<ReturnType<typeof prisma.teachingHistory.findMany>> = [];
+  type THCandidate = {
+    instructorDbId: string;
+    companyName: string | null;
+    courseName: string | null;
+    startDate: Date | null;
+    endDate: Date | null;
+    instructor: { id: string; name: string } | null;
+  };
+  let candidateTHs: THCandidate[] = [];
   if (respDates.length > 0) {
     const minDate = new Date(Math.min(...respDates.map((d) => d.getTime())));
     const maxDate = new Date(Math.max(...respDates.map((d) => d.getTime())));

@@ -81,7 +81,12 @@ export async function GET(request: NextRequest) {
     const tid = pickString(inner, "thread_id");
     if (tid) threadIds.add(tid);
   }
-  const items = threadIds.size
+  type ImportItemRow = {
+    sourceRefKey: string | null;
+    rawPayload: unknown;
+    normalizedPayload: unknown;
+  };
+  const items: ImportItemRow[] = threadIds.size
     ? await prisma.satisfactionImportItem.findMany({
         where: {
           OR: Array.from(threadIds).flatMap((tid) => [
@@ -91,13 +96,13 @@ export async function GET(request: NextRequest) {
         select: { sourceRefKey: true, rawPayload: true, normalizedPayload: true },
       })
     : [];
-  const itemsByThread = new Map<string, typeof items[number][]>();
+  const itemsByThread = new Map<string, ImportItemRow[]>();
   for (const it of items) {
     if (!it.sourceRefKey) continue;
     const m = it.sourceRefKey.match(/^gmail_satisfaction:([^:]+):/);
     if (!m) continue;
     const tid = m[1];
-    const arr = itemsByThread.get(tid) ?? [];
+    const arr = itemsByThread.get(tid) ?? ([] as ImportItemRow[]);
     arr.push(it);
     itemsByThread.set(tid, arr);
   }

@@ -378,12 +378,13 @@ export async function GET(request: NextRequest) {
       continue;
     }
 
-    // v22 F: 비정형 effectiveCompany — score 매우 낮음(<3) + 회사 파싱 실패면 매칭 reject (gmail-normalizer 결함 회피)
-    // 결함 사례: registry company "지난 주 19" / "8월 5~7일 진행하였던, [삼성물산" 같은 메일 본문 첫 줄.
-    // 이런 경우 score 1~2 짜리가 강사 평균을 왜곡함. effectiveCompany가 looksUnparsedCompany이면 자동 매칭 skip.
+    // v22 F: 비정형 reg.companyName + score 매우 낮음(<3) → 매칭 reject (gmail-normalizer 결함 회피)
+    // 결함 사례: registry.companyName "지난 주 19" / "8월 5~7일 진행하였던, [삼성물산" 등 메일 본문 첫 줄 파싱 실패.
+    // 이런 case는 score 1~2 짜리가 강사 평균을 왜곡함. body에서 회사 재파싱(effectiveCompany)되어도
+    // 원본 registry.companyName이 비정형이면 score 자체 신뢰성 의심 — 자동 매칭 skip.
     const avgScoreNum = reg.avgScore !== null ? Number(reg.avgScore) : null;
-    const companyIsUnparsed = looksUnparsedCompany(effectiveCompany);
-    if (companyIsUnparsed && avgScoreNum !== null && avgScoreNum < 3) {
+    const regCompanyUnparsed = looksUnparsedCompany(reg.companyName); // effective가 아니라 원본 registry 기준
+    if (regCompanyUnparsed && avgScoreNum !== null && avgScoreNum < 3) {
       classifications.push({
         registryKey: reg.registryKey,
         company: effectiveCompany,

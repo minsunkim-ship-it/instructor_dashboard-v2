@@ -308,9 +308,12 @@ function OperationalSourceRefs({
   if (citations.length === 0) return null;
 
   return (
-    <details className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+    <details
+      open
+      className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+    >
       <summary className="cursor-pointer text-[11px] font-semibold text-slate-600">
-        {title} {citations.length}건
+        {title} {citations.length}건 · 위 의견 근거
       </summary>
       <div className="mt-2 space-y-2">
         {citations.map((citation) => (

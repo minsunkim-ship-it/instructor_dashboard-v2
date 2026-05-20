@@ -83,60 +83,79 @@ export async function collectSatisfactionFromDrive(options?: {
   maxPages?: number;
   pageSize?: number;
   readConcurrency?: number;
+  /** v23: 특정 file_id list만 fetch (listing 단계 skip). 다른 옵션 무시됨 */
+  fileIds?: string[];
 }): Promise<DriveSatisfactionCollectResult> {
   const accessToken = await exchangeGoogleUserAccessToken();
   const pageSize = Math.min(options?.pageSize ?? 100, 100);
   const maxPages = options?.maxPages ?? 20;
   const readConcurrency = Math.max(1, Math.min(options?.readConcurrency ?? 2, 5));
 
-  const queryParts = [
-    "name contains '만족도'",
-    "trashed = false",
-    "mimeType = 'application/vnd.google-apps.spreadsheet'",
-  ];
-
-  if (options?.startDate) {
-    queryParts.push(`createdTime >= '${options.startDate}T00:00:00'`);
-  }
-  if (options?.endDate) {
-    queryParts.push(`createdTime <= '${options.endDate}T23:59:59'`);
-  }
-  if (
-    !options?.startDate &&
-    !options?.endDate &&
-    options?.checkpoint?.lastModifiedTime
-  ) {
-    queryParts.push(`modifiedTime > '${options.checkpoint.lastModifiedTime}'`);
-  }
-
-  const query = queryParts.join(" and ");
   const allFiles: DriveFileListItem[] = [];
-  let pageToken: string | undefined;
 
-  for (let page = 0; page < maxPages; page += 1) {
-    const params: Record<string, string> = {
-      q: query,
-      pageSize: String(pageSize),
-      fields:
-        "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime)",
-      orderBy: "createdTime desc",
-      corpora: "allDrives",
-      includeItemsFromAllDrives: "true",
-      supportsAllDrives: "true",
-    };
-    if (pageToken) params.pageToken = pageToken;
+  if (options?.fileIds && options.fileIds.length > 0) {
+    // v23: 특정 file_id list 모드 — Drive files.get으로 metadata만 가져옴
+    for (const fid of options.fileIds) {
+      try {
+        const file = await apiGetWithRetry<DriveFileListItem>(
+          accessToken,
+          DRIVE_API_BASE,
+          `/files/${fid}?supportsAllDrives=true&fields=id,name,mimeType,createdTime,modifiedTime`
+        );
+        allFiles.push(file);
+      } catch {
+        // skip unreadable
+      }
+    }
+  } else {
+    const queryParts = [
+      "name contains '만족도'",
+      "trashed = false",
+      "mimeType = 'application/vnd.google-apps.spreadsheet'",
+    ];
 
-    const data = await apiGetWithRetry<{
-      files?: DriveFileListItem[];
-      nextPageToken?: string;
-    }>(accessToken, DRIVE_API_BASE, "/files", params);
-
-    for (const file of data.files ?? []) {
-      allFiles.push(file);
+    if (options?.startDate) {
+      queryParts.push(`createdTime >= '${options.startDate}T00:00:00'`);
+    }
+    if (options?.endDate) {
+      queryParts.push(`createdTime <= '${options.endDate}T23:59:59'`);
+    }
+    if (
+      !options?.startDate &&
+      !options?.endDate &&
+      options?.checkpoint?.lastModifiedTime
+    ) {
+      queryParts.push(`modifiedTime > '${options.checkpoint.lastModifiedTime}'`);
     }
 
-    if (!data.nextPageToken) break;
-    pageToken = data.nextPageToken;
+    const query = queryParts.join(" and ");
+    let pageToken: string | undefined;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const params: Record<string, string> = {
+        q: query,
+        pageSize: String(pageSize),
+        fields:
+          "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime)",
+        orderBy: "createdTime desc",
+        corpora: "allDrives",
+        includeItemsFromAllDrives: "true",
+        supportsAllDrives: "true",
+      };
+      if (pageToken) params.pageToken = pageToken;
+
+      const data = await apiGetWithRetry<{
+        files?: DriveFileListItem[];
+        nextPageToken?: string;
+      }>(accessToken, DRIVE_API_BASE, "/files", params);
+
+      for (const file of data.files ?? []) {
+        allFiles.push(file);
+      }
+
+      if (!data.nextPageToken) break;
+      pageToken = data.nextPageToken;
+    }
   }
 
   const results: DriveSatisfactionFile[] = [];

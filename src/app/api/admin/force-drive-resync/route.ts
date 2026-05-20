@@ -91,15 +91,9 @@ export async function POST(request: NextRequest) {
     if (fileIds.length > 30) {
       return NextResponse.json({ ok: false, error: "max 30 file_ids per call" }, { status: 400 });
     }
-    // 짧은 startDate~endDate로 좁혀서 collect, 그 후 file_id 필터링
-    // collector 자체에 file_id 직접 옵션 없어서 임시: createdTime 범위로 collect 후 filter
-    const collected = await collectSatisfactionFromDrive({
-      startDate,
-      endDate,
-      maxPages: 10,
-      pageSize: 100,
-    });
-    const filteredFiles = collected.files.filter((f) => fileIds.includes(f.fileId));
+    // v23: collector에 fileIds 직접 전달 (listing 단계 skip, 효율적)
+    const collected = await collectSatisfactionFromDrive({ fileIds });
+    const filteredFiles = collected.files;
     const normalized = await normalizeSatisfactionDriveResults({
       ...collected,
       files: filteredFiles,

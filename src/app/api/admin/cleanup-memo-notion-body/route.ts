@@ -92,22 +92,30 @@ export async function POST(request: NextRequest) {
       ],
     };
 
-  const totalCount = await prisma.instructor.count({
-    where: {
-      ...visibleInstructorFilter,
-      sourceLinks: {
-        some: { sourceType: "notion", externalKey: { not: null } },
-      },
+  // 강사 list endpoint 기본 정렬·범위와 동일하게 한정:
+  //   sort=score_desc, limit=100 (실습코치 제외, Notion link 보유).
+  // 운영 메모 화면에 실제 노출 가능한 강사만 cleanup.
+  const SCOPE_LIMIT = 100; // 강사 list endpoint max limit
+  const baseWhere = {
+    ...visibleInstructorFilter,
+    sourceLinks: {
+      some: { sourceType: "notion", externalKey: { not: null } },
     },
-  });
+  } as const;
+  // 전체 후보 (실습코치 제외 + Notion link)의 score desc top 100 id 집합 산출.
+  const scopeIds = (
+    await prisma.instructor.findMany({
+      where: baseWhere,
+      orderBy: [{ score: "desc" }, { name: "asc" }],
+      take: SCOPE_LIMIT,
+      select: { id: true },
+    })
+  ).map((r) => r.id);
+
+  const totalCount = scopeIds.length;
 
   const instructors = await prisma.instructor.findMany({
-    where: {
-      ...visibleInstructorFilter,
-      sourceLinks: {
-        some: { sourceType: "notion", externalKey: { not: null } },
-      },
-    },
+    where: { id: { in: scopeIds } },
     orderBy: { id: "asc" },
     skip: offset,
     take: limit,

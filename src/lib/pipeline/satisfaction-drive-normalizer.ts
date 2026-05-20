@@ -328,6 +328,14 @@ function isFormsResponseSheet(headerRow: string[]): boolean {
     const headerText = headerRow.join(" ");
     if (/(만족도|강사|교육 평가|평가|점수)/i.test(headerText)) return true;
   }
+  // v24-7 Drive: MS Forms 응답시트 (Id, 시작 시간, 완료 시간, 전자 메일, 이름, ...)
+  // 첫 컬럼 "Id" + 헤더 전체에 "시작 시간"/"완료 시간"/"Start time"/"Completion time" + 만족도 키워드
+  if (/^id$/i.test(first)) {
+    const headerText = headerRow.join(" ");
+    const hasFormsMarker = /(시작\s*시간|완료\s*시간|Start\s*time|Completion\s*time)/i.test(headerText);
+    const hasSatisfaction = /(만족도|강사|교육 평가|평가|점수)/i.test(headerText);
+    if (hasFormsMarker && hasSatisfaction) return true;
+  }
   return false;
 }
 
@@ -342,6 +350,17 @@ function isTemplateOrEmpty(file: DriveSatisfactionFile): boolean {
   return true;
 }
 
+function findTimestampColumnIndex(headerRow: string[]): number {
+  // 타임스탬프 / Timestamp / 시작 시간 / Start time / 완료 시간
+  for (let i = 0; i < headerRow.length; i += 1) {
+    const cell = headerRow[i]?.trim() ?? "";
+    if (/(타임스탬프|Timestamp|시작\s*시간|Start\s*time|완료\s*시간|Completion\s*time)/i.test(cell)) {
+      return i;
+    }
+  }
+  return 0;
+}
+
 function normalizeFormsSheet(args: {
   file: DriveSatisfactionFile;
   sheet: { title: string; rows: string[][] };
@@ -353,6 +372,8 @@ function normalizeFormsSheet(args: {
 
   const scoreColIndex = findSatisfactionColumnIndex(headerRow);
   if (scoreColIndex === -1) return null;
+
+  const timestampColIndex = findTimestampColumnIndex(headerRow);
 
   const scores: number[] = [];
   let earliestDate: Date | null = null;
@@ -373,7 +394,7 @@ function normalizeFormsSheet(args: {
     if (!Number.isFinite(parsed) || parsed < 1) continue;
     scores.push(parsed);
 
-    const ts = parseTimestamp(row[0]);
+    const ts = parseTimestamp(row[timestampColIndex]);
     if (ts) {
       if (!earliestDate || ts < earliestDate) earliestDate = ts;
       if (!latestDate || ts > latestDate) latestDate = ts;

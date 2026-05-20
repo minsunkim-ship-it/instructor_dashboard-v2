@@ -434,6 +434,12 @@ export async function GET(
     Number.isFinite(requestedLimit) && requestedLimit > 0
       ? Math.min(requestedLimit, 300)
       : 30;
+  // Step 5 lazy load: include_oi=0 시 응답에서 운영 인텔 필드 모두 빈 값으로 클리어.
+  // 진짜 비용 절감을 위해 라인 580 부근 Notion enrich도 skip + satisfactionImportRows fetch skip.
+  // (build 자체는 그대로 두되 응답 단계에서만 클리어할 수도 있지만,
+  //  여기서는 Notion enrich와 satisfaction fetch를 skip해 main 응답을 가볍게.)
+  const includeOperationalIntelligence =
+    searchParams.get("include_oi") !== "0";
 
   try {
     const inst = await prisma.instructor.findUnique({
@@ -579,6 +585,7 @@ export async function GET(
       notionMemoDiagnostics.notion_page_id = notionSourceLink.externalKey;
     }
     const shouldAttemptNotionEnrichment =
+      includeOperationalIntelligence &&
       Boolean(notionSourceLink?.externalKey) &&
       (searchParams.get("include_notion_enrichment") === "1" || !memoRaw);
 
@@ -806,8 +813,9 @@ export async function GET(
         ? [{ candidateCourseName: { in: rawTeachingCourses } }]
         : []),
     ];
+    // Step 5 lazy load: include_oi=0이면 satisfactionImportItem fetch skip (OI evidence snapshots용).
     const satisfactionImportRows =
-      satisfactionImportSearchClauses.length === 0
+      !includeOperationalIntelligence || satisfactionImportSearchClauses.length === 0
         ? []
         : (
             await prisma.satisfactionImportItem.findMany({
@@ -875,13 +883,16 @@ export async function GET(
       count: recentCanonicalSatisfactionRows.length,
       is_imputed: false,
     };
-    const operationalEvidenceSnapshots = buildOperationalEvidenceSnapshots({
-      instructorId: inst.id,
-      instructorName: inst.name,
-      teachingCompanies,
-      teachingCourses,
-      satisfactionImportRows,
-    });
+    // Step 5 lazy load: include_oi=0이면 snapshot build skip — 빈 배열로 응답.
+    const operationalEvidenceSnapshots = includeOperationalIntelligence
+      ? buildOperationalEvidenceSnapshots({
+          instructorId: inst.id,
+          instructorName: inst.name,
+          teachingCompanies,
+          teachingCourses,
+          satisfactionImportRows,
+        })
+      : [];
 
     const response = {
       status: "success",
@@ -927,13 +938,32 @@ export async function GET(
         },
         recent_satisfaction_summary: recentSatisfactionSummary,
         recent_satisfaction_history: recentSatisfactionHistory,
-        recommended_for: recommendedFor,
-        avoid_for: avoidFor,
-        risk_notes: riskNotes,
-        raw_operational_notes: operationalPayload.raw_operational_notes,
-        classified_notes: operationalPayload.classified_notes,
-        human_followups: operationalPayload.human_followups,
-        behavioral_intelligence: mergedBehavioralIntelligence,
+        // Step 5 lazy load: include_oi=0이면 OI 필드 모두 빈 값 (frontend /intelligence로 별도 fetch).
+        recommended_for: includeOperationalIntelligence ? recommendedFor : [],
+        avoid_for: includeOperationalIntelligence ? avoidFor : [],
+        risk_notes: includeOperationalIntelligence ? riskNotes : [],
+        raw_operational_notes: includeOperationalIntelligence
+          ? operationalPayload.raw_operational_notes
+          : [],
+        classified_notes: includeOperationalIntelligence
+          ? operationalPayload.classified_notes
+          : [],
+        human_followups: includeOperationalIntelligence
+          ? operationalPayload.human_followups
+          : [],
+        behavioral_intelligence: includeOperationalIntelligence
+          ? mergedBehavioralIntelligence
+          : {
+              ...mergedBehavioralIntelligence,
+              top_summary: null,
+              teaching_style: null,
+              curriculum_compliance: null,
+              attitude: null,
+              risk_patterns: [],
+              strength_patterns: [],
+              recommendation: null,
+              key_question_for_humans: null,
+            },
         operational_intelligence_meta: {
           generated_at:
             inst.instructorIntelligence?.generatedAt?.toISOString() ?? null,

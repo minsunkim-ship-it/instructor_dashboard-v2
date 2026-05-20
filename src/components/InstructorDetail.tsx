@@ -25,12 +25,35 @@ async function fetchInstructorDetail(
   id: string,
   teachingHistoryLimit: number
 ): Promise<InstructorDetailResponse> {
+  // Step 5 lazy load: 메인 detail은 OI 제외(include_oi=0). OI는 별도 endpoint에서 fetch.
   const searchParams = new URLSearchParams({
     teaching_history_limit: String(teachingHistoryLimit),
+    include_oi: "0",
   });
   const res = await fetch(`/api/instructors/${id}?${searchParams.toString()}`);
   if (!res.ok) throw new Error("상세 조회 실패");
   return res.json();
+}
+
+interface IntelligenceData {
+  recommended_for: string[];
+  avoid_for: string[];
+  risk_notes: string[];
+  raw_operational_notes: InstructorDetailData["raw_operational_notes"];
+  classified_notes: InstructorDetailData["classified_notes"];
+  human_followups: InstructorDetailData["human_followups"];
+  behavioral_intelligence: InstructorDetailData["behavioral_intelligence"];
+  operational_intelligence_meta: InstructorDetailData["operational_intelligence_meta"];
+  operational_evidence_snapshots: InstructorDetailData["operational_evidence_snapshots"];
+}
+
+async function fetchInstructorIntelligence(
+  id: string
+): Promise<IntelligenceData> {
+  const res = await fetch(`/api/instructors/${id}/intelligence`);
+  if (!res.ok) throw new Error("운영 인텔 조회 실패");
+  const json = (await res.json()) as { data: IntelligenceData };
+  return json.data;
 }
 
 // --- Formatting helpers ---
@@ -1269,6 +1292,13 @@ export default function InstructorDetail({
     queryFn: () => fetchInstructorDetail(instructorId, teachingHistoryLimit),
     staleTime: 60_000,
   });
+  // Step 5 lazy load: 운영 인텔 섹션은 별도 fetch. 메인 detail 첫 페인트 후 OI 도착 시 채움.
+  const { data: intel, isLoading: intelLoading } = useQuery({
+    queryKey: ["instructor-intel", instructorId],
+    queryFn: () => fetchInstructorIntelligence(instructorId),
+    enabled: Boolean(data?.data?.id),
+    staleTime: 60_000,
+  });
 
   const handleJumpToFeeHistory = useCallback((targetId: string) => {
     setFeeHistoryTableExpandedByInstructor((current) => ({
@@ -1366,7 +1396,22 @@ export default function InstructorDetail({
     );
   }
 
-  const inst = data.data;
+  // Step 5 lazy load: intel data 도착 시 OI 필드 override (메인 detail은 OI 빈 값).
+  const baseInst = data.data;
+  const inst: InstructorDetailData = intel
+    ? {
+        ...baseInst,
+        recommended_for: intel.recommended_for,
+        avoid_for: intel.avoid_for,
+        risk_notes: intel.risk_notes,
+        raw_operational_notes: intel.raw_operational_notes,
+        classified_notes: intel.classified_notes,
+        human_followups: intel.human_followups,
+        behavioral_intelligence: intel.behavioral_intelligence,
+        operational_intelligence_meta: intel.operational_intelligence_meta,
+        operational_evidence_snapshots: intel.operational_evidence_snapshots,
+      }
+    : baseInst;
   const notionCommentCards = buildNotionCommentCards(inst);
   const handleJumpToNotionComments = () => {
     const target = document.getElementById(NOTION_COMMENT_SECTION_ID);
@@ -1410,10 +1455,40 @@ export default function InstructorDetail({
           <ScoreBreakdownSection data={inst} />
           <SatisfactionSection data={inst} />
         </section>
-        <OpsIntelligenceSection
-          data={inst}
-          notionCommentCards={notionCommentCards}
-        />
+        {intelLoading && !intel ? (
+          <section>
+            <div className="intel-card animate-pulse">
+              <div className="intel-header">
+                <span className="intel-title">운영 인텔리전스</span>
+                <span className="intel-richness text-[var(--text-muted)]">
+                  불러오는 중…
+                </span>
+              </div>
+              <div className="intel-section intel-top-summary">
+                <div className="h-4 w-full rounded bg-slate-200 mb-2"></div>
+                <div className="h-4 w-5/6 rounded bg-slate-200"></div>
+              </div>
+              <div className="intel-section intel-rec">
+                <div className="h-4 w-2/3 rounded bg-slate-200"></div>
+              </div>
+              <div className="intel-grid">
+                <div>
+                  <div className="intel-col-title intel-strength-title">강점</div>
+                  <div className="h-12 rounded bg-slate-100"></div>
+                </div>
+                <div>
+                  <div className="intel-col-title intel-risk-title">주의</div>
+                  <div className="h-12 rounded bg-slate-100"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : (
+          <OpsIntelligenceSection
+            data={inst}
+            notionCommentCards={notionCommentCards}
+          />
+        )}
         <MemoSection data={inst} />
       </div>
     </div>

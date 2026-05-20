@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  if (mode === "fetch") {
+  if (mode === "fetch" || mode === "fetch_dryrun") {
     const fileIds = fileIdsParam.split(",").map((s) => s.trim()).filter(Boolean);
     if (fileIds.length === 0) {
       return NextResponse.json({ ok: false, error: "file_ids required" }, { status: 400 });
@@ -91,24 +91,60 @@ export async function POST(request: NextRequest) {
     if (fileIds.length > 30) {
       return NextResponse.json({ ok: false, error: "max 30 file_ids per call" }, { status: 400 });
     }
-    // v23: collector에 fileIds 직접 전달 (listing 단계 skip, 효율적)
-    const collected = await collectSatisfactionFromDrive({ fileIds });
-    const filteredFiles = collected.files;
-    const normalized = await normalizeSatisfactionDriveResults({
-      ...collected,
-      files: filteredFiles,
-    });
-    const runId = `force-drive-resync-${Date.now()}`;
-    const importApplyResult = await applySatisfactionImports({ runId, items: normalized.items });
-    return NextResponse.json({
-      ok: true,
-      mode: "fetch",
-      durationMs: Date.now() - startedAt,
-      file_ids_requested: fileIds,
-      file_ids_found_in_drive: filteredFiles.length,
-      normalized_items: normalized.items.length,
-      apply_summary: importApplyResult,
-    });
+    try {
+      const collected = await collectSatisfactionFromDrive({ fileIds });
+      const filteredFiles = collected.files;
+      const normalized = await normalizeSatisfactionDriveResults({
+        ...collected,
+        files: filteredFiles,
+      });
+
+      if (mode === "fetch_dryrun") {
+        // normalize only — DB write 없음, normalize 결과 확인
+        return NextResponse.json({
+          ok: true,
+          mode: "fetch_dryrun",
+          durationMs: Date.now() - startedAt,
+          file_ids_requested: fileIds,
+          file_ids_found_in_drive: filteredFiles.length,
+          normalized_items: normalized.items.length,
+          sample_items: normalized.items.slice(0, 3).map((it) => ({
+            sourceRefKey: it.sourceRefKey,
+            candidateCompanyName: it.candidateCompanyName,
+            candidateCourseName: it.candidateCourseName,
+            scoreNormalized: it.scoreNormalized,
+            respondentCount: it.respondentCount,
+            responseDate: it.responseDate,
+          })),
+        });
+      }
+
+      const runId = `force-drive-resync-${Date.now()}`;
+      const importApplyResult = await applySatisfactionImports({ runId, items: normalized.items });
+      return NextResponse.json({
+        ok: true,
+        mode: "fetch",
+        durationMs: Date.now() - startedAt,
+        file_ids_requested: fileIds,
+        file_ids_found_in_drive: filteredFiles.length,
+        normalized_items: normalized.items.length,
+        apply_summary: importApplyResult,
+      });
+    } catch (err) {
+      // 500 원인 surface
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack?.split("\n").slice(0, 8).join("\n") : null;
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "fetch_or_apply_failed",
+          message,
+          stack,
+          file_ids_requested: fileIds,
+        },
+        { status: 500 }
+      );
+    }
   }
 
   if (mode === "full_apply") {

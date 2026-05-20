@@ -302,7 +302,16 @@ function buildDriveRegistryKey(args: {
 
 function isFormsResponseSheet(headerRow: string[]): boolean {
   const first = headerRow[0]?.trim() ?? "";
-  return /타임스탬프|Timestamp/i.test(first);
+  // 기본: 타임스탬프 시작
+  if (/타임스탬프|Timestamp/i.test(first)) return true;
+  // v23 Drive: Forms 응답 외 형식도 만족도 sheet 인식
+  // - 첫 컬럼이 "1-1." / "1." / "Q1" 등 객관식 응답 번호
+  // - 또는 헤더 전체에 "만족도" / "강사 만족도" / "교육 만족도" 같은 키워드 포함
+  if (/^([Q]?\d+[-.]\d+|\d+\.)/i.test(first)) {
+    const headerText = headerRow.join(" ");
+    if (/(만족도|강사|교육 평가|평가|점수)/i.test(headerText)) return true;
+  }
+  return false;
 }
 
 function isTemplateOrEmpty(file: DriveSatisfactionFile): boolean {

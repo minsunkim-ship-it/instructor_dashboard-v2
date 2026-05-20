@@ -3877,6 +3877,7 @@ export async function generateOperationalIntelligence(
         select: {
           instructorDbId: true,
           evidenceHash: true,
+          promptVersion: true,
         },
       }),
     ]);
@@ -3925,7 +3926,11 @@ export async function generateOperationalIntelligence(
 
   const upsertCandidates = payloads.filter((entry) => {
     const existing = existingByInstructorId.get(entry.instructor.id);
-    return !existing || existing.evidenceHash !== entry.evidenceHash;
+    if (!existing) return true;
+    if (existing.evidenceHash !== entry.evidenceHash) return true;
+    // prompt 업그레이드 시 evidence 변경 없어도 새 prompt_version으로 갱신 필요.
+    if (existing.promptVersion !== PROMPT_VERSION) return true;
+    return false;
   });
 
   await mapWithConcurrency(

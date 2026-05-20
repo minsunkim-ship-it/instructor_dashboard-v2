@@ -102,6 +102,20 @@ export async function POST(request: NextRequest) {
 
       if (mode === "fetch_dryrun") {
         // normalize only — DB write 없음, normalize 결과 확인
+        const debug = request.nextUrl.searchParams.get("debug") === "1";
+        const debugInfo = debug
+          ? filteredFiles.map((f) => ({
+              file_id: f.fileId,
+              file_name: f.fileName,
+              sheet_count: f.sheets.length,
+              sheets: f.sheets.slice(0, 5).map((s) => ({
+                title: s.title,
+                row_count: s.rows.length,
+                header: s.rows[0]?.slice(0, 10) ?? [],
+                sample_row1: s.rows[1]?.slice(0, 10) ?? [],
+              })),
+            }))
+          : undefined;
         return NextResponse.json({
           ok: true,
           mode: "fetch_dryrun",
@@ -117,6 +131,7 @@ export async function POST(request: NextRequest) {
             respondentCount: it.respondentCount,
             responseDate: it.responseDate,
           })),
+          debug_files: debugInfo,
         });
       }
 

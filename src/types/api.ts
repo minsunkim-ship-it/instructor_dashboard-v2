@@ -118,6 +118,17 @@ export interface OperationalIntelligenceMeta {
   generated_at: string | null;
   generated_by: string | null;
   generation_model: string | null;
+  /**
+   * 일반화 억제 사유. null이면 억제 없음.
+   * - rule_based_fallback: LLM 미검증(rule_based)이라 분류 라벨 미노출.
+   * - single_source_hedged: 단일 source라 hedging prefix 적용.
+   */
+  label_suppression_reason:
+    | null
+    | "rule_based_fallback"
+    | "single_source_hedged";
+  /** 일반화 억제 시 사용한 raw evidence 건수. */
+  hedge_evidence_count: number | null;
 }
 
 export interface RecentSatisfactionHistoryItem {

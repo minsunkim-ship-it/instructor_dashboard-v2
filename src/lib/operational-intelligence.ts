@@ -276,6 +276,7 @@ interface LlmClassificationPatch {
 
 type BehavioralSummaryFields = Pick<
   BehavioralIntelligence,
+  | "top_summary"
   | "teaching_style"
   | "curriculum_compliance"
   | "attitude"
@@ -390,6 +391,7 @@ function createEmptyBehavioralSourceRefs(): BehavioralIntelligenceSourceRefs {
 
 function createEmptyBehavioralIntelligence(): BehavioralIntelligence {
   return {
+    top_summary: null,
     teaching_style: null,
     curriculum_compliance: null,
     attitude: null,
@@ -1184,6 +1186,7 @@ function getLlmClassificationSchema(): Record<string, unknown> {
 
 function createEmptyBehavioralSummary(): BehavioralSummaryFields {
   return {
+    top_summary: null,
     teaching_style: null,
     curriculum_compliance: null,
     attitude: null,
@@ -1261,6 +1264,7 @@ function getBehavioralSummarySchema(): Record<string, unknown> {
     type: "object",
     additionalProperties: false,
     properties: {
+      top_summary: { type: "string" },
       teaching_style: { type: "string" },
       curriculum_compliance: { type: "string" },
       attitude: { type: "string" },
@@ -1277,6 +1281,7 @@ function getBehavioralSummarySchema(): Record<string, unknown> {
       source_refs: getBehavioralSourceRefsSchema(),
     },
     required: [
+      "top_summary",
       "teaching_style",
       "curriculum_compliance",
       "attitude",
@@ -1322,6 +1327,7 @@ function buildBehavioralSummaryPrompt(args: {
     "Return JSON only.",
     "",
     "Fields:",
+    "- top_summary: 1~2 short Korean paragraphs that integrate all collected evidence across sources (curated_ops + notion_comment + teaching_feedback_qualitative/ops + slack_highlight). Lead with the most distinctive trait pattern, follow with notable risks or qualifications. Treat it as a senior ops manager summarizing this instructor in their own words for another senior ops manager. Avoid bullet structure, generic templates, or anything that reads like 'evidence says…'. If the only evidence is a single isolated note, write a tentative 1~2 sentence framing instead of asserting a stable trait. If you have no evidence at all, return an empty string.",
     "- teaching_style: teaching/delivery style or how the instructor guides learners",
     "- curriculum_compliance: fit of pace, hands-on balance, examples, materials, or curriculum execution",
     "- attitude: preparation, responsiveness, participant handling, or professionalism",
@@ -1406,7 +1412,10 @@ function buildFallbackBehavioralSummary(args: {
     recommendation = negativeNotes[0];
   }
 
+  // Fallback (LLM 미사용)에서는 top_summary는 보수적으로 비움.
+  // 단일 evidence를 종합 요약으로 굳히지 않기 위함.
   const summary: BehavioralSummaryFields = {
+    top_summary: null,
     teaching_style: null,
     curriculum_compliance: null,
     attitude: null,
@@ -2302,6 +2311,9 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
       "strength"
     );
     const summary: BehavioralSummaryFields = {
+      top_summary: normalizeText(
+        typeof parsed.top_summary === "string" ? parsed.top_summary : null
+      ) || null,
       teaching_style: normalizeText(
         typeof parsed.teaching_style === "string" ? parsed.teaching_style : null
       ) || null,
@@ -3756,6 +3768,7 @@ async function buildPayloadForInstructor(
     });
 
   const behavioralIntelligence: BehavioralIntelligence = {
+    top_summary: behavioralSummaryResult.summary.top_summary,
     teaching_style: behavioralSummaryResult.summary.teaching_style,
     curriculum_compliance:
       behavioralSummaryResult.summary.curriculum_compliance,
@@ -4052,6 +4065,7 @@ export function extractOperationalIntelligencePayload(
           classifications
         );
         const summary: BehavioralSummaryFields = {
+          top_summary: behavioralIntelligence.top_summary,
           teaching_style: behavioralIntelligence.teaching_style,
           curriculum_compliance: behavioralIntelligence.curriculum_compliance,
           attitude: behavioralIntelligence.attitude,

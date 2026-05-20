@@ -22,6 +22,7 @@ type FallbackInstructorSeed = InstructorListItem &
 export const FALLBACK_LAST_UPDATED_AT = "2026-04-01T00:00:00.000Z";
 
 const EMPTY_BEHAVIORAL_INTELLIGENCE = {
+  top_summary: null,
   teaching_style: null,
   curriculum_compliance: null,
   attitude: null,
@@ -289,6 +290,8 @@ export function getFallbackInstructorDetail(
       generated_at: null,
       generated_by: null,
       generation_model: null,
+      label_suppression_reason: null,
+      hedge_evidence_count: null,
     },
     operational_evidence_snapshots: [],
     fee_history: [],

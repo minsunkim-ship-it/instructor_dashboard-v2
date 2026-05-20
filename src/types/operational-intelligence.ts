@@ -81,6 +81,12 @@ export interface HumanFollowup {
 }
 
 export interface BehavioralIntelligence {
+  /**
+   * 운영 인텔리전스 상단에 노출되는 1~2단락 종합 요약문.
+   * 다중 source(curated_ops + slack + gmail/sheet feedback + notion_comment)를 합쳐 LLM이 생성.
+   * 단일 source만 있으면 hedging prefix 적용, rule_based fallback이면 null.
+   */
+  top_summary: string | null;
   teaching_style: string | null;
   curriculum_compliance: string | null;
   attitude: string | null;

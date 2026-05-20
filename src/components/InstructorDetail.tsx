@@ -1810,6 +1810,11 @@ function OpsIntelligenceSection({
     behavioral,
   });
 
+  const labelSuppressionReason =
+    data.operational_intelligence_meta?.label_suppression_reason ?? null;
+  const hedgeEvidenceCount =
+    data.operational_intelligence_meta?.hedge_evidence_count ?? null;
+
   return (
     <section>
       <div className="intel-card">
@@ -1819,6 +1824,26 @@ function OpsIntelligenceSection({
             {behavioral.data_richness}
           </span>
         </div>
+
+        {behavioral.top_summary ? (
+          <div className="intel-section intel-top-summary">
+            <p className="whitespace-pre-line text-[13px] leading-relaxed text-[var(--text-primary)]">
+              {behavioral.top_summary}
+            </p>
+            {labelSuppressionReason === "single_source_hedged" &&
+              hedgeEvidenceCount !== null && (
+                <p className="mt-2 text-[11px] text-[var(--text-muted)]">
+                  단일 출처 {hedgeEvidenceCount}건 기반 — 일반화에 주의 필요.
+                </p>
+              )}
+          </div>
+        ) : labelSuppressionReason === "rule_based_fallback" ? (
+          <div className="intel-section intel-top-summary">
+            <p className="text-[12px] text-[var(--text-muted)]">
+              자동 분류 결과로 종합 요약을 노출하지 않습니다. 아래 운영 메모와 피드백 원문을 참고하세요.
+            </p>
+          </div>
+        ) : null}
 
         <div className="intel-section intel-rec">
           <p className="intel-rec-label">

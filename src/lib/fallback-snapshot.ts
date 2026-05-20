@@ -99,6 +99,16 @@ function sanitizeInstructorDetailData(
           : [],
       },
     },
+    operational_intelligence_meta: {
+      generated_at: detail.operational_intelligence_meta?.generated_at ?? null,
+      generated_by: detail.operational_intelligence_meta?.generated_by ?? null,
+      generation_model:
+        detail.operational_intelligence_meta?.generation_model ?? null,
+      label_suppression_reason:
+        detail.operational_intelligence_meta?.label_suppression_reason ?? null,
+      hedge_evidence_count:
+        detail.operational_intelligence_meta?.hedge_evidence_count ?? null,
+    },
     teaching_history: teachingHistory,
   };
 }
@@ -423,6 +433,8 @@ export async function buildStoredFallbackSnapshot(): Promise<StoredFallbackSnaps
           generated_at: null,
           generated_by: null,
           generation_model: null,
+          label_suppression_reason: null,
+          hedge_evidence_count: null,
         },
         operational_evidence_snapshots: [],
         fee_history: inst.isFulltime

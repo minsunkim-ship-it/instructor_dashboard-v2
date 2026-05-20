@@ -26,6 +26,7 @@ import {
   getLegacyOperationalFields,
   normalizeOperationalPatternLabels,
 } from "@/lib/operational-intelligence";
+import { applyOperationalIntelligenceSuppressions } from "@/lib/operational-intelligence-suppression";
 import { enrichMemoFromNotionPage } from "@/lib/notion-enrichment";
 import { loadOpsNotesJson } from "@/lib/pipeline/ops-notes-loader";
 import type {
@@ -660,7 +661,7 @@ export async function GET(
           ...operationalPayload.behavioral_intelligence.risk_patterns,
           ...normalizedStoredRiskNotes,
         ]);
-    const mergedBehavioralIntelligence = {
+    const baseBehavioralIntelligence = {
       ...operationalPayload.behavioral_intelligence,
       risk_patterns: mergedRiskPatterns,
       key_question_for_humans:
@@ -678,6 +679,13 @@ export async function GET(
           : storedConfidence ??
             operationalPayload.behavioral_intelligence.confidence,
     };
+    // Step 3-A + 3-C: 단일 source hedging / rule_based fallback 라벨 미노출
+    const suppression = applyOperationalIntelligenceSuppressions({
+      behavioralIntelligence: baseBehavioralIntelligence,
+      rawNotes: operationalPayload.raw_operational_notes,
+      generatedBy: inst.instructorIntelligence?.generatedBy ?? null,
+    });
+    const mergedBehavioralIntelligence = suppression.behavioral_intelligence;
     const recommendedFor = dedupeStrings([
       ...(inst.instructorIntelligence?.recommendedFor ?? []),
       ...legacyOperationalFields.recommended_for,
@@ -686,11 +694,12 @@ export async function GET(
       ...(inst.instructorIntelligence?.avoidFor ?? []),
       ...legacyOperationalFields.avoid_for,
     ]);
+    // Step 3-B: legacyOperationalFields.risk_notes merge 차단 — source-backed 또는
+    // 현재 cycle InstructorIntelligence column만 사용. (과거 굳은 라벨 영구 노출 방지)
     const riskNotes = hasSourceBackedRiskPatterns
       ? mergedBehavioralIntelligence.risk_patterns
       : dedupeStrings([
           ...normalizedStoredRiskNotes,
-          ...legacyOperationalFields.risk_notes,
           ...mergedBehavioralIntelligence.risk_patterns,
         ]);
     const rawTeachingCompanies = Array.from(
@@ -931,6 +940,8 @@ export async function GET(
           generated_by: inst.instructorIntelligence?.generatedBy ?? null,
           generation_model:
             inst.instructorIntelligence?.generationModel ?? null,
+          label_suppression_reason: suppression.label_suppression_reason,
+          hedge_evidence_count: suppression.hedge_evidence_count,
         },
         operational_evidence_snapshots: operationalEvidenceSnapshots,
         // 6-4: 전임강사는 fee_history 빈 배열. T8: 비전임 강사는 fee_histories 테이블에서 조회.

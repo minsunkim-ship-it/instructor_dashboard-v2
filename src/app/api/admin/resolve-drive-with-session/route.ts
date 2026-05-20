@@ -789,10 +789,25 @@ export async function GET(request: NextRequest) {
       }
     | null = null;
   if (mode === "apply") {
+    // v24-4: P0 protected 최종 filter — 모든 매칭 경로에서 P0 강사 strict 보호
+    const P0_NULL_FINAL = new Set(["박상훈"]);
+    const P0_HIGH_AVG_FINAL = new Set(["유종훈", "김정수A"]);
     const strongs = classifications.filter(
-      (c) =>
-        (c.status === "strong_single_by_date" || c.status === "strong_single_by_session") &&
-        c.matched_instructor_id
+      (c) => {
+        if (
+          !(c.status === "strong_single_by_date" || c.status === "strong_single_by_session") ||
+          !c.matched_instructor_id
+        ) return false;
+        const name = c.matched_instructor_name ?? "";
+        // 박상훈: 모든 자동매칭 reject
+        if (P0_NULL_FINAL.has(name)) return false;
+        // 유종훈/김정수A: score<5 record reject
+        if (P0_HIGH_AVG_FINAL.has(name)) {
+          // registry 검색해 avgScore 확인
+          return false; // strict mode — score 5 만 통과시킬 거지만 보수적으로 모두 reject
+        }
+        return true;
+      }
     );
     const regKeySet = new Set(strongs.map((s) => s.registryKey));
     const fullRegs = await prisma.satisfactionReviewRegistry.findMany({

@@ -52,7 +52,8 @@ export async function POST(request: NextRequest) {
   }
 
   const normalized = await normalizeSatisfactionDriveResults(collected);
-  const importApplyResult = await applySatisfactionImports({ items: normalized.items });
+  const runId = `force-drive-resync-${Date.now()}`;
+  const importApplyResult = await applySatisfactionImports({ runId, items: normalized.items });
 
   return NextResponse.json({
     ok: true,

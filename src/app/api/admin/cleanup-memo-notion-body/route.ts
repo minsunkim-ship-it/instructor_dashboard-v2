@@ -82,8 +82,19 @@ export async function POST(request: NextRequest) {
     10
   );
 
+  // 강사 목록 화면에 노출되는 강사만 cleanup (실습코치 제외).
+  // shouldIncludeInInstructorList: flag !== '실습코치' AND isPracticeCoach !== true
+  const visibleInstructorFilter: import("@prisma/client").Prisma.InstructorWhereInput =
+    {
+      AND: [
+        { OR: [{ flag: null }, { flag: { not: "실습코치" } }] },
+        { isPracticeCoach: false },
+      ],
+    };
+
   const totalCount = await prisma.instructor.count({
     where: {
+      ...visibleInstructorFilter,
       sourceLinks: {
         some: { sourceType: "notion", externalKey: { not: null } },
       },
@@ -92,6 +103,7 @@ export async function POST(request: NextRequest) {
 
   const instructors = await prisma.instructor.findMany({
     where: {
+      ...visibleInstructorFilter,
       sourceLinks: {
         some: { sourceType: "notion", externalKey: { not: null } },
       },

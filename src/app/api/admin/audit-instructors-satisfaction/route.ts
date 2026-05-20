@@ -47,18 +47,47 @@ export async function GET(request: NextRequest) {
   const cutoffDate = new Date();
   cutoffDate.setMonth(cutoffDate.getMonth() - lookbackMonths);
 
-  // 1) top N instructors by satisfactionAvg
-  const instructors = await prisma.instructor.findMany({
-    where: { satisfactionAvg: { not: null } },
-    orderBy: [{ satisfactionAvg: "desc" }, { name: "asc" }],
-    take: top,
-    select: {
-      id: true,
-      name: true,
-      satisfactionAvg: true,
-      satisfactionCount: true,
-    },
-  });
+  // 1) instructors with TH (recent N months) — 만족도 record 없어도 포함
+  // mode=th_first: TH count 기준 정렬 (회복 우선순위 강사 발견)
+  // mode=avg (기본): satisfactionAvg DESC (기존)
+  const mode = request.nextUrl.searchParams.get("mode") ?? "avg";
+  const includeNoRecord = request.nextUrl.searchParams.get("include_no_record") === "1";
+  let instructors: Array<{
+    id: string;
+    name: string;
+    satisfactionAvg: import("@prisma/client").Prisma.Decimal | null;
+    satisfactionCount: number;
+  }>;
+  if (mode === "th_first" || includeNoRecord) {
+    // TH 있는 강사 중 TH count 상위 N — record 없는 강사도 포함
+    const thCounts = await prisma.teachingHistory.groupBy({
+      by: ["instructorDbId"],
+      where: {
+        OR: [{ endDate: { gte: cutoffDate } }, { startDate: { gte: cutoffDate } }],
+      },
+      _count: { instructorDbId: true },
+    });
+    thCounts.sort((a, b) => b._count.instructorDbId - a._count.instructorDbId);
+    const topIds = thCounts.slice(0, top).map((t) => t.instructorDbId);
+    const fetched = await prisma.instructor.findMany({
+      where: { id: { in: topIds } },
+      select: { id: true, name: true, satisfactionAvg: true, satisfactionCount: true },
+    });
+    const byId = new Map(fetched.map((i) => [i.id, i]));
+    instructors = topIds.map((id) => byId.get(id)).filter((x): x is NonNullable<typeof x> => !!x);
+  } else {
+    instructors = await prisma.instructor.findMany({
+      where: { satisfactionAvg: { not: null } },
+      orderBy: [{ satisfactionAvg: "desc" }, { name: "asc" }],
+      take: top,
+      select: {
+        id: true,
+        name: true,
+        satisfactionAvg: true,
+        satisfactionCount: true,
+      },
+    });
+  }
   const ids = instructors.map((i) => i.id);
   if (ids.length === 0) {
     return NextResponse.json({ ok: true, instructors: [] });

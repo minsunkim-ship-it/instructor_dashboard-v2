@@ -22,7 +22,7 @@ import type {
 
 const SOURCE_SUMMARY_KEY = "operational_intelligence_phase1";
 const SPEC_REF = "docs/15_operational_intelligence_classification_spec.md";
-const PROMPT_VERSION = "ops-intel-v3.2-evidence-boost-2026-05-20";
+const PROMPT_VERSION = "ops-intel-v3.3-silent-filter-2026-05-20";
 export const CURRENT_OPERATIONAL_INTELLIGENCE_PROMPT_VERSION = PROMPT_VERSION;
 const STORAGE_PROJECTION_VERSION = "ops-intel-storage-v2";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -1356,6 +1356,7 @@ function buildBehavioralSummaryPrompt(args: {
     "- risk_patterns and attitude reflect ONLY the instructor's own actions, preparation, responsiveness, professionalism, or delivery weakness explicitly stated in evidence.",
     "- If the only \"risk\" evidence is about learner composition, course design, or ops logistics, return risk_patterns: [] and leave attitude empty.",
     "- recommendation may mention what kind of audience/program the instructor is well suited for, but should NOT recommend curriculum changes or ops actions.",
+    "- SILENT FILTERING: Do NOT mention the attribution rule itself in the user-facing text. Do not write phrases like '운영 측 사안이 섞여 있어 강사 단정이 어렵다' or '데이터 한계' or '강사 특성으로 보기 어렵다'. Just silently filter out non-instructor evidence and produce output based on what remains. If after filtering there is nothing instructor-specific to say, return empty fields (empty string for text fields, [] for arrays).",
     "",
     "TONE:",
     "- Conservative and observational. Prefer phrases like '~한 반응이 있었습니다', '~한 평이 다수' over assertive '~를 잘 합니다' or '~가 부족합니다'.",

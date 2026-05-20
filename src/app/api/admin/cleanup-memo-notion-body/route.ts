@@ -30,6 +30,13 @@ function normalizeLineForCompare(line: string): string {
   return line.replace(/\s+/g, " ").trim();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Notion API rate limit 회피용 강사간 throttle. 3 req/s 기준 약 350ms 권장. */
+const PER_INSTRUCTOR_THROTTLE_MS = 400;
+
 function splitLines(text: string | null | undefined): string[] {
   if (!text) return [];
   return text
@@ -109,7 +116,12 @@ export async function POST(request: NextRequest) {
   let totalChanged = 0;
   let totalErrors = 0;
 
-  for (const inst of instructors) {
+  for (let idx = 0; idx < instructors.length; idx += 1) {
+    const inst = instructors[idx];
+    // 첫 강사 제외 모든 강사 사이에 throttle (Notion 429 회피)
+    if (idx > 0) {
+      await sleep(PER_INSTRUCTOR_THROTTLE_MS);
+    }
     const notionLink = inst.sourceLinks.find(
       (s) => s.externalKey && s.externalKey.trim().length > 0
     );

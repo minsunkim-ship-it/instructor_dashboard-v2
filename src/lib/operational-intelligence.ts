@@ -22,7 +22,7 @@ import type {
 
 const SOURCE_SUMMARY_KEY = "operational_intelligence_phase1";
 const SPEC_REF = "docs/15_operational_intelligence_classification_spec.md";
-const PROMPT_VERSION = "ops-intel-v3-attribution-guard-2026-05-20";
+const PROMPT_VERSION = "ops-intel-v3.1-korean-only-2026-05-20";
 export const CURRENT_OPERATIONAL_INTELLIGENCE_PROMPT_VERSION = PROMPT_VERSION;
 const STORAGE_PROJECTION_VERSION = "ops-intel-storage-v2";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -1306,6 +1306,7 @@ function buildBehavioralSummaryPrompt(args: {
 }): string {
   return [
     "You summarize operational intelligence for an instructor dashboard in Korean.",
+    "LANGUAGE: All output text MUST be in natural Korean only. Do not use Russian, Cyrillic, Chinese, Japanese, or any other non-Korean script. English loanwords commonly used in Korean (e.g. AI, SQL) are OK; otherwise stick to Korean. If you are about to write a non-Korean word like 'audience' or 'аудитory', use the Korean equivalent ('대상' / '청중') instead.",
     "Use the raw notes as the primary evidence. Do not invent facts.",
     "Do not generalize a stable trait from a single isolated incident.",
     "If evidence is weak or ambiguous, return an empty string for that field.",

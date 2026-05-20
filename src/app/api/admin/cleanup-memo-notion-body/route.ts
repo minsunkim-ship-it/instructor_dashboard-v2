@@ -1,5 +1,5 @@
 /**
- * POST /api/admin/cleanup-memo-notion-body?mode=dry-run|apply&limit=N
+ * POST /api/admin/cleanup-memo-notion-body?mode=dry-run|apply&limit=N&offset=N
  *
  * Notion SourceLink 보유 강사 전수에 대해:
  *   1. 현재 Notion 페이지 본문(pageTitleLines + blockLines) 재 fetch
@@ -67,9 +67,21 @@ export async function POST(request: NextRequest) {
   const mode = request.nextUrl.searchParams.get("mode") ?? "dry-run";
   const apply = mode === "apply";
   const limit = parseInt(
-    request.nextUrl.searchParams.get("limit") ?? "1000",
+    request.nextUrl.searchParams.get("limit") ?? "30",
     10
   );
+  const offset = parseInt(
+    request.nextUrl.searchParams.get("offset") ?? "0",
+    10
+  );
+
+  const totalCount = await prisma.instructor.count({
+    where: {
+      sourceLinks: {
+        some: { sourceType: "notion", externalKey: { not: null } },
+      },
+    },
+  });
 
   const instructors = await prisma.instructor.findMany({
     where: {
@@ -77,6 +89,8 @@ export async function POST(request: NextRequest) {
         some: { sourceType: "notion", externalKey: { not: null } },
       },
     },
+    orderBy: { id: "asc" },
+    skip: offset,
     take: limit,
     select: {
       id: true,
@@ -186,10 +200,19 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const nextOffset = offset + results.length;
   return NextResponse.json({
     ok: true,
     mode: apply ? "apply" : "dry-run",
     generated_at: new Date().toISOString(),
+    pagination: {
+      total: totalCount,
+      offset,
+      limit,
+      returned: results.length,
+      next_offset: nextOffset < totalCount ? nextOffset : null,
+      done: nextOffset >= totalCount,
+    },
     summary: {
       processed: results.length,
       changed: totalChanged,

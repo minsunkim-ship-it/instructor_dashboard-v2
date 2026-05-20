@@ -346,7 +346,13 @@ function normalizeFormsSheet(args: {
     if (!row) continue;
 
     const scoreRaw = row[scoreColIndex]?.trim() ?? "";
-    const parsed = Number(scoreRaw);
+    // v23 Drive: "5. 만족", "4. 조금 그렇다." 같은 객관식 응답 형식에서 첫 숫자 추출
+    // 기존: Number(scoreRaw) → "5. 만족" NaN으로 skip → 모든 응답 누락
+    let parsed = Number(scoreRaw);
+    if (!Number.isFinite(parsed)) {
+      const m = scoreRaw.match(/^(\d+(?:\.\d+)?)/);
+      if (m) parsed = Number(m[1]);
+    }
     if (!Number.isFinite(parsed) || parsed < 1) continue;
     scores.push(parsed);
 

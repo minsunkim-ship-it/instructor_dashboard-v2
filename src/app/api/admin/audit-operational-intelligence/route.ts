@@ -95,6 +95,7 @@ interface BehavioralFill {
 
 function evaluateBehavioralFill(bi: BehavioralIntelligence): BehavioralFill {
   const checks: Array<[string, boolean]> = [
+    ["top_summary", Boolean(bi.top_summary && bi.top_summary.trim().length > 0)],
     ["teaching_style", Boolean(bi.teaching_style && bi.teaching_style.trim().length > 0)],
     [
       "curriculum_compliance",
@@ -228,6 +229,11 @@ export async function GET(request: NextRequest) {
         filled_fields: behavioralFill.filledFields,
         fill_ratio: behavioralFill.fillRatio,
         total_fields: behavioralFill.totalFields,
+        top_summary: bi.top_summary,
+        teaching_style: bi.teaching_style,
+        curriculum_compliance: bi.curriculum_compliance,
+        attitude: bi.attitude,
+        recommendation: bi.recommendation,
         risk_patterns: bi.risk_patterns,
         strength_patterns: bi.strength_patterns,
       },

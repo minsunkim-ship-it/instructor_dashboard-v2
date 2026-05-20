@@ -22,7 +22,8 @@ import type {
 
 const SOURCE_SUMMARY_KEY = "operational_intelligence_phase1";
 const SPEC_REF = "docs/15_operational_intelligence_classification_spec.md";
-const PROMPT_VERSION = "docs15-phase1-hybrid-v2";
+const PROMPT_VERSION = "ops-intel-v3-attribution-guard-2026-05-20";
+export const CURRENT_OPERATIONAL_INTELLIGENCE_PROMPT_VERSION = PROMPT_VERSION;
 const STORAGE_PROJECTION_VERSION = "ops-intel-storage-v2";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_OPERATIONAL_INTELLIGENCE_MODEL = "gpt-5.2";

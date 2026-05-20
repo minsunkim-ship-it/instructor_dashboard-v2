@@ -10,6 +10,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
+import { prisma } from "@/lib/prisma";
 import { collectSatisfactionFromDrive } from "@/lib/pipeline/satisfaction-drive-collector";
 import { normalizeSatisfactionDriveResults } from "@/lib/pipeline/satisfaction-drive-normalizer";
 import { applySatisfactionImports } from "@/lib/pipeline/satisfaction-applier";
@@ -119,8 +120,19 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const runId = crypto.randomUUID();
-      const importApplyResult = await applySatisfactionImports({ runId, items: normalized.items });
+      // v23: PipelineRun row 먼저 생성 (runId FK 만족 위해)
+      const run = await prisma.pipelineRun.create({
+        data: {
+          runType: "force_drive_resync_satisfaction",
+          status: "running",
+          triggeredBy: "api:/api/admin/force-drive-resync",
+        },
+      });
+      const importApplyResult = await applySatisfactionImports({ runId: run.id, items: normalized.items });
+      await prisma.pipelineRun.update({
+        where: { id: run.id },
+        data: { status: "succeeded", finishedAt: new Date() },
+      });
       return NextResponse.json({
         ok: true,
         mode: "fetch",

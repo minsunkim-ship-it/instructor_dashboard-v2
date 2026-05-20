@@ -666,8 +666,44 @@ export async function GET(request: NextRequest) {
       new Set(filteredByCourse.flatMap((m) => m.instructors))
     );
 
+    // v24: P0 protected 강사 가드 — strict evidence 없이 매칭 시도 차단
+    // 박상훈 (expected null): 모든 자동 매칭 reject
+    // 유종훈/김정수A (expected avg=5): score<5 record 자동 매칭 reject
+    const P0_NULL_PROTECTED = new Set(["박상훈"]);
+    const P0_HIGH_AVG_PROTECTED = new Set(["유종훈", "김정수A"]);
+    const regAvgScore = reg.avgScore !== null ? Number(reg.avgScore) : null;
+
     if (uniqueInstructors.length === 1) {
       const instName = uniqueInstructors[0];
+      // P0 강사 가드 적용
+      if (P0_NULL_PROTECTED.has(instName)) {
+        classifications.push({
+          registryKey: reg.registryKey,
+          company: reg.companyName,
+          course: reg.courseName,
+          candidate: reg.candidateName,
+          response_count: reg.responseCount,
+          response_date: responseDateStr,
+          course_session: courseSession,
+          status: "no_slack_match",
+          matched_instructors: [],
+        });
+        continue;
+      }
+      if (P0_HIGH_AVG_PROTECTED.has(instName) && regAvgScore !== null && regAvgScore < 5) {
+        classifications.push({
+          registryKey: reg.registryKey,
+          company: reg.companyName,
+          course: reg.courseName,
+          candidate: reg.candidateName,
+          response_count: reg.responseCount,
+          response_date: responseDateStr,
+          course_session: courseSession,
+          status: "no_slack_match",
+          matched_instructors: [],
+        });
+        continue;
+      }
       const inst = lookupInstructor(instName);
       classifications.push({
         registryKey: reg.registryKey,

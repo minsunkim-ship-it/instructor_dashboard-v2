@@ -100,7 +100,7 @@ export async function GET(request: NextRequest) {
     google_sheets_missed: notInDb.length,
     xlsx_unsupported_count: xlsxFiles.length,
     db_total_drive_items: dbItems.length,
-    sample_missed: notInDb.slice(0, 20).map((f) => ({
+    sample_missed: notInDb.slice(parseInt(request.nextUrl.searchParams.get("offset") ?? "0", 10), parseInt(request.nextUrl.searchParams.get("offset") ?? "0", 10) + parseInt(request.nextUrl.searchParams.get("limit") ?? "20", 10)).map((f) => ({
       id: f.id,
       name: f.name,
       created: f.createdTime,

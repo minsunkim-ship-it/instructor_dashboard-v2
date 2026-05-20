@@ -22,7 +22,7 @@ import type {
 
 const SOURCE_SUMMARY_KEY = "operational_intelligence_phase1";
 const SPEC_REF = "docs/15_operational_intelligence_classification_spec.md";
-const PROMPT_VERSION = "ops-intel-v3.1-korean-only-2026-05-20";
+const PROMPT_VERSION = "ops-intel-v3.2-evidence-boost-2026-05-20";
 export const CURRENT_OPERATIONAL_INTELLIGENCE_PROMPT_VERSION = PROMPT_VERSION;
 const STORAGE_PROJECTION_VERSION = "ops-intel-storage-v2";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -862,6 +862,39 @@ function extractGmailSummaryNotes(
 
   appendEmbeddedFeedbackNotes(notes, rawPayload.drive_sheet_notes);
   appendEmbeddedFeedbackNotes(notes, rawPayload.feedback_notes);
+
+  // Step 6 fallback: 정형 헤더 매칭 실패한 경우 body_excerpt에서 의미 있는 한국어 문장 추출.
+  if (notes.length === 0 && bodyExcerpt) {
+    const fallbackLines = bodyExcerpt
+      .replace(/\r/g, "")
+      .split("\n")
+      .map((line) => normalizeText(line))
+      .filter((line) => {
+        if (!line) return false;
+        if (line.length < 16) return false;
+        if (isBoilerplateEmailLine(line)) return false;
+        if (isSkippableExtractedLine(line)) return false;
+        // 자동 알림/메타 라인 reject
+        if (/(no-?reply|noreply|automated|발송된 메일|수신을 원치)/i.test(line)) {
+          return false;
+        }
+        // 한글 비율 50% 이상 (영문 자동 메일 reject)
+        const koreanChars = (line.match(/[가-힣]/g) ?? []).length;
+        if (koreanChars / line.length < 0.3) return false;
+        return true;
+      });
+
+    // 최대 5개 의미 줄을 1개 evidence note로 합침
+    const joined = fallbackLines.slice(0, 5).join(" / ");
+    const sanitized = sanitizeFeedbackBlockText(joined);
+    if (sanitized && sanitized.length >= 16) {
+      notes.push({
+        sourceType: "teaching_feedback_qualitative",
+        text: sanitized,
+        noteIndex: notes.length + 1,
+      });
+    }
+  }
 
   return dedupeFeedbackBlocks(notes);
 }
@@ -2602,48 +2635,138 @@ function buildSlackHighlightRawNote(
   const roundLabel =
     metadata.find((part) => /(회차|차수|일차)/.test(part)) ?? null;
 
-  if (!row.isOpsReport) {
-    return [];
+  // slack ops_report — section parsing (기존)
+  if (row.isOpsReport) {
+    const normalizedSlackText = rawText.replace(/```/g, "\n");
+    const lines = normalizedSlackText
+      .split("\n")
+      .map((line) => stripBulletPrefix(normalizeText(line)))
+      .filter(Boolean);
+    const extractedNotes: string[] = [];
+    let section: "ops" | "content" | "ignore" | null = null;
+
+    for (const line of lines) {
+      if (/(운영\/관리 이슈사항|운영\/관리 이슈|운영진 의견|운영 의견|이슈 사항)/.test(line)) {
+        section = "ops";
+        continue;
+      }
+      if (/(강의내용정리|강의 내용 정리)/.test(line)) {
+        section = "content";
+        continue;
+      }
+      if (
+        /(강의내용 공유드립니다|강의내용 공유 드립니다|강의 내용 공유드립니다|강의 내용 공유 드립니다|공유 드립니다)/.test(
+          line
+        )
+      ) {
+        section = "ignore";
+        continue;
+      }
+
+      if (section !== "ops" && section !== "content") continue;
+      if (isSkippableExtractedLine(line) || isBoilerplateEmailLine(line)) continue;
+      extractedNotes.push(line);
+    }
+
+    // Step 6 fallback: section keyword 매칭 실패 시 본문 중 의미 있는 라인 1~2개라도 추출.
+    if (extractedNotes.length === 0) {
+      for (const line of lines) {
+        if (isSkippableExtractedLine(line) || isBoilerplateEmailLine(line)) continue;
+        if (line.length < 12) continue;
+        extractedNotes.push(line);
+        if (extractedNotes.length >= 2) break;
+      }
+    }
+
+    if (extractedNotes.length === 0) {
+      return [];
+    }
+
+    return extractedNotes.map((text, index) =>
+      buildNote(text, index + 1, clientName, courseName, roundLabel)
+    );
   }
 
-  const normalizedSlackText = rawText.replace(/```/g, "\n");
-  const lines = normalizedSlackText
+  // Step 6: gmail activity (is_ops_report=false). matchedInstructorId 신뢰.
+  // 신중한 추출: 자동 메일/짧은 알림 reject. body 본문에서 강사 관련 의미 줄만.
+  if (row.sourceType === "gmail") {
+    return buildGmailActivityRawNotes(row, instructorId, rawText);
+  }
+
+  return [];
+}
+
+function buildGmailActivityRawNotes(
+  row: ActivitySignalRow,
+  instructorId: string,
+  rawText: string
+): RawOperationalNote[] {
+  const rawPayload = asRecord(row.rawPayload);
+  const subject = typeof rawPayload.subject === "string" ? rawPayload.subject : "";
+  const body =
+    typeof rawPayload.body_excerpt === "string"
+      ? rawPayload.body_excerpt
+      : typeof rawPayload.body === "string"
+        ? rawPayload.body
+        : rawText;
+
+  if (!body || body.length < 50) return [];
+
+  // 자동 알림 메일 reject
+  if (/no-?reply|noreply|automated|메일 수신을 원치 않으|발송된 메일/i.test(body)) {
+    return [];
+  }
+  // forwarded/template-only reject
+  if (/^-+\s*(Original Message|Forwarded message)/im.test(body)) {
+    // forwarded라도 forwarded 메시지 본문 자체는 evidence일 수 있으므로 reject 안 함.
+  }
+
+  const lines = body
     .split("\n")
-    .map((line) => stripBulletPrefix(normalizeText(line)))
+    .map((line) => normalizeText(line))
     .filter(Boolean);
-  const extractedNotes: string[] = [];
-  let section: "ops" | "content" | "ignore" | null = null;
 
-  for (const line of lines) {
-    if (/(운영\/관리 이슈사항|운영\/관리 이슈|운영진 의견|운영 의견|이슈 사항)/.test(line)) {
-      section = "ops";
-      continue;
-    }
-    if (/(강의내용정리|강의 내용 정리)/.test(line)) {
-      section = "content";
-      continue;
-    }
-    if (
-      /(강의내용 공유드립니다|강의내용 공유 드립니다|강의 내용 공유드립니다|강의 내용 공유 드립니다|공유 드립니다)/.test(
-        line
-      )
-    ) {
-      section = "ignore";
-      continue;
-    }
-
-    if (section !== "ops" && section !== "content") continue;
-    if (isSkippableExtractedLine(line) || isBoilerplateEmailLine(line)) continue;
-    extractedNotes.push(line);
-  }
-
-  if (extractedNotes.length === 0) {
-    return [];
-  }
-
-  return extractedNotes.map((text, index) =>
-    buildNote(text, index + 1, clientName, courseName, roundLabel)
+  // boilerplate 라인 제거
+  const meaningful = lines.filter(
+    (line) =>
+      line.length >= 12 &&
+      !isBoilerplateEmailLine(line) &&
+      !isSkippableExtractedLine(line)
   );
+
+  if (meaningful.length === 0) return [];
+
+  // 최대 3개 의미 라인 → 1개 evidence note로 묶음
+  const joined = meaningful.slice(0, 3).join(" / ");
+  const sanitized = sanitizeFeedbackBlockText(joined);
+  if (!sanitized || sanitized.length < 12) return [];
+
+  return [
+    {
+      id: buildStableId(
+        "rawop",
+        instructorId,
+        row.id,
+        "gmail_activity",
+        "1",
+        sanitized
+      ),
+      instructor_id: instructorId,
+      source_type: "gmail_activity",
+      source_ref: {
+        activity_import_item_id: row.id,
+        source_type: row.sourceType,
+        subject: subject || null,
+        is_ops_report: row.isOpsReport,
+      },
+      client_name: null,
+      course_name: null,
+      round_label: null,
+      observed_at: toDateOnly(row.activityAt),
+      raw_text: sanitized,
+      ingested_at: row.createdAt.toISOString(),
+    },
+  ];
 }
 
 function buildRawOperationalNotes(

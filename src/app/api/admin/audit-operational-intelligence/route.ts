@@ -39,6 +39,7 @@ const KNOWN_SOURCE_TYPES = [
   "teaching_feedback_qualitative",
   "teaching_feedback_ops",
   "slack_highlight",
+  "gmail_activity",
 ] as const;
 
 type KnownSourceType = (typeof KNOWN_SOURCE_TYPES)[number];
@@ -49,6 +50,7 @@ interface SourceCounts {
   teaching_feedback_qualitative: number;
   teaching_feedback_ops: number;
   slack_highlight: number;
+  gmail_activity: number;
   other: number;
 }
 
@@ -59,6 +61,7 @@ function emptySourceCounts(): SourceCounts {
     teaching_feedback_qualitative: 0,
     teaching_feedback_ops: 0,
     slack_highlight: 0,
+    gmail_activity: 0,
     other: 0,
   };
 }
@@ -83,6 +86,7 @@ function distinctNonZeroSourceCount(counts: SourceCounts): number {
     (counts.teaching_feedback_qualitative > 0 ? 1 : 0) +
     (counts.teaching_feedback_ops > 0 ? 1 : 0) +
     (counts.slack_highlight > 0 ? 1 : 0) +
+    (counts.gmail_activity > 0 ? 1 : 0) +
     (counts.other > 0 ? 1 : 0)
   );
 }

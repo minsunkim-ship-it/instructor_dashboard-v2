@@ -4024,19 +4024,42 @@ export async function generateOperationalIntelligence(
     instructors,
     OPERATIONAL_INTELLIGENCE_CONCURRENCY,
     async (instructor) => {
-      const { payload, stats, usedLlm } = await buildPayloadForInstructor(
-        instructor,
-        loadedOpsNotes,
-        context
-      );
-      const evidenceHash = buildEvidenceHash(instructor, payload);
-      return {
-        instructor,
-        payload,
-        stats,
-        usedLlm,
-        evidenceHash,
-      };
+      try {
+        const { payload, stats, usedLlm } = await buildPayloadForInstructor(
+          instructor,
+          loadedOpsNotes,
+          context
+        );
+        const evidenceHash = buildEvidenceHash(instructor, payload);
+        return {
+          instructor,
+          payload,
+          stats,
+          usedLlm,
+          evidenceHash,
+        };
+      } catch (error) {
+        // 강사별 generate 실패가 batch 전체 죽이지 않도록 빈 payload로 진행.
+        console.error(
+          `[generateOperationalIntelligence] payload build failed for ${instructor.id} (${instructor.name}):`,
+          error instanceof Error ? error.message : error
+        );
+        const payload = createEmptyOperationalIntelligencePayload();
+        const evidenceHash = buildEvidenceHash(instructor, payload);
+        return {
+          instructor,
+          payload,
+          stats: {
+            curatedOpsNoteCount: 0,
+            meaningfulFeedbackCount: 0,
+            importedFeedbackNoteCount: 0,
+            slackHighlightCount: 0,
+            llmAppliedCount: 0,
+          } as GeneratorStats,
+          usedLlm: false,
+          evidenceHash,
+        };
+      }
     }
   );
 

@@ -30,9 +30,16 @@ export async function POST(request: NextRequest) {
   const registryKey = pickString(sourceRef, "registry_key");
   await prisma.satisfactionRecord.delete({ where: { id: rec.id } });
   if (registryKey) {
+    // v24-5: rejected status로 영구 차단 (resolver가 재매칭 시도 안 함)
+    // 운영자가 backoffice에서 수동 검토 가능
+    const permanentReject = request.nextUrl.searchParams.get("permanent_reject") === "1";
     await prisma.satisfactionReviewRegistry.update({
       where: { registryKey },
-      data: { matchStatus: "pending", resolvedInstructorId: null, resolutionBasis: `rollback_misattributed|cleared:${new Date().toISOString()}` },
+      data: {
+        matchStatus: permanentReject ? "rejected" : "pending",
+        resolvedInstructorId: null,
+        resolutionBasis: `rollback_misattributed|cleared:${new Date().toISOString()}|permanent_reject=${permanentReject}`,
+      },
     });
   }
   await refreshSatisfactionAggregates([rec.instructorDbId]);

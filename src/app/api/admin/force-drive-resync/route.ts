@@ -1,7 +1,9 @@
 /**
- * POST /api/admin/force-drive-resync?startDate=2024-01-01&endDate=2026-12-31
- * Drive satisfaction collector를 명시 기간으로 강제 호출 → normalize → applySatisfactionImports.
- * Incremental checkpoint 무시 — full re-collect.
+ * POST /api/admin/force-drive-resync
+ *
+ * mode=list (dry_run, fast): Drive 검색 list만, sheets content fetch 안 함
+ * mode=fetch&file_ids=id1,id2: 특정 file_id 만 collect (sheets read + normalize + apply)
+ * mode=full_apply&startDate=...&endDate=...: 전체 재수집 (느림, Cloudflare timeout 위험)
  *
  * 인증: CRON_SECRET
  */
@@ -11,59 +13,130 @@ import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
 import { collectSatisfactionFromDrive } from "@/lib/pipeline/satisfaction-drive-collector";
 import { normalizeSatisfactionDriveResults } from "@/lib/pipeline/satisfaction-drive-normalizer";
 import { applySatisfactionImports } from "@/lib/pipeline/satisfaction-applier";
+import { exchangeGoogleUserAccessToken, googleApiGet } from "@/lib/google-user-oauth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+
+interface DriveFile {
+  id: string;
+  name: string;
+  mimeType?: string;
+  createdTime?: string;
+  modifiedTime?: string;
+}
+interface ListResp {
+  files?: DriveFile[];
+  nextPageToken?: string;
+}
+
+async function listDriveFiles(token: string, q: string, maxPages = 50): Promise<DriveFile[]> {
+  const all: DriveFile[] = [];
+  let pageToken: string | undefined;
+  for (let i = 0; i < maxPages; i += 1) {
+    const params: Record<string, string> = {
+      q,
+      pageSize: "100",
+      fields: "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime)",
+      orderBy: "createdTime desc",
+      corpora: "allDrives",
+      includeItemsFromAllDrives: "true",
+      supportsAllDrives: "true",
+    };
+    if (pageToken) params.pageToken = pageToken;
+    const resp = await googleApiGet<ListResp>(token, "https://www.googleapis.com/drive/v3", "/files", params);
+    for (const f of resp.files ?? []) all.push(f);
+    if (!resp.nextPageToken) break;
+    pageToken = resp.nextPageToken;
+  }
+  return all;
+}
 
 export async function POST(request: NextRequest) {
   if (!isValidCronSecret(request.headers.get(CRON_SECRET_HEADER))) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
+  const mode = request.nextUrl.searchParams.get("mode") ?? "list";
   const startDate = request.nextUrl.searchParams.get("startDate") ?? "2024-01-01";
   const endDate = request.nextUrl.searchParams.get("endDate") ?? new Date().toISOString().slice(0, 10);
-  const applyMode = request.nextUrl.searchParams.get("apply") === "1";
+  const fileIdsParam = request.nextUrl.searchParams.get("file_ids") ?? "";
   const startedAt = Date.now();
 
-  const collected = await collectSatisfactionFromDrive({
-    startDate,
-    endDate,
-    maxPages: 100,
-    pageSize: 100,
-  });
-
-  const filesFound = collected.totalFilesFound;
-  const filesNormalized = collected.files.length;
-
-  if (!applyMode) {
+  if (mode === "list") {
+    const token = await exchangeGoogleUserAccessToken();
+    const q = [
+      "name contains '만족도'",
+      "trashed = false",
+      "mimeType = 'application/vnd.google-apps.spreadsheet'",
+      `createdTime >= '${startDate}T00:00:00'`,
+      `createdTime <= '${endDate}T23:59:59'`,
+    ].join(" and ");
+    const files = await listDriveFiles(token, q);
     return NextResponse.json({
       ok: true,
-      mode: "dry_run",
+      mode: "list",
       durationMs: Date.now() - startedAt,
       startDate,
       endDate,
-      files_found_in_drive: filesFound,
-      files_normalized_candidate: filesNormalized,
-      sample_files: collected.files.slice(0, 10).map((f) => ({
-        id: f.fileId,
-        name: f.fileName,
-      })),
-      note: "dry_run — apply=1 로 호출하면 normalize + applySatisfactionImports 실행됨",
+      total_files: files.length,
+      sample: files.slice(0, 20).map((f) => ({ id: f.id, name: f.name, created: f.createdTime })),
     });
   }
 
-  const normalized = await normalizeSatisfactionDriveResults(collected);
-  const runId = `force-drive-resync-${Date.now()}`;
-  const importApplyResult = await applySatisfactionImports({ runId, items: normalized.items });
+  if (mode === "fetch") {
+    const fileIds = fileIdsParam.split(",").map((s) => s.trim()).filter(Boolean);
+    if (fileIds.length === 0) {
+      return NextResponse.json({ ok: false, error: "file_ids required" }, { status: 400 });
+    }
+    if (fileIds.length > 30) {
+      return NextResponse.json({ ok: false, error: "max 30 file_ids per call" }, { status: 400 });
+    }
+    // 짧은 startDate~endDate로 좁혀서 collect, 그 후 file_id 필터링
+    // collector 자체에 file_id 직접 옵션 없어서 임시: createdTime 범위로 collect 후 filter
+    const collected = await collectSatisfactionFromDrive({
+      startDate,
+      endDate,
+      maxPages: 10,
+      pageSize: 100,
+    });
+    const filteredFiles = collected.files.filter((f) => fileIds.includes(f.fileId));
+    const normalized = await normalizeSatisfactionDriveResults({
+      ...collected,
+      files: filteredFiles,
+    });
+    const runId = `force-drive-resync-${Date.now()}`;
+    const importApplyResult = await applySatisfactionImports({ runId, items: normalized.items });
+    return NextResponse.json({
+      ok: true,
+      mode: "fetch",
+      durationMs: Date.now() - startedAt,
+      file_ids_requested: fileIds,
+      file_ids_found_in_drive: filteredFiles.length,
+      normalized_items: normalized.items.length,
+      apply_summary: importApplyResult,
+    });
+  }
 
-  return NextResponse.json({
-    ok: true,
-    mode: "apply",
-    durationMs: Date.now() - startedAt,
-    startDate,
-    endDate,
-    files_found_in_drive: filesFound,
-    files_normalized: filesNormalized,
-    normalized_items: normalized.items.length,
-    apply_summary: importApplyResult,
-  });
+  if (mode === "full_apply") {
+    const collected = await collectSatisfactionFromDrive({
+      startDate,
+      endDate,
+      maxPages: 100,
+      pageSize: 100,
+    });
+    const normalized = await normalizeSatisfactionDriveResults(collected);
+    const runId = `force-drive-resync-${Date.now()}`;
+    const importApplyResult = await applySatisfactionImports({ runId, items: normalized.items });
+    return NextResponse.json({
+      ok: true,
+      mode: "full_apply",
+      durationMs: Date.now() - startedAt,
+      files_found: collected.totalFilesFound,
+      files_normalized: collected.files.length,
+      normalized_items: normalized.items.length,
+      apply_summary: importApplyResult,
+    });
+  }
+
+  return NextResponse.json({ ok: false, error: `unknown mode: ${mode}` }, { status: 400 });
 }

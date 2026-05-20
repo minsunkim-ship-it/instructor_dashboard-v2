@@ -100,7 +100,11 @@ export async function collectSatisfactionFromDrive(options?: {
         const file = await apiGetWithRetry<DriveFileListItem>(
           accessToken,
           DRIVE_API_BASE,
-          `/files/${fid}?supportsAllDrives=true&fields=id,name,mimeType,createdTime,modifiedTime`
+          `/files/${encodeURIComponent(fid)}`,
+          {
+            supportsAllDrives: "true",
+            fields: "id,name,mimeType,createdTime,modifiedTime",
+          }
         );
         allFiles.push(file);
       } catch {

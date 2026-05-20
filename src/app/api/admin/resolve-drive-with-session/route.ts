@@ -387,6 +387,42 @@ export async function GET(request: NextRequest) {
 
     // γ-A1-v8 신호 0: title에 강사명 명시 → 즉시 단일 강사 매칭 (가장 강한 신호)
     if (titleInstructorName) {
+      // v24-3 P0 protected gate: 박상훈/유종훈/김정수A 자동매칭 strict
+      const P0_NULL_PROTECTED_TITLE = new Set(["박상훈"]);
+      const P0_HIGH_AVG_PROTECTED_TITLE = new Set(["유종훈", "김정수A"]);
+      const regAvgScoreTitle = reg.avgScore !== null ? Number(reg.avgScore) : null;
+      if (P0_NULL_PROTECTED_TITLE.has(titleInstructorName)) {
+        classifications.push({
+          registryKey: reg.registryKey,
+          company: reg.companyName,
+          course: reg.courseName,
+          candidate: reg.candidateName,
+          response_count: reg.responseCount,
+          response_date: responseDateStr,
+          course_session: courseSession,
+          status: "no_company",
+          matched_instructors: [],
+        });
+        continue;
+      }
+      if (
+        P0_HIGH_AVG_PROTECTED_TITLE.has(titleInstructorName) &&
+        regAvgScoreTitle !== null &&
+        regAvgScoreTitle < 5
+      ) {
+        classifications.push({
+          registryKey: reg.registryKey,
+          company: reg.companyName,
+          course: reg.courseName,
+          candidate: reg.candidateName,
+          response_count: reg.responseCount,
+          response_date: responseDateStr,
+          course_session: courseSession,
+          status: "no_company",
+          matched_instructors: [],
+        });
+        continue;
+      }
       const inst = lookupInstructor(titleInstructorName);
       if (inst) {
         classifications.push({

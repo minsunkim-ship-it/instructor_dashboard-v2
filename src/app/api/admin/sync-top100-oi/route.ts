@@ -30,13 +30,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
-  let body: { dryRun?: boolean; top?: number } = {};
+  let body: {
+    dryRun?: boolean;
+    top?: number;
+    batchSize?: number;
+  } = {};
   try {
     body = (await request.json()) as typeof body;
   } catch {}
 
   const top = typeof body.top === "number" && body.top > 0 ? body.top : 100;
   const dryRun = body.dryRun === true;
+  const batchSize =
+    typeof body.batchSize === "number" && body.batchSize > 0
+      ? body.batchSize
+      : undefined;
 
   // 강사 list endpoint와 동일: 실습코치 제외, score desc.
   const visibleFilter: import("@prisma/client").Prisma.InstructorWhereInput = {
@@ -94,6 +102,7 @@ export async function POST(request: NextRequest) {
       new_entry_names: topInst
         .filter((i) => newEntryIds.includes(i.id))
         .map((i) => i.name),
+      stale_ids: staleIds,
     });
   }
 
@@ -107,9 +116,13 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  // batchSize 지정 시 첫 batchSize명만 처리 — Cloudflare 100s timeout 회피.
+  const toProcess = batchSize ? staleIds.slice(0, batchSize) : staleIds;
+  const remaining = batchSize ? staleIds.slice(batchSize) : [];
+
   const startedAt = Date.now();
   const result = await generateOperationalIntelligence({
-    instructorIds: staleIds,
+    instructorIds: toProcess,
   });
   const elapsedMs = Date.now() - startedAt;
 
@@ -120,7 +133,8 @@ export async function POST(request: NextRequest) {
     elapsed_ms: elapsedMs,
     current_prompt_version: CURRENT_OPERATIONAL_INTELLIGENCE_PROMPT_VERSION,
     top_count: topIds.length,
-    regenerated_count: staleIds.length,
+    regenerated_count: toProcess.length,
+    remaining_count: remaining.length,
     new_entry_count: newEntryIds.length,
     up_to_date_count: upToDateIds.length,
     updated: result.updatedCount,

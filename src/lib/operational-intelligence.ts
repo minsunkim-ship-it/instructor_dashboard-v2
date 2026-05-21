@@ -2503,7 +2503,21 @@ async function applyLlmClassificationPatches(
       item.classified.auto_confidence === "low"
   );
 
-  const patches = await classifyNotesWithLlm(candidates);
+  // 429 등 LLM 실패는 catch — rule-based 분류 결과를 그대로 사용. raw evidence는 보존.
+  let patches: Map<string, LlmClassificationPatch>;
+  try {
+    patches = await classifyNotesWithLlm(candidates);
+  } catch (error) {
+    console.error(
+      `[applyLlmClassificationPatches] LLM classify failed, falling back to rule-based:`,
+      error instanceof Error ? error.message : error
+    );
+    return {
+      classifications,
+      llmAppliedCount: 0,
+      usedLlm: false,
+    };
+  }
   if (patches.size === 0) {
     return {
       classifications,

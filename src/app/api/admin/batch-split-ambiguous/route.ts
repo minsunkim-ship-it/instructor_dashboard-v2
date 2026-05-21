@@ -70,6 +70,15 @@ function parseRowTimestamp(value: string | null | undefined): Date | null {
   }
   return null;
 }
+function findTimestampColumnIndex(headerRow: string[]): number {
+  for (let i = 0; i < headerRow.length; i += 1) {
+    const cell = headerRow[i]?.trim() ?? "";
+    if (/(타임스탬프|Timestamp|시작\s*시간|Start\s*time|완료\s*시간|Completion\s*time)/i.test(cell)) {
+      return i;
+    }
+  }
+  return 0;
+}
 function findScoreColumnIndex(headerRow: string[]): number {
   for (let i = 0; i < headerRow.length; i += 1) {
     if (/강사.*만족/.test(headerRow[i] ?? "")) return i;
@@ -203,13 +212,22 @@ export async function POST(request: NextRequest) {
       skipped.push({ registry_key: reg.registryKey, reason: "no_score_column" });
       continue;
     }
+    const tsIdx = findTimestampColumnIndex(header);
 
     interface Resp { ts: Date; score: number }
     const responses: Resp[] = [];
     for (let i = 1; i < sheet.rows.length; i += 1) {
       const row = sheet.rows[i];
       if (!row) continue;
-      const ts = parseRowTimestamp(row[0]);
+      let ts = parseRowTimestamp(row[tsIdx]);
+      // fallback: 다른 column에서 timestamp 찾기
+      if (!ts) {
+        for (let j = 0; j < row.length; j += 1) {
+          if (j === tsIdx) continue;
+          ts = parseRowTimestamp(row[j]);
+          if (ts) break;
+        }
+      }
       if (!ts) continue;
       const score = parseScore(row[scoreIdx] ?? "");
       if (score === null) continue;

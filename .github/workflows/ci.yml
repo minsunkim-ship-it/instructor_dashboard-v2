@@ -37,3 +37,19 @@ jobs:
 
       - name: Test manual satisfaction input parser
         run: node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-manual-satisfaction-input.ts
+
+      - name: Trigger Coolify deploy
+        if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          COOLIFY_DEPLOY_HOOK: ${{ secrets.COOLIFY_DEPLOY_HOOK }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          if [ -z "$COOLIFY_DEPLOY_HOOK" ]; then
+            echo "COOLIFY_DEPLOY_HOOK secret not set — skipping explicit deploy trigger (relying on Coolify auto-deploy webhook)"
+            exit 0
+          fi
+          if [ -n "$COOLIFY_API_TOKEN" ]; then
+            curl -fsSL -X GET -H "Authorization: Bearer $COOLIFY_API_TOKEN" "$COOLIFY_DEPLOY_HOOK" || echo "Coolify trigger failed (non-fatal)"
+          else
+            curl -fsSL "$COOLIFY_DEPLOY_HOOK" || echo "Coolify trigger failed (non-fatal)"
+          fi

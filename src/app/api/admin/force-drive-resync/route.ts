@@ -111,8 +111,10 @@ export async function POST(request: NextRequest) {
               sheets: f.sheets.slice(0, 5).map((s) => ({
                 title: s.title,
                 row_count: s.rows.length,
-                header: s.rows[0]?.slice(0, 10) ?? [],
-                sample_row1: s.rows[1]?.slice(0, 10) ?? [],
+                header_full_length: s.rows[0]?.length ?? 0,
+                header: s.rows[0] ?? [],
+                sample_row1: s.rows[1] ?? [],
+                sample_row2: s.rows[2] ?? [],
               })),
             }))
           : undefined;

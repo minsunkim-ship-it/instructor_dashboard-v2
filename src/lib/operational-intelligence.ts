@@ -28,7 +28,9 @@ const STORAGE_PROJECTION_VERSION = "ops-intel-storage-v2";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_OPERATIONAL_INTELLIGENCE_MODEL = "gpt-5.2";
 const LLM_BATCH_SIZE = 40;
-const OPERATIONAL_INTELLIGENCE_CONCURRENCY = 8;
+// OpenAI 동시 호출 rate limit 회피. 8명 concurrent → batch 20 chunk 호출 시 약 8 LLM call 동시 → 429 빈번.
+// 3으로 줄여 안전. 시간 trade-off: 100명 처리 약 4분 (chunk 20*5).
+const OPERATIONAL_INTELLIGENCE_CONCURRENCY = 3;
 const BEHAVIORAL_SUMMARY_NOTE_LIMIT = 40;
 
 const DATA_GAP_KEYWORDS = [
@@ -2436,28 +2438,40 @@ async function classifyNotesWithLlm(
   const batches = chunkArray(notes, LLM_BATCH_SIZE);
 
   for (const batch of batches) {
-    const response = await fetch(config.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model,
-        reasoning: { effort: "low" },
-        input: buildLlmClassificationPrompt(batch),
-        text: {
-          format: {
-            type: "json_schema",
-            name: "operational_intelligence_classification",
-            schema: getLlmClassificationSchema(),
-          },
+    // 429/5xx retry with exponential backoff. OpenAI 동시 호출 너무 많으면 RL 발생.
+    let response: Response | null = null;
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      response = await fetch(config.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`,
         },
-      }),
-    });
+        body: JSON.stringify({
+          model: config.model,
+          reasoning: { effort: "low" },
+          input: buildLlmClassificationPrompt(batch),
+          text: {
+            format: {
+              type: "json_schema",
+              name: "operational_intelligence_classification",
+              schema: getLlmClassificationSchema(),
+            },
+          },
+        }),
+      });
+      if (response.ok) break;
+      if (response.status !== 429 && response.status < 500) break;
+      if (attempt === maxAttempts) break;
+      const backoffMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s, 8s
+      await sleep(backoffMs);
+    }
 
-    if (!response.ok) {
-      throw new Error(`operational intelligence LLM failed: ${response.status}`);
+    if (!response || !response.ok) {
+      throw new Error(
+        `operational intelligence LLM failed: ${response?.status ?? "no-response"}`
+      );
     }
 
     const body = (await response.json()) as Record<string, unknown>;
@@ -4044,6 +4058,7 @@ export async function generateOperationalIntelligence(
           stats,
           usedLlm,
           evidenceHash,
+          buildFailed: false,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -4071,6 +4086,7 @@ export async function generateOperationalIntelligence(
           } as GeneratorStats,
           usedLlm: false,
           evidenceHash,
+          buildFailed: true,
         };
       }
     }
@@ -4086,6 +4102,8 @@ export async function generateOperationalIntelligence(
   );
 
   const upsertCandidates = payloads.filter((entry) => {
+    // buildFailed (LLM 429 등): DB 덮어쓰지 않음. 기존 OI 보존.
+    if (entry.buildFailed) return false;
     const existing = existingByInstructorId.get(entry.instructor.id);
     if (!existing) return true;
     if (existing.evidenceHash !== entry.evidenceHash) return true;

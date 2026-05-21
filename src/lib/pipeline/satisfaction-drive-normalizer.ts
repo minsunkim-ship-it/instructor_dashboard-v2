@@ -326,14 +326,15 @@ function isFormsResponseSheet(headerRow: string[]): boolean {
   // - 또는 헤더 전체에 "만족도" / "강사 만족도" / "교육 만족도" 같은 키워드 포함
   if (/^([Q]?\d+[-.]\d+|\d+\.)/i.test(first)) {
     const headerText = headerRow.join(" ");
-    if (/(만족도|강사|교육 평가|평가|점수)/i.test(headerText)) return true;
+    if (/(만족|강사|교육 평가|평가|점수)/i.test(headerText)) return true;
   }
   // v24-7 Drive: MS Forms 응답시트 (Id, 시작 시간, 완료 시간, 전자 메일, 이름, ...)
-  // 첫 컬럼 "Id" + 헤더 전체에 "시작 시간"/"완료 시간"/"Start time"/"Completion time" + 만족도 키워드
+  // 첫 컬럼 "Id" + 헤더 전체에 "시작 시간"/"완료 시간"/"Start time"/"Completion time" + 만족 키워드
+  // (v24-9: "만족하십니까?" 같은 어구 매칭 위해 "만족도" → "만족")
   if (/^id$/i.test(first)) {
     const headerText = headerRow.join(" ");
     const hasFormsMarker = /(시작\s*시간|완료\s*시간|Start\s*time|Completion\s*time)/i.test(headerText);
-    const hasSatisfaction = /(만족도|강사|교육 평가|평가|점수)/i.test(headerText);
+    const hasSatisfaction = /(만족|강사|교육 평가|평가|점수)/i.test(headerText);
     if (hasFormsMarker && hasSatisfaction) return true;
   }
   return false;

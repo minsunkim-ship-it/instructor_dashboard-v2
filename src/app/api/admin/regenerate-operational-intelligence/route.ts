@@ -88,5 +88,6 @@ export async function POST(request: NextRequest) {
     requested_ids: resolvedIds.length,
     updated: result.updatedCount,
     source_counts: result.sourceCounts,
+    payload_errors: result.payloadErrors ?? [],
   });
 }

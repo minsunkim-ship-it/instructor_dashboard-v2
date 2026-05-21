@@ -300,6 +300,12 @@ export interface GenerateOperationalIntelligenceResult {
     rawOperationalNotes: number;
     humanFollowups: number;
   };
+  /** 강사별 build 실패 정보 (try/catch fallback 디버깅용). */
+  payloadErrors?: Array<{
+    instructorId: string;
+    name: string;
+    message: string;
+  }>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -4020,6 +4026,7 @@ export async function generateOperationalIntelligence(
   );
   const llmConfig = getOperationalIntelligenceLlmConfig();
 
+  const payloadErrors: Array<{ instructorId: string; name: string; message: string }> = [];
   const payloads = await mapWithConcurrency(
     instructors,
     OPERATIONAL_INTELLIGENCE_CONCURRENCY,
@@ -4039,10 +4046,16 @@ export async function generateOperationalIntelligence(
           evidenceHash,
         };
       } catch (error) {
-        // 강사별 generate 실패가 batch 전체 죽이지 않도록 빈 payload로 진행.
+        const message = error instanceof Error ? error.message : String(error);
+        payloadErrors.push({
+          instructorId: instructor.id,
+          name: instructor.name,
+          message,
+        });
         console.error(
           `[generateOperationalIntelligence] payload build failed for ${instructor.id} (${instructor.name}):`,
-          error instanceof Error ? error.message : error
+          message,
+          error instanceof Error ? error.stack : undefined
         );
         const payload = createEmptyOperationalIntelligencePayload();
         const evidenceHash = buildEvidenceHash(instructor, payload);
@@ -4133,6 +4146,7 @@ export async function generateOperationalIntelligence(
       rawOperationalNotes,
       humanFollowups,
     },
+    payloadErrors,
   };
 }
 

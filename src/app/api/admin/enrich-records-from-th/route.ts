@@ -62,19 +62,37 @@ export async function POST(request: NextRequest) {
     const hi = new Date(r.responseDate);
     hi.setUTCDate(hi.getUTCDate() + windowDays);
 
-    const ths = await prisma.teachingHistory.findMany({
+    // 우선 1순위: responseDate가 TH startDate~endDate 사이에 들어가는 TH (정확 매칭)
+    const exactTHs = await prisma.teachingHistory.findMany({
       where: {
         instructorDbId: r.instructorDbId,
         companyName: { not: null },
-        OR: [
-          { startDate: { gte: lo, lte: hi } },
-          { endDate: { gte: lo, lte: hi } },
-          { AND: [{ startDate: { lte: r.responseDate } }, { endDate: { gte: r.responseDate } }] },
-        ],
+        startDate: { lte: r.responseDate },
+        endDate: { gte: r.responseDate },
       },
-      select: { companyName: true },
+      select: { companyName: true, startDate: true, endDate: true },
     });
-    const companies = Array.from(new Set(ths.map((t) => (t.companyName ?? "").trim()).filter(Boolean)));
+    const exactCompanies = Array.from(new Set(exactTHs.map((t) => (t.companyName ?? "").trim()).filter(Boolean)));
+
+    let companies: string[];
+    if (exactCompanies.length > 0) {
+      companies = exactCompanies;
+    } else {
+      // 2순위: ±N일 window 내 TH (응답 지연 또는 sheet 생성 지연)
+      const windowTHs = await prisma.teachingHistory.findMany({
+        where: {
+          instructorDbId: r.instructorDbId,
+          companyName: { not: null },
+          OR: [
+            { startDate: { gte: lo, lte: hi } },
+            { endDate: { gte: lo, lte: hi } },
+          ],
+        },
+        select: { companyName: true },
+      });
+      companies = Array.from(new Set(windowTHs.map((t) => (t.companyName ?? "").trim()).filter(Boolean)));
+    }
+    const ths = exactTHs;
     if (companies.length === 1) {
       plans.push({
         record_id: r.id,

@@ -2320,35 +2320,45 @@ export async function summarizeBehavioralIntelligenceFromEvidence(args: {
   }
 
   try {
-    const response = await fetch(config.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model,
-        reasoning: { effort: "low" },
-        input: buildBehavioralSummaryPrompt({
-          notes,
-          humanFollowups: args.humanFollowups,
-          signals: args.signals,
-          riskPatterns: args.riskPatterns,
-          strengthPatterns: args.strengthPatterns,
-          dataRichness: args.dataRichness,
-          confidence: args.confidence,
-        }),
-        text: {
-          format: {
-            type: "json_schema",
-            name: "operational_behavioral_summary",
-            schema: getBehavioralSummarySchema(),
-          },
+    // 429/5xx exponential backoff retry (classifyNotesWithLlm와 동일 패턴).
+    let response: Response | null = null;
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      response = await fetch(config.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`,
         },
-      }),
-    });
+        body: JSON.stringify({
+          model: config.model,
+          reasoning: { effort: "low" },
+          input: buildBehavioralSummaryPrompt({
+            notes,
+            humanFollowups: args.humanFollowups,
+            signals: args.signals,
+            riskPatterns: args.riskPatterns,
+            strengthPatterns: args.strengthPatterns,
+            dataRichness: args.dataRichness,
+            confidence: args.confidence,
+          }),
+          text: {
+            format: {
+              type: "json_schema",
+              name: "operational_behavioral_summary",
+              schema: getBehavioralSummarySchema(),
+            },
+          },
+        }),
+      });
+      if (response.ok) break;
+      if (response.status !== 429 && response.status < 500) break;
+      if (attempt === maxAttempts) break;
+      const backoffMs = 1000 * Math.pow(2, attempt - 1);
+      await sleep(backoffMs);
+    }
 
-    if (!response.ok) {
+    if (!response || !response.ok) {
       return {
         summary: buildFallbackBehavioralSummary({
           notes,

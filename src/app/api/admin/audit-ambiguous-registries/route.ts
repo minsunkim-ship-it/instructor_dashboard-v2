@@ -115,7 +115,7 @@ export async function GET(request: NextRequest) {
     } else {
       buckets.no_candidate += 1;
     }
-    if (samples.length < 30 && names.size > 0) {
+    if (samples.length < 60 && names.size > 0) {
       samples.push({
         company: reg.companyName,
         course: reg.courseName?.slice(0, 60) ?? null,

@@ -36,6 +36,22 @@ const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선�
 const P0_NULL_PROTECTED = new Set(["박상훈"]);
 const P0_HIGH_AVG_PROTECTED = new Set(["유종훈", "김정수A"]);
 
+// 회사명이 강좌/주제명인 경우 부정확 매칭 위험 → 자동 매칭 차단
+const GENERIC_COMPANY_BLOCKLIST = new Set([
+  "원데이", "GenAI 활용과정", "디자인씽킹", "파이썬", "엑셀",
+  "AI", "생성형 AI", "프롬프트 엔지니어링", "데이터 분석",
+  "프로그래밍", "코딩", "마케팅", "기획", "보고서",
+  "공개형 교육", "공개교육", "특강", "워크숍",
+]);
+function isGenericCompany(name: string | null | undefined): boolean {
+  if (!name) return true;
+  const trimmed = name.trim();
+  if (GENERIC_COMPANY_BLOCKLIST.has(trimmed)) return true;
+  // 한글 회사명 2자 미만, generic 키워드만 포함
+  if (trimmed.length < 3) return true;
+  return false;
+}
+
 export async function POST(request: NextRequest) {
   if (!isValidCronSecret(request.headers.get(CRON_SECRET_HEADER))) {
     return NextResponse.json({ ok: false }, { status: 401 });
@@ -94,6 +110,11 @@ export async function POST(request: NextRequest) {
     const effectiveCompany = normalizeCompanyWithAlias(reg.companyName ?? "");
     if (!dateStr || effectiveCompany.length < 2) {
       skipped.push({ registry_key: reg.registryKey, reason: "no_date_or_company" });
+      continue;
+    }
+    // generic 회사명 차단 (원데이/디자인씽킹/파이썬 등)
+    if (isGenericCompany(reg.companyName)) {
+      skipped.push({ registry_key: reg.registryKey, reason: "generic_company" });
       continue;
     }
     const responseDate = new Date(dateStr);

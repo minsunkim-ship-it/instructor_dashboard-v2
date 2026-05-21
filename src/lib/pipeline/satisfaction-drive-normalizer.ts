@@ -392,6 +392,18 @@ function normalizeFormsSheet(args: {
       const m = scoreRaw.match(/^(\d+(?:\.\d+)?)/);
       if (m) parsed = Number(m[1]);
     }
+    // v24-12 Drive: MS Forms Likert text 응답 매핑 (매우만족/만족/보통/불만족/매우불만족)
+    if (!Number.isFinite(parsed)) {
+      const cleaned = scoreRaw.replace(/\s+/g, "");
+      const likertMap: Record<string, number> = {
+        "매우만족": 5, "매우만족함": 5, "매우만족합니다": 5, "아주만족": 5, "매우그렇다": 5,
+        "만족": 4, "만족함": 4, "만족합니다": 4, "조금만족": 4, "대체로만족": 4, "그렇다": 4,
+        "보통": 3, "보통이다": 3, "보통입니다": 3, "그저그렇다": 3,
+        "불만족": 2, "조금불만족": 2, "불만족함": 2, "아니다": 2, "조금아니다": 2,
+        "매우불만족": 1, "매우아니다": 1, "전혀만족하지않음": 1, "전혀아니다": 1,
+      };
+      if (likertMap[cleaned] !== undefined) parsed = likertMap[cleaned];
+    }
     if (!Number.isFinite(parsed) || parsed < 1) continue;
     scores.push(parsed);
 

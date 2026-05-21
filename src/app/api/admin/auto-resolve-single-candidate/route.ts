@@ -121,16 +121,17 @@ export async function POST(request: NextRequest) {
     const responseDate = new Date(dateStr);
     const responseMs = responseDate.getTime();
 
-    // v24-16: narrow → wide window escalation
-    // ±1일 → ±3일 → ±7일 → ±14일 순서로 시도, 가장 좁은 window에서 단일 강사면 strong_single
-    const windowDays = [1, 3, 7, 14];
+    // v24-17: narrow window single + wide window verification
+    // ±1일 → ±3일 → ±7일 순서로 시도, 가장 좁은 window에서 단일 강사 식별 시
+    // **±14일 wide window에서도 그 강사만 명시되거나 다른 강사 동시 없음** 추가 검증
+    const windowDays = [1, 3, 7];
     let chosenName: string | null = null;
     let chosenSample = "";
     let chosenCount = 0;
     let chosenWindow = 0;
-    for (const wd of windowDays) {
-      const wMs = wd * 86400 * 1000;
-      const candidateCounts = new Map<string, { count: number; sample: string }>();
+    let allWideCandidates: string[] = [];
+    function collectCandidates(wMs: number): Map<string, { count: number; sample: string }> {
+      const counts = new Map<string, { count: number; sample: string }>();
       for (const m of ops) {
         if (Math.abs(m.ts.getTime() - responseMs) > wMs) continue;
         const normText = normalizeCompanyWithAlias(m.text);
@@ -138,32 +139,52 @@ export async function POST(request: NextRequest) {
         const matches = Array.from(m.text.matchAll(INSTRUCTOR_REGEX)).map((mm) => mm[1]);
         for (const n of matches) {
           if (!instByName.has(n)) continue;
-          const e = candidateCounts.get(n) ?? { count: 0, sample: "" };
+          const e = counts.get(n) ?? { count: 0, sample: "" };
           e.count += 1;
           if (!e.sample) e.sample = m.text.slice(0, 150);
-          candidateCounts.set(n, e);
+          counts.set(n, e);
         }
       }
-      if (candidateCounts.size === 1) {
-        const [n, info] = Array.from(candidateCounts.entries())[0];
+      return counts;
+    }
+    // ±14일 wide candidates (모든 강사 후보) 미리 수집
+    const wideCounts = collectCandidates(14 * 86400 * 1000);
+    allWideCandidates = Array.from(wideCounts.keys());
+
+    for (const wd of windowDays) {
+      const wMs = wd * 86400 * 1000;
+      const counts = collectCandidates(wMs);
+      if (counts.size === 1) {
+        const [n, info] = Array.from(counts.entries())[0];
         chosenName = n;
         chosenSample = info.sample;
         chosenCount = info.count;
         chosenWindow = wd;
         break;
       }
-      // size === 0 → 다음 wide window 시도. size > 1 → 같은 회사 동일 윈도우 여러 강사 → 즉시 ambiguous.
-      if (candidateCounts.size > 1 && wd === 1) {
-        // ±1일에 이미 ambiguous면 진짜 동시 강의. skip.
+      if (counts.size > 1 && wd === 1) {
         skipped.push({ registry_key: reg.registryKey, reason: "ambiguous_within_1d" });
         chosenName = null;
         break;
       }
     }
     if (!chosenName) {
-      // 모든 window에서 single 못 찾음
       skipped.push({ registry_key: reg.registryKey, reason: "no_single_in_any_window" });
       continue;
+    }
+    // v24-17: ±14일 wide window 검증 — 다른 강사도 명시되어 있다면 ambiguous
+    // 단, narrow 강사가 wide에서 >= 70% dominant이면 통과
+    if (allWideCandidates.length > 1) {
+      const chosenWideCount = wideCounts.get(chosenName)?.count ?? 0;
+      const totalWideOps = Array.from(wideCounts.values()).reduce((a, b) => a + b.count, 0);
+      const dominanceRatio = totalWideOps > 0 ? chosenWideCount / totalWideOps : 0;
+      if (dominanceRatio < 0.7) {
+        skipped.push({
+          registry_key: reg.registryKey,
+          reason: `wide_ambiguous_others:${allWideCandidates.filter((n) => n !== chosenName).join(",")}`,
+        });
+        continue;
+      }
     }
     const name = chosenName;
     const info = { count: chosenCount, sample: chosenSample };

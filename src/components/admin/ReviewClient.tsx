@@ -84,6 +84,25 @@ interface SuspectResponse {
   error?: string;
 }
 
+// v24-13: th_record_gap 큰 강사 (매칭 누락 의심)
+interface InstructorGap {
+  instructor_id: string;
+  instructor_name: string;
+  record_count: number;
+  avg_score: number | null;
+  th_count_recent: number;
+  gap: number;
+  th_companies: string[];
+  record_companies: string[];
+  missing_companies: string[];
+}
+interface GapsResponse {
+  ok: boolean;
+  total?: number;
+  instructors?: InstructorGap[];
+  error?: string;
+}
+
 const LIMIT = 25;
 
 function sourceTypeLabel(t: string): string {
@@ -111,11 +130,16 @@ export default function ReviewClient() {
   const [suspectData, setSuspectData] = useState<SuspectResponse | null>(null);
   const [suspectOpen, setSuspectOpen] = useState(false);
   const [suspectLoading, setSuspectLoading] = useState(false);
+  // v24-13: th_record_gap 강사 큐
+  const [gapsData, setGapsData] = useState<GapsResponse | null>(null);
+  const [gapsOpen, setGapsOpen] = useState(false);
+  const [gapsLoading, setGapsLoading] = useState(false);
 
   const fetchSuspect = useCallback(async () => {
     setSuspectLoading(true);
     try {
-      const res = await fetch("/api/backoffice/suspect-records?score_lte=2.5&n_lte=2&limit=50");
+      // v24-13: score≤3.5 + n_lte=999 — 매칭 정확성·점수 분포 폭 넓게 surface
+      const res = await fetch("/api/backoffice/suspect-records?score_lte=3.5&n_lte=999&limit=50");
       const j: SuspectResponse = await res.json();
       setSuspectData(j);
     } catch {
@@ -125,9 +149,23 @@ export default function ReviewClient() {
     }
   }, []);
 
+  const fetchGaps = useCallback(async () => {
+    setGapsLoading(true);
+    try {
+      const res = await fetch("/api/backoffice/instructor-gaps?min_gap=5&limit=40");
+      const j: GapsResponse = await res.json();
+      setGapsData(j);
+    } catch {
+      setGapsData({ ok: false, error: "fetch_failed" });
+    } finally {
+      setGapsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchSuspect();
-  }, [fetchSuspect]);
+    fetchGaps();
+  }, [fetchSuspect, fetchGaps]);
 
   const handleSuspectCleanup = async (recordId: string) => {
     try {
@@ -311,7 +349,78 @@ export default function ReviewClient() {
         </section>
       )}
 
-      {/* v22 C: 신뢰도 낮은 record 검토 큐 — score≤2.5 + n≤2 */}
+      {/* v24-13: th_record_gap 강사 큐 — 매칭 누락 의심 */}
+      <section style={{
+        marginTop: "0.75rem",
+        padding: "0.875rem 1rem",
+        background: "#eff6ff",
+        border: "1px solid #93c5fd",
+        borderRadius: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <strong style={{ color: "#1e40af", fontSize: "0.9rem" }}>
+              📊 매칭 누락 의심 강사 ({gapsLoading ? "..." : gapsData?.instructors?.length ?? 0}명)
+            </strong>
+            <span style={{ marginLeft: "0.5rem", color: "#1e3a8a", fontSize: "0.8rem" }}>
+              TH 6개월 ≥ record + 5건 — 매칭 누락 가능
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setGapsOpen((v) => !v)}
+            style={{
+              padding: "0.25rem 0.75rem",
+              fontSize: "0.8rem",
+              background: "#dbeafe",
+              border: "1px solid #60a5fa",
+              borderRadius: 4,
+              cursor: "pointer",
+              color: "#1e3a8a",
+            }}
+          >
+            {gapsOpen ? "접기" : "펼치기"}
+          </button>
+        </div>
+        {gapsOpen && (gapsData?.instructors?.length ?? 0) > 0 && (
+          <table className="review-table" style={{ marginTop: "0.75rem", fontSize: "0.82rem" }}>
+            <thead>
+              <tr>
+                <th>강사</th>
+                <th>record / TH (6m)</th>
+                <th>gap</th>
+                <th>현재 avg</th>
+                <th>누락 의심 회사</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(gapsData?.instructors ?? []).map((g) => (
+                <tr key={g.instructor_id}>
+                  <td>
+                    <strong>{g.instructor_name}</strong>
+                  </td>
+                  <td>
+                    {g.record_count} / {g.th_count_recent}
+                  </td>
+                  <td>
+                    <strong style={{ color: "#dc2626" }}>{g.gap}</strong>
+                  </td>
+                  <td>{g.avg_score?.toFixed(2) ?? "—"}</td>
+                  <td style={{ fontSize: "0.75rem", color: "#374151" }}>
+                    {g.missing_companies.length === 0 ? (
+                      <span style={{ color: "#9ca3af" }}>—</span>
+                    ) : (
+                      g.missing_companies.slice(0, 5).join(", ")
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      {/* v22 C / v24-13: 신뢰도 낮은 record 검토 큐 — score≤3.5 */}
       <section className="suspect-bar" style={{
         marginTop: "0.75rem",
         padding: "0.875rem 1rem",
@@ -325,7 +434,7 @@ export default function ReviewClient() {
               ⚠️ 신뢰도 낮은 record ({suspectLoading ? "..." : suspectData?.records?.length ?? 0}건)
             </strong>
             <span style={{ marginLeft: "0.5rem", color: "#7c2d12", fontSize: "0.8rem" }}>
-              score≤2.5 + 응답자 수≤2 — 매칭 오류 의심
+              score≤3.5 — 매칭 오류 또는 진짜 낮은 점수 확인 필요
             </span>
           </div>
           <button

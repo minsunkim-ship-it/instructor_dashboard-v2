@@ -611,6 +611,14 @@ interface DetailProps {
   onReject: (registryId: string, reason: string) => void;
 }
 
+interface Candidate {
+  instructor_id: string;
+  instructor_name: string;
+  ops_count: number;
+  th_in_window: boolean;
+  sample_messages: string[];
+}
+
 function ReviewDetail({ row, onApprove, onReject }: DetailProps) {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<InstructorSummary[]>([]);
@@ -618,6 +626,9 @@ function ReviewDetail({ row, onApprove, onReject }: DetailProps) {
   const [manualSelected, setManualSelected] = useState<InstructorSummary | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [rejectOpen, setRejectOpen] = useState(false);
+  // v24-15: ops_report cross-check candidates
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
 
   useEffect(() => {
     setSearch("");
@@ -625,7 +636,19 @@ function ReviewDetail({ row, onApprove, onReject }: DetailProps) {
     setManualSelected(null);
     setRejectReason("");
     setRejectOpen(false);
-  }, [row.id]);
+    setCandidates([]);
+    // 자동 cross-check fetch
+    if (row.registryKey) {
+      setCandidatesLoading(true);
+      fetch(`/api/backoffice/suggest-candidates?registry_key=${encodeURIComponent(row.registryKey)}`)
+        .then((r) => r.json())
+        .then((j) => {
+          if (j.ok && Array.isArray(j.candidates)) setCandidates(j.candidates);
+        })
+        .catch(() => {})
+        .finally(() => setCandidatesLoading(false));
+    }
+  }, [row.id, row.registryKey]);
 
   useEffect(() => {
     if (search.trim().length < 1) {
@@ -696,6 +719,60 @@ function ReviewDetail({ row, onApprove, onReject }: DetailProps) {
                 <div className="suggestion-contact">{row.suggestion.contactEmail}</div>
               )}
             </div>
+          </div>
+        )}
+        {/* v24-15: ops_report cross-check 다중 후보 */}
+        {(candidatesLoading || candidates.length > 0) && (
+          <div style={{ marginTop: "0.75rem" }}>
+            <div className="suggestion-meta">
+              운영보고/일반 채널 cross-check 후보 ({candidatesLoading ? "..." : candidates.length}명)
+            </div>
+            {candidates.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                {candidates.map((c) => (
+                  <div
+                    key={c.instructor_id}
+                    style={{
+                      padding: "0.5rem 0.75rem",
+                      background: c.th_in_window ? "#eff6ff" : "#f3f4f6",
+                      border: `1px solid ${c.th_in_window ? "#93c5fd" : "#d1d5db"}`,
+                      borderRadius: 6,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div>
+                      <strong style={{ fontSize: "0.9rem" }}>{c.instructor_name}</strong>
+                      <span style={{ marginLeft: "0.5rem", fontSize: "0.75rem", color: "#6b7280" }}>
+                        ops {c.ops_count}건 {c.th_in_window ? "· TH 확인" : "· TH 없음"}
+                      </span>
+                      {c.sample_messages[0] && (
+                        <div style={{ fontSize: "0.72rem", color: "#374151", marginTop: 2 }}>
+                          {c.sample_messages[0].slice(0, 100)}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onApprove(row.id, c.instructor_id)}
+                      style={{
+                        padding: "0.3rem 0.7rem",
+                        fontSize: "0.8rem",
+                        background: c.th_in_window ? "#2563eb" : "#6b7280",
+                        color: "white",
+                        border: "none",
+                        borderRadius: 4,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      이 강사로 승인
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
         <div className="manual-search">

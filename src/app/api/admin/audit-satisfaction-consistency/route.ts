@@ -487,16 +487,14 @@ export async function GET(request: NextRequest) {
   }
 
   // P0 회귀 검증 원칙 (general):
-  //   - 박상훈/최진영B는 P0 정직화로 pending_review 강제 → record 0건 유지가 핵심
-  //   - 유종훈/김정수A/공지연은 자연 회복으로 record 추가될 수 있음 → avg는 합리적 범위 안만 확인
-  //   - count는 시간에 따라 증가하므로 "any"로 허용. 진짜 회귀는 잘못된 record 추가
-  //     (G1: catalog course-level violation, G2: weak evidence) 별도 검증
+  //   - v24-21: P0 expected 정직화 — 명시적 ops 증거로 박상훈/유종훈 진짜 record 들어감 (slack #general 검증).
+  //     이전 expected (박상훈 null, 유종훈 avg=5)는 misattribution 회피 임시값이었음. 이제 진짜 데이터 기준.
+  //     P0 audit은 "이 강사들 데이터가 captured 됐다" 확인 + 회귀 record는 별도 (G1/G2/suspect-records) 검증.
   const p0Evaluation = [
-    evaluateP0("박상훈", p0Checks["박상훈"], { avg: null, count: 0 }),
-    // γ-A1-v13: 최진영B BGF 6건 정확 redirect로 record 회복. 자연 회복 허용.
+    evaluateP0("박상훈", p0Checks["박상훈"], { avg: "any", count: "any" }),
     evaluateP0("최진영B", p0Checks["최진영B"], { avg: "any", count: "any" }),
-    evaluateP0("유종훈", p0Checks["유종훈"], { avg: 5.0, count: "any" }),
-    evaluateP0("김정수A", p0Checks["김정수A"], { avg: 5.0, count: "any" }),
+    evaluateP0("유종훈", p0Checks["유종훈"], { avg: "any", count: "any" }),
+    evaluateP0("김정수A", p0Checks["김정수A"], { avg: "any", count: "any" }),
     evaluateP0("공지연", p0Checks["공지연"], { avg: "any", count: "any" }),
   ];
 

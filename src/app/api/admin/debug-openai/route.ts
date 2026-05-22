@@ -79,6 +79,24 @@ export async function GET(request: NextRequest) {
     });
   }
 
+  // /v1/models — 가벼운 read-only call로 org/project ID 헤더 추출.
+  let modelsCallOrgId: string | null = null;
+  let modelsCallProjectId: string | null = null;
+  let modelsCallStatus: number | null = null;
+  let modelsBodyPreview = "";
+  try {
+    const mres = await fetch("https://api.openai.com/v1/models", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    modelsCallStatus = mres.status;
+    modelsCallOrgId = mres.headers.get("openai-organization");
+    modelsCallProjectId = mres.headers.get("openai-project");
+    modelsBodyPreview = (await mres.text()).slice(0, 600);
+  } catch {
+    // ignore
+  }
+
   return NextResponse.json({
     ok: response.ok,
     env,
@@ -100,5 +118,11 @@ export async function GET(request: NextRequest) {
       x_ratelimit_reset_tokens: response.headers.get("x-ratelimit-reset-tokens"),
     },
     body_preview: bodyText.slice(0, 1000),
+    account_info: {
+      organization_id: modelsCallOrgId,
+      project_id: modelsCallProjectId,
+      models_call_status: modelsCallStatus,
+      models_body_preview: modelsBodyPreview,
+    },
   });
 }

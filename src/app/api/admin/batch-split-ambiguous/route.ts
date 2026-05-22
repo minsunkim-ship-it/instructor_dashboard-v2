@@ -34,8 +34,7 @@ const ALLOWED = new Set([OPS_REPORT, GENERAL]);
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
 const ONE_DAY = 86400 * 1000;
 
-const P0_NULL_PROTECTED = new Set(["박상훈"]);
-const P0_HIGH_AVG_PROTECTED = new Set(["유종훈", "김정수A"]);
+// v24-20: P0 가드 제거 — row별 ±1d ops 명시 단독 매칭은 정확. 데이터 왜곡 금지.
 
 const GENERIC_COMPANY_BLOCKLIST = new Set([
   "원데이", "GenAI 활용과정", "디자인씽킹", "파이썬", "엑셀",
@@ -249,7 +248,6 @@ export async function POST(request: NextRequest) {
         if (!normText.includes(effectiveCompany)) continue;
         for (const n of op.instructors) {
           if (!instByName.has(n)) continue;
-          if (P0_NULL_PROTECTED.has(n)) continue;
           candidates.add(n);
         }
       }
@@ -329,8 +327,6 @@ export async function POST(request: NextRequest) {
   });
   for (const p of plans) {
     for (const s of p.instructor_splits) {
-      // P0 high_avg 가드: avg<5면 reject (유종훈/김정수A)
-      if (P0_HIGH_AVG_PROTECTED.has(s.instructor_name) && s.avg_score < 5) continue;
       const recordKey = `split:${p.file_id}:${s.instructor_id}`;
       await prisma.satisfactionRecord.create({
         data: {

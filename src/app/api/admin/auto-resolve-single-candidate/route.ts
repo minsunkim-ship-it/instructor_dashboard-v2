@@ -32,9 +32,8 @@ const GENERAL = "C79GDLS3A";
 const ALLOWED = new Set([OPS_REPORT, GENERAL]);
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
 
-// P0 보호 강사 — 자동 매칭 금지 (회귀 패턴)
-const P0_NULL_PROTECTED = new Set(["박상훈"]);
-const P0_HIGH_AVG_PROTECTED = new Set(["유종훈", "김정수A"]);
+// v24-20: P0 가드 제거됨 — 새 알고리즘은 ops 명시 단독 + ±1d narrow + TH 검증 = 명시적 증거 기반
+// 박상훈/유종훈/김정수A도 진짜 강의했다면 정확하게 매칭됨. 점수 낮다고 reject = 데이터 왜곡.
 
 // 회사명이 강좌/주제명인 경우 부정확 매칭 위험 → 자동 매칭 차단
 const GENERIC_COMPANY_BLOCKLIST = new Set([
@@ -191,16 +190,8 @@ export async function POST(request: NextRequest) {
     const inst = instByName.get(name)!;
     const avgScore = reg.avgScore !== null ? Number(reg.avgScore) : null;
 
-    // P0 보호: 박상훈 자동 매칭 금지
-    if (P0_NULL_PROTECTED.has(name)) {
-      skipped.push({ registry_key: reg.registryKey, reason: `p0_protected_null:${name}` });
-      continue;
-    }
-    // P0 high_avg 보호: 유종훈/김정수A는 score<5 reject
-    if (P0_HIGH_AVG_PROTECTED.has(name) && avgScore !== null && avgScore < 5) {
-      skipped.push({ registry_key: reg.registryKey, reason: `p0_protected_high_avg:${name}:score=${avgScore}` });
-      continue;
-    }
+    // v24-20: P0 가드 제거. ops 명시 단독 + TH 검증으로 충분.
+    void avgScore;
 
     // TH window 검증
     const lo = new Date(responseDate);

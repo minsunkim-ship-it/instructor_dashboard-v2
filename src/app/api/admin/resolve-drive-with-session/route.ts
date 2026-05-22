@@ -386,43 +386,8 @@ export async function GET(request: NextRequest) {
       courseInstructorMatch?.[1] ?? sheetInstructorMatch?.[1] ?? fileInstructorMatch?.[1] ?? null;
 
     // γ-A1-v8 신호 0: title에 강사명 명시 → 즉시 단일 강사 매칭 (가장 강한 신호)
+    // v24-20: P0 가드 제거 — title 명시 매칭은 추측 아닌 명시적 증거. avg 점수가 진짜 데이터.
     if (titleInstructorName) {
-      // v24-3 P0 protected gate: 박상훈/유종훈/김정수A 자동매칭 strict
-      const P0_NULL_PROTECTED_TITLE = new Set(["박상훈"]);
-      const P0_HIGH_AVG_PROTECTED_TITLE = new Set(["유종훈", "김정수A"]);
-      const regAvgScoreTitle = reg.avgScore !== null ? Number(reg.avgScore) : null;
-      if (P0_NULL_PROTECTED_TITLE.has(titleInstructorName)) {
-        classifications.push({
-          registryKey: reg.registryKey,
-          company: reg.companyName,
-          course: reg.courseName,
-          candidate: reg.candidateName,
-          response_count: reg.responseCount,
-          response_date: responseDateStr,
-          course_session: courseSession,
-          status: "no_company",
-          matched_instructors: [],
-        });
-        continue;
-      }
-      if (
-        P0_HIGH_AVG_PROTECTED_TITLE.has(titleInstructorName) &&
-        regAvgScoreTitle !== null &&
-        regAvgScoreTitle < 5
-      ) {
-        classifications.push({
-          registryKey: reg.registryKey,
-          company: reg.companyName,
-          course: reg.courseName,
-          candidate: reg.candidateName,
-          response_count: reg.responseCount,
-          response_date: responseDateStr,
-          course_session: courseSession,
-          status: "no_company",
-          matched_instructors: [],
-        });
-        continue;
-      }
       const inst = lookupInstructor(titleInstructorName);
       if (inst) {
         classifications.push({
@@ -702,44 +667,10 @@ export async function GET(request: NextRequest) {
       new Set(filteredByCourse.flatMap((m) => m.instructors))
     );
 
-    // v24: P0 protected 강사 가드 — strict evidence 없이 매칭 시도 차단
-    // 박상훈 (expected null): 모든 자동 매칭 reject
-    // 유종훈/김정수A (expected avg=5): score<5 record 자동 매칭 reject
-    const P0_NULL_PROTECTED = new Set(["박상훈"]);
-    const P0_HIGH_AVG_PROTECTED = new Set(["유종훈", "김정수A"]);
-    const regAvgScore = reg.avgScore !== null ? Number(reg.avgScore) : null;
-
+    // v24-20: P0 가드 제거 — slack ops 단일 강사 명시는 추측 아닌 명시적 증거.
+    // 점수가 낮아도 진짜 데이터. 회귀 회피 위해 데이터 왜곡 금지.
     if (uniqueInstructors.length === 1) {
       const instName = uniqueInstructors[0];
-      // P0 강사 가드 적용
-      if (P0_NULL_PROTECTED.has(instName)) {
-        classifications.push({
-          registryKey: reg.registryKey,
-          company: reg.companyName,
-          course: reg.courseName,
-          candidate: reg.candidateName,
-          response_count: reg.responseCount,
-          response_date: responseDateStr,
-          course_session: courseSession,
-          status: "no_slack_match",
-          matched_instructors: [],
-        });
-        continue;
-      }
-      if (P0_HIGH_AVG_PROTECTED.has(instName) && regAvgScore !== null && regAvgScore < 5) {
-        classifications.push({
-          registryKey: reg.registryKey,
-          company: reg.companyName,
-          course: reg.courseName,
-          candidate: reg.candidateName,
-          response_count: reg.responseCount,
-          response_date: responseDateStr,
-          course_session: courseSession,
-          status: "no_slack_match",
-          matched_instructors: [],
-        });
-        continue;
-      }
       const inst = lookupInstructor(instName);
       classifications.push({
         registryKey: reg.registryKey,
@@ -789,25 +720,11 @@ export async function GET(request: NextRequest) {
       }
     | null = null;
   if (mode === "apply") {
-    // v24-4: P0 protected 최종 filter — 모든 매칭 경로에서 P0 강사 strict 보호
-    const P0_NULL_FINAL = new Set(["박상훈"]);
-    const P0_HIGH_AVG_FINAL = new Set(["유종훈", "김정수A"]);
+    // v24-20: P0 final filter 제거 — 명시적 증거 기반 매칭은 정확. 회귀 회피로 데이터 왜곡 금지.
     const strongs = classifications.filter(
-      (c) => {
-        if (
-          !(c.status === "strong_single_by_date" || c.status === "strong_single_by_session") ||
-          !c.matched_instructor_id
-        ) return false;
-        const name = c.matched_instructor_name ?? "";
-        // 박상훈: 모든 자동매칭 reject
-        if (P0_NULL_FINAL.has(name)) return false;
-        // 유종훈/김정수A: score<5 record reject
-        if (P0_HIGH_AVG_FINAL.has(name)) {
-          // registry 검색해 avgScore 확인
-          return false; // strict mode — score 5 만 통과시킬 거지만 보수적으로 모두 reject
-        }
-        return true;
-      }
+      (c) =>
+        (c.status === "strong_single_by_date" || c.status === "strong_single_by_session") &&
+        c.matched_instructor_id
     );
     const regKeySet = new Set(strongs.map((s) => s.registryKey));
     const fullRegs = await prisma.satisfactionReviewRegistry.findMany({

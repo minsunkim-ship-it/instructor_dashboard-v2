@@ -202,11 +202,17 @@ export async function POST(request: NextRequest) {
   const instByName = new Map(allInstructors.map((i) => [i.name, i]));
 
   // v24-26: TH course token 매칭용 — 강사 TH 전체 fetch (course token substring 매칭)
-  const allTHs = await prisma.teachingHistory.findMany({
-    where: { courseName: { not: null }, instructor: { isNot: null } },
-    select: { instructorDbId: true, courseName: true, startDate: true, endDate: true, instructor: { select: { name: true } } },
+  const allTHsRaw = await prisma.teachingHistory.findMany({
+    where: { courseName: { not: null } },
+    select: { instructorDbId: true, courseName: true, startDate: true, endDate: true },
     take: 30000,
   });
+  // instructorDbId → name 매핑
+  const instById = new Map(allInstructors.map((i) => [i.id, i.name]));
+  const allTHs = allTHsRaw.map((th) => ({
+    ...th,
+    instructorName: instById.get(th.instructorDbId) ?? null,
+  })).filter((th) => th.instructorName !== null);
 
   // course에서 의미있는 token 추출 (회사명/일반 단어 제외)
   function extractCourseTokens(course: string): string[] {
@@ -370,7 +376,7 @@ export async function POST(request: NextRequest) {
           const window60 = 60 * ONE_DAY;
           const thCandidates = new Set<string>();
           for (const th of allTHs) {
-            if (!th.instructor?.name || !instByName.has(th.instructor.name)) continue;
+            if (!th.instructorName || !instByName.has(th.instructorName)) continue;
             // response_date가 TH startDate~endDate 안 or ±60d window
             if (th.startDate && th.endDate) {
               const sd = th.startDate.getTime();
@@ -379,10 +385,9 @@ export async function POST(request: NextRequest) {
               if (rs < sd - window60 || rs > ed + window60) continue;
             }
             const thCourseStr = (th.courseName ?? "").toLowerCase();
-            // registry token 중 1개 이상이 TH course에 포함되어야
             const hits = regTokens.filter((t) => thCourseStr.includes(t));
             if (hits.length >= 1) {
-              thCandidates.add(th.instructor.name);
+              thCandidates.add(th.instructorName);
             }
           }
           if (thCandidates.size === 1) {

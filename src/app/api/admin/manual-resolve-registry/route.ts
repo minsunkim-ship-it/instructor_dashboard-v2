@@ -77,11 +77,11 @@ export async function POST(request: NextRequest) {
       sourceType: reg.sourceType,
       sourceRef: {
         registry_key: registryKey,
-        source_refs: refs,
+        source_refs: refs as unknown as object[],
         manual_resolve: true,
         basis,
         resolved_at: new Date().toISOString(),
-      },
+      } as object,
       score: avgScore,
       respondentCount: reg.responseCount,
       responseDate,

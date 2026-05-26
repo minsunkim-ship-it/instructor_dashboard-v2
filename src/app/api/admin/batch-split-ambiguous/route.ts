@@ -201,6 +201,23 @@ export async function POST(request: NextRequest) {
   const allInstructors = await prisma.instructor.findMany({ select: { id: true, name: true } });
   const instByName = new Map(allInstructors.map((i) => [i.name, i]));
 
+  // v24-26: TH course token 매칭용 — 강사 TH 전체 fetch (course token substring 매칭)
+  const allTHs = await prisma.teachingHistory.findMany({
+    where: { courseName: { not: null }, instructor: { isNot: null } },
+    select: { instructorDbId: true, courseName: true, startDate: true, endDate: true, instructor: { select: { name: true } } },
+    take: 30000,
+  });
+
+  // course에서 의미있는 token 추출 (회사명/일반 단어 제외)
+  function extractCourseTokens(course: string): string[] {
+    return course
+      .replace(/_/g, " ")
+      .replace(/[\(\)\[\]<>]/g, " ")
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length >= 4 && !/^\d/.test(t) && !/^(과정|교육|만족도|평가|응답|차수|회차|특강|워크숍|아카데미)$/.test(t));
+  }
+
   interface Plan {
     registry_key: string;
     file_id: string;
@@ -342,6 +359,37 @@ export async function POST(request: NextRequest) {
       // Tier 5 fallback: 강사별/제안 채널 + ±7d
       if (candidates.size === 0) {
         candidates = tryFind(r, { tier: "fallback", sessionMatch: false, windowDays: 7 });
+      }
+      // Tier 6 (v24-26): 사용자 룰 "기업명 막히면 과정명 융합 검색"
+      // 회사 매칭 ops 없을 때 TH course token 매칭으로 강사 후보 찾기
+      // response_date ±60d window TH 중 registry course token 1개 이상 substring 매칭
+      if (candidates.size === 0) {
+        const regCourseStr = (reg.courseName ?? "").toLowerCase();
+        const regTokens = extractCourseTokens(regCourseStr);
+        if (regTokens.length > 0) {
+          const window60 = 60 * ONE_DAY;
+          const thCandidates = new Set<string>();
+          for (const th of allTHs) {
+            if (!th.instructor?.name || !instByName.has(th.instructor.name)) continue;
+            // response_date가 TH startDate~endDate 안 or ±60d window
+            if (th.startDate && th.endDate) {
+              const sd = th.startDate.getTime();
+              const ed = th.endDate.getTime();
+              const rs = r.ts.getTime();
+              if (rs < sd - window60 || rs > ed + window60) continue;
+            }
+            const thCourseStr = (th.courseName ?? "").toLowerCase();
+            // registry token 중 1개 이상이 TH course에 포함되어야
+            const hits = regTokens.filter((t) => thCourseStr.includes(t));
+            if (hits.length >= 1) {
+              thCandidates.add(th.instructor.name);
+            }
+          }
+          if (thCandidates.size === 1) {
+            candidates = thCandidates;
+          }
+          // size > 1 ambiguous면 skip (Tier 6 trigger 안 함)
+        }
       }
 
       if (candidates.size === 0) {

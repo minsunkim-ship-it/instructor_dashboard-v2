@@ -9,6 +9,11 @@ import {
 import { readStoredFallbackSnapshot } from "@/lib/fallback-snapshot";
 import { shouldIncludeInInstructorList } from "@/lib/instructor-list-visibility";
 import { extractNotionPropertyTextList } from "@/lib/notion-property-utils";
+import {
+  normalizeCompanyWithAlias,
+  companyMatchesWithAlias,
+} from "@/lib/company-aliases";
+import { resolveCanonical, KNOWN_ALIASES } from "@/lib/instructor-aliases";
 
 // 05_api_spec.md 5-3절: 허용된 정렬 키
 const ALLOWED_SORTS = [
@@ -86,48 +91,141 @@ export async function GET(request: NextRequest) {
     }
 
     // --- DB 조회: 카테고리 필터는 Prisma에서 처리 ---
+    // Phase A: teachingHistories 함께 fetch (회사·과정 검색용, read-only)
     const where =
       category !== "전체" ? { categories: { has: category } } : {};
 
-    const instructors = (await prisma.instructor.findMany({ where })).filter((inst) =>
-      shouldIncludeInInstructorList(inst)
-    );
+    const instructors = (
+      await prisma.instructor.findMany({
+        where,
+        include: {
+          teachingHistories: {
+            select: {
+              companyName: true,
+              courseName: true,
+            },
+          },
+        },
+      })
+    ).filter((inst) => shouldIncludeInInstructorList(inst));
 
-    // --- 06_implementation_spec.md Feature B: 검색 (JS 후처리) ---
+    // --- Phase A: query 정규화 (회사 alias + 강사명 alias) ---
+    // matched_* meta: 검색 hit 시점에 어떤 필드에서 매칭됐는지 저장 → 응답에 노출
+    const matchMetaByInstructor = new Map<
+      string,
+      {
+        field: InstructorListItem["matched_field"];
+        companies: Set<string>;
+        courses: Set<string>;
+      }
+    >();
+
+    // 강사명 query → 별칭 set 확장
+    function expandNameAliasSet(q: string): Set<string> {
+      const normalized = q.trim();
+      const set = new Set<string>([normalized.toLowerCase()]);
+      // 1) resolveCanonical로 대표명 확장
+      const canonical = resolveCanonical(normalized);
+      if (canonical) set.add(canonical.toLowerCase());
+      // 2) KNOWN_ALIASES 그룹 안의 모든 멤버 추가
+      const aliasGroup = KNOWN_ALIASES[normalized];
+      if (aliasGroup) {
+        for (const alias of aliasGroup) set.add(alias.toLowerCase());
+      }
+      return set;
+    }
+
+    // --- 06_implementation_spec.md Feature B: 검색 (JS 후처리) — Phase A 확장 ---
     let filtered = instructors;
 
     if (query !== "") {
       const lowerQuery = query.toLowerCase();
+      const nameAliasSet = expandNameAliasSet(query);
+      const normalizedQueryCompany = normalizeCompanyWithAlias(query);
 
       filtered = instructors.filter((inst) => {
         const teachingInfo = extractNotionPropertyTextList(
           inst.notionRawProperties,
           "담당 강의 정보"
         );
-        // name
-        if (inst.name.toLowerCase().includes(lowerQuery)) return true;
-        // categories array elements
-        if (
-          inst.categories.some((c) => c.toLowerCase().includes(lowerQuery))
-        )
-          return true;
-        // specialties array elements
-        if (
-          inst.specialties.some((s) => s.toLowerCase().includes(lowerQuery))
-        )
-          return true;
-        // notion teaching info
-        if (teachingInfo.some((value) => value.toLowerCase().includes(lowerQuery))) {
-          return true;
+        const meta: {
+          field: InstructorListItem["matched_field"];
+          companies: Set<string>;
+          courses: Set<string>;
+        } = { field: null, companies: new Set(), courses: new Set() };
+
+        // 1) name (alias set 포함)
+        for (const aliasLower of nameAliasSet) {
+          if (inst.name.toLowerCase().includes(aliasLower)) {
+            meta.field = "name";
+            break;
+          }
         }
-        // affiliation
+
+        // 2) categories
         if (
+          meta.field === null &&
+          inst.categories.some((c) => c.toLowerCase().includes(lowerQuery))
+        ) {
+          meta.field = "categories";
+        }
+
+        // 3) specialties
+        if (
+          meta.field === null &&
+          inst.specialties.some((s) => s.toLowerCase().includes(lowerQuery))
+        ) {
+          meta.field = "specialties";
+        }
+
+        // 4) notion teaching info
+        if (
+          meta.field === null &&
+          teachingInfo.some((value) =>
+            value.toLowerCase().includes(lowerQuery)
+          )
+        ) {
+          meta.field = "teaching_titles";
+        }
+
+        // 5) affiliation
+        if (
+          meta.field === null &&
           inst.affiliation &&
           inst.affiliation.toLowerCase().includes(lowerQuery)
-        )
-          return true;
+        ) {
+          meta.field = "affiliation";
+        }
 
-        return false;
+        // 6) Phase A 신규: teaching_history.companyName (회사 alias 적용)
+        if (normalizedQueryCompany && normalizedQueryCompany.length >= 2) {
+          for (const th of inst.teachingHistories) {
+            if (!th.companyName) continue;
+            if (companyMatchesWithAlias(th.companyName, query)) {
+              meta.companies.add(th.companyName);
+              if (meta.field === null) meta.field = "teaching_company";
+            }
+          }
+        }
+
+        // 7) Phase A 신규: teaching_history.courseName (substring)
+        for (const th of inst.teachingHistories) {
+          if (!th.courseName) continue;
+          if (th.courseName.toLowerCase().includes(lowerQuery)) {
+            meta.courses.add(th.courseName);
+            if (meta.field === null) meta.field = "teaching_course";
+          }
+        }
+
+        const matched =
+          meta.field !== null ||
+          meta.companies.size > 0 ||
+          meta.courses.size > 0;
+
+        if (matched) {
+          matchMetaByInstructor.set(inst.id, meta);
+        }
+        return matched;
       });
     }
 
@@ -231,22 +329,33 @@ export async function GET(request: NextRequest) {
     const limited = enriched.slice(0, limit);
 
     // --- 응답 매핑 ---
-    const items: InstructorListItem[] = limited.map((inst) => ({
-      id: inst.id,
-      name: inst.name,
-      affiliation: inst.affiliation,
-      categories: inst.categories,
-      teaching_titles: inst.teachingTitles,
-      specialties: inst.specialties,
-      rank: inst.rank,
-      score: inst.score !== null ? Number(inst.score) : null,
-      total_courses: inst.totalCourses,
-      total_hours: inst.totalHours,
-      // 05_api_spec.md 5-5절: 전임강사는 base_fee_hourly 항상 null
-      base_fee_hourly: inst.isFulltime ? null : inst.baseFeeHourly,
-      is_fulltime: inst.isFulltime,
-      flag: inst.flag,
-    }));
+    const items: InstructorListItem[] = limited.map((inst) => {
+      const meta = matchMetaByInstructor.get(inst.id);
+      return {
+        id: inst.id,
+        name: inst.name,
+        affiliation: inst.affiliation,
+        categories: inst.categories,
+        teaching_titles: inst.teachingTitles,
+        specialties: inst.specialties,
+        rank: inst.rank,
+        score: inst.score !== null ? Number(inst.score) : null,
+        total_courses: inst.totalCourses,
+        total_hours: inst.totalHours,
+        // 05_api_spec.md 5-5절: 전임강사는 base_fee_hourly 항상 null
+        base_fee_hourly: inst.isFulltime ? null : inst.baseFeeHourly,
+        is_fulltime: inst.isFulltime,
+        flag: inst.flag,
+        // Phase A: 검색 query 있을 때만 매칭 meta 부착 (최대 5건씩)
+        ...(meta
+          ? {
+              matched_field: meta.field,
+              matched_companies: Array.from(meta.companies).slice(0, 5),
+              matched_courses: Array.from(meta.courses).slice(0, 5),
+            }
+          : {}),
+      };
+    });
 
     // 05_api_spec.md 5-6절: 빈 결과 시 status "empty"
     const status = items.length === 0 ? "empty" : "success";

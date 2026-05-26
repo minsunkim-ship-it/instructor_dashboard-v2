@@ -51,6 +51,18 @@ export interface InstructorListItem {
   base_fee_hourly: number | null;
   is_fulltime: boolean;
   flag: string | null;
+  /** Phase A 검색: 어디서 매칭됐는지 메타. 검색 query 있을 때만 채워짐. */
+  matched_companies?: string[];
+  matched_courses?: string[];
+  matched_field?:
+    | "name"
+    | "categories"
+    | "specialties"
+    | "teaching_titles"
+    | "affiliation"
+    | "teaching_company"
+    | "teaching_course"
+    | null;
 }
 
 // 목록 응답 — 05_api_spec.md 5-4절

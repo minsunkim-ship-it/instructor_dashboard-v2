@@ -30,9 +30,28 @@ function pickString(o: RawRecord | undefined | null, ...keys: string[]): string 
 
 const OPS_REPORT = "C015YD84VGS";
 const GENERAL = "C79GDLS3A";
-const ALLOWED = new Set([OPS_REPORT, GENERAL]);
+// v24-22: 1순위 채널 (운영보고 + general). 못 찾으면 fallback (강사별/제안 채널)
+const PRIMARY_CHANNELS = new Set([OPS_REPORT, GENERAL]);
+const FALLBACK_CHANNELS = new Set([
+  "C04MTRMSW5P", // #b2b_1팀_견적제안
+  "C096A5Z7S0Y", // #b2b_2팀_견적제안
+  "C08EEAJ347J", // #스코프랩스-강사님-협업
+  "C099UH7ACGG", // #b2b_정백님_출강요청
+  "C0AS2VDUXQ8", // #b2b_신동원님_출강요청
+]);
+const ALL_CHANNELS = new Set([...PRIMARY_CHANNELS, ...FALLBACK_CHANNELS]);
 const INSTRUCTOR_REGEX = /([가-힣]{2,4}[A-Z]?)\s*(?:강사|대표|교수|선생)님/g;
+// v24-22: 차수 추출 — "_3차수", "3차수-2/5회차", "3차수 2회차" 등
+const SESSION_REGEX = /(\d{1,2})\s*차수/g;
 const ONE_DAY = 86400 * 1000;
+
+function extractSessions(text: string): Set<string> {
+  const sessions = new Set<string>();
+  let m: RegExpExecArray | null;
+  const re = new RegExp(SESSION_REGEX.source, "g");
+  while ((m = re.exec(text)) !== null) sessions.add(m[1]);
+  return sessions;
+}
 
 // v24-20: P0 가드 제거 — row별 ±1d ops 명시 단독 매칭은 정확. 데이터 왜곡 금지.
 
@@ -132,18 +151,24 @@ export async function POST(request: NextRequest) {
     select: { rawPayload: true, sourceRef: true, activityAt: true },
     take: 50000,
   });
-  interface OpsMsg { ts: Date; instructors: string[]; text: string }
+  interface OpsMsg { ts: Date; instructors: string[]; text: string; sessions: Set<string>; tier: "primary" | "fallback" }
   const opsAll: OpsMsg[] = [];
   for (const it of slackItems) {
     const raw = (it.rawPayload as RawRecord | null) ?? {};
     const ref = (it.sourceRef as RawRecord | null) ?? {};
     const cid = pickString(raw, "channel_id", "channel") ?? pickString(ref, "channel_id", "channel");
-    if (!cid || !ALLOWED.has(cid)) continue;
+    if (!cid || !ALL_CHANNELS.has(cid)) continue;
     const text = pickString(raw, "text", "message", "body") ?? "";
     if (!text || !it.activityAt) continue;
     const names = Array.from(new Set(Array.from(text.matchAll(INSTRUCTOR_REGEX)).map((m) => m[1])));
     if (names.length === 0) continue;
-    opsAll.push({ ts: it.activityAt, instructors: names, text });
+    opsAll.push({
+      ts: it.activityAt,
+      instructors: names,
+      text,
+      sessions: extractSessions(text),
+      tier: PRIMARY_CHANNELS.has(cid) ? "primary" : "fallback",
+    });
   }
 
   const allInstructors = await prisma.instructor.findMany({ select: { id: true, name: true } });
@@ -237,20 +262,62 @@ export async function POST(request: NextRequest) {
       continue;
     }
 
+    // v24-22: registry course에서 차수(session) 추출
+    const regSessions = extractSessions(reg.courseName ?? "");
+
     const byInstructor = new Map<string, { instructor_id: string; scores: number[]; min_ts: Date; max_ts: Date }>();
     let unmatched = 0;
     let ambiguousRow = 0;
-    for (const r of responses) {
+
+    // v24-22: 매칭 strategy — single candidate 찾을 때까지 escalation
+    // Tier 1 (primary, session match, ±3d) → Tier 2 (primary, session match, ±14d)
+    //   → Tier 3 (primary, no session, ±7d) → Tier 4 (fallback, session match, ±14d) → 포기
+    function tryFind(
+      r: { ts: Date; score: number },
+      opts: { tier: "primary" | "fallback" | "any"; sessionMatch: boolean; windowDays: number }
+    ): Set<string> {
       const candidates = new Set<string>();
+      const wMs = opts.windowDays * ONE_DAY;
       for (const op of opsAll) {
-        if (Math.abs(op.ts.getTime() - r.ts.getTime()) > ONE_DAY) continue;
+        if (opts.tier !== "any" && op.tier !== opts.tier) continue;
+        if (Math.abs(op.ts.getTime() - r.ts.getTime()) > wMs) continue;
         const normText = normalizeCompanyWithAlias(op.text);
         if (!normText.includes(effectiveCompany)) continue;
+        if (opts.sessionMatch && regSessions.size > 0) {
+          // 차수 cross-check — registry 차수와 op 차수 교집합 있어야
+          const intersect = Array.from(regSessions).some((s) => op.sessions.has(s));
+          if (!intersect) continue;
+        }
         for (const n of op.instructors) {
           if (!instByName.has(n)) continue;
           candidates.add(n);
         }
       }
+      return candidates;
+    }
+
+    for (const r of responses) {
+      // Tier 1: primary + session match + ±3d (가장 강한 신호)
+      let candidates = regSessions.size > 0
+        ? tryFind(r, { tier: "primary", sessionMatch: true, windowDays: 3 })
+        : new Set<string>();
+      // Tier 2: primary + session match + ±14d (session 매칭이 있으면 wide 안전)
+      if (candidates.size !== 1 && regSessions.size > 0) {
+        candidates = tryFind(r, { tier: "primary", sessionMatch: true, windowDays: 14 });
+      }
+      // Tier 3: primary + ±7d (session 매칭 없을 때 / session 매칭 후보 다중)
+      if (candidates.size !== 1) {
+        candidates = tryFind(r, { tier: "primary", sessionMatch: false, windowDays: 7 });
+      }
+      // Tier 4 fallback: 강사별/제안 채널 + session match + ±14d (1순위 못 찾을 때만)
+      if (candidates.size === 0 && regSessions.size > 0) {
+        candidates = tryFind(r, { tier: "fallback", sessionMatch: true, windowDays: 14 });
+      }
+      // Tier 5 fallback: 강사별/제안 채널 + ±7d
+      if (candidates.size === 0) {
+        candidates = tryFind(r, { tier: "fallback", sessionMatch: false, windowDays: 7 });
+      }
+
       if (candidates.size === 0) {
         unmatched += 1;
         continue;

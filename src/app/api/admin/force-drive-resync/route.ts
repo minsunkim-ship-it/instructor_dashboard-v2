@@ -103,6 +103,7 @@ export async function POST(request: NextRequest) {
       if (mode === "fetch_dryrun") {
         // normalize only — DB write 없음, normalize 결과 확인
         const debug = request.nextUrl.searchParams.get("debug") === "1";
+        const dumpCol = request.nextUrl.searchParams.get("dump_col");
         const debugInfo = debug
           ? filteredFiles.map((f) => ({
               file_id: f.fileId,
@@ -115,6 +116,9 @@ export async function POST(request: NextRequest) {
                 header: s.rows[0] ?? [],
                 sample_row1: s.rows[1] ?? [],
                 sample_row2: s.rows[2] ?? [],
+                col_dump: dumpCol !== null && dumpCol !== ""
+                  ? s.rows.slice(1).map((r) => r?.[parseInt(dumpCol, 10)] ?? null)
+                  : undefined,
               })),
             }))
           : undefined;

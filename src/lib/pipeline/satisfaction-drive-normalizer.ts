@@ -281,6 +281,17 @@ function parseTimestamp(value: string | null | undefined): Date | null {
 
 function detectScale(values: number[]): 5 | 10 | null {
   if (values.length === 0) return null;
+  // v24-27: max 단독 의존 X — 분포 기반 판정 (outlier 1-2개로 10점 척도 오판 방지)
+  // 5점 척도: 80%+ 값이 ≤5 → 5점 척도, outlier (>5) 응답은 normalizeScore에서 reject
+  // 10점 척도: 50%+ 값이 >5 → 10점 척도
+  const validCount = values.length;
+  if (validCount === 0) return null;
+  const le5Count = values.filter((v) => v <= 5).length;
+  const ratio = le5Count / validCount;
+  if (ratio >= 0.8) return 5;
+  // 다수가 >5면 10점 척도
+  if (ratio < 0.5) return 10;
+  // 50-80%: 애매한 경우, max 기준 fallback
   const max = Math.max(...values);
   if (max <= 5) return 5;
   if (max <= 10) return 10;
@@ -419,7 +430,14 @@ function normalizeFormsSheet(args: {
   const scale = detectScale(scores);
   if (!scale) return null;
 
-  const normalizedScores = scores.map((s) => normalizeScore(s, scale));
+  // v24-27: 5점 척도 판정 시 outlier (>5) reject (6,7,8,9 응답 실수 제외)
+  // 10점 척도 판정 시 outlier (>10) reject
+  const validScores = scale === 5
+    ? scores.filter((s) => s <= 5)
+    : scores.filter((s) => s <= 10);
+  if (validScores.length === 0) return null;
+
+  const normalizedScores = validScores.map((s) => normalizeScore(s, scale));
   const avgScore =
     Math.round(
       (normalizedScores.reduce((a, b) => a + b, 0) / normalizedScores.length) *
@@ -457,7 +475,7 @@ function normalizeFormsSheet(args: {
       score_column_index: scoreColIndex,
       detected_scale: scale,
       raw_scores: scores,
-      respondent_count: scores.length,
+      respondent_count: validScores.length,
       file_created_time: file.createdTime,
       file_modified_time: file.modifiedTime,
     },
@@ -468,14 +486,14 @@ function normalizeFormsSheet(args: {
       company_name: metadata.companyName,
       course_name: metadata.courseName,
       response_date: responseDateStr,
-      respondent_count: scores.length,
+      respondent_count: validScores.length,
     },
     candidateName: null,
     candidateCompanyName: metadata.companyName,
     candidateCourseName: metadata.courseName,
-    scoreRaw: `${avgScore}/${scale} (avg of ${scores.length})`,
+    scoreRaw: `${avgScore}/${scale} (avg of ${validScores.length}/${scores.length})`,
     scoreNormalized: avgScore,
-    respondentCount: scores.length,
+    respondentCount: validScores.length,
     responseDate,
   };
 }

@@ -320,24 +320,46 @@ function buildOperationalSourceCitations(
 
 /**
  * Step 9 inline citation: raw_operational_notes 중 sourceNoteIds 첫 매칭 raw_text 발췌.
- * UI에 quote-box 형식으로 표시 — "왜 이런 의견이 나왔는지" 즉시 노출.
+ *
+ * "자유서술" source만 사용 — slack_highlight·gmail_activity는 강의내용 metadata dump를
+ * 통째로 갖고 있는 경우가 많아 quote로 노출하면 string 뭉치로 보임.
+ *
+ * raw_text 정제: 운영 헤더·자료 dump 패턴 제거 → 의미 있는 문장만.
  */
+const QUOTABLE_SOURCE_TYPES = new Set([
+  "teaching_feedback_qualitative",
+  "teaching_feedback_ops",
+  "notion_comment",
+  "curated_ops",
+]);
+
+function cleanCitationText(rawText: string): string {
+  let text = rawText
+    .replace(/[\t ]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // 강의내용 dump pattern 제거 (slack ops_report 본문에 따라온 case)
+  text = text.replace(/강의\s*내용[\s\-:·]*[\s\S]*$/m, "").trim();
+  // 운영/관리 이슈사항 헤더만 있고 본문 없는 경우 제거
+  text = text.replace(/^운영\/?관리\s*이슈\s*사항\s*[\-:·]?\s*/m, "").trim();
+  // bullet 시작 라인이 한두 단어인 case 정리
+  return text;
+}
+
 function getInlineCitation(
   sourceNoteIds: string[] | undefined,
   rawNotes: InstructorDetailData["raw_operational_notes"],
-  maxLength = 140
+  maxLength = 160
 ): string | null {
   if (!sourceNoteIds || sourceNoteIds.length === 0) return null;
   const noteById = new Map(rawNotes.map((n) => [n.id, n]));
   for (const noteId of sourceNoteIds) {
     const note = noteById.get(noteId);
     if (!note || !note.raw_text) continue;
-    // 연속된 빈 줄·중복 공백만 정리하고 줄바꿈은 보존
-    const text = note.raw_text
-      .replace(/[\t ]+/g, " ")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-    if (!text) continue;
+    if (!QUOTABLE_SOURCE_TYPES.has(note.source_type)) continue;
+    const text = cleanCitationText(note.raw_text);
+    if (!text || text.length < 12) continue;
     return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
   }
   return null;

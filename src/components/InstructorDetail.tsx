@@ -319,20 +319,24 @@ function buildOperationalSourceCitations(
 }
 
 /**
- * Step 9 inline citation: raw_operational_notes 중 sourceNoteIds 첫 매칭 raw_text 1줄 발췌.
- * UI 옆에 회색 작은 텍스트로 표시 — "왜 이런 의견이 나왔는지" 즉시 노출.
+ * Step 9 inline citation: raw_operational_notes 중 sourceNoteIds 첫 매칭 raw_text 발췌.
+ * UI에 quote-box 형식으로 표시 — "왜 이런 의견이 나왔는지" 즉시 노출.
  */
 function getInlineCitation(
   sourceNoteIds: string[] | undefined,
   rawNotes: InstructorDetailData["raw_operational_notes"],
-  maxLength = 90
+  maxLength = 140
 ): string | null {
   if (!sourceNoteIds || sourceNoteIds.length === 0) return null;
   const noteById = new Map(rawNotes.map((n) => [n.id, n]));
   for (const noteId of sourceNoteIds) {
     const note = noteById.get(noteId);
     if (!note || !note.raw_text) continue;
-    const text = note.raw_text.replace(/\s+/g, " ").trim();
+    // 연속된 빈 줄·중복 공백만 정리하고 줄바꿈은 보존
+    const text = note.raw_text
+      .replace(/[\t ]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
     if (!text) continue;
     return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
   }
@@ -342,9 +346,9 @@ function getInlineCitation(
 function InlineCitation({ text }: { text: string | null }) {
   if (!text) return null;
   return (
-    <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
-      「{text}」
-    </p>
+    <div className="mt-2 border-l-2 border-slate-300 bg-slate-50/70 px-2.5 py-1.5 text-[11px] leading-[1.55] text-slate-600 whitespace-pre-line">
+      {text}
+    </div>
   );
 }
 
@@ -1990,7 +1994,7 @@ function OpsIntelligenceSection({
         </div>
 
         <div className="intel-grid">
-          <div>
+          <div className="space-y-3">
             <div className="intel-col-title intel-strength-title">강점</div>
             {strengths.length > 0 ? (
               strengths.slice(0, 3).map((item) => {
@@ -1999,7 +2003,7 @@ function OpsIntelligenceSection({
                 );
                 return (
                   <div key={item} className="intel-pattern intel-strength">
-                    <div>{item}</div>
+                    <div className="font-medium">{item}</div>
                     <InlineCitation
                       text={getInlineCitation(
                         patternRef?.source_note_ids,
@@ -2015,7 +2019,7 @@ function OpsIntelligenceSection({
               </div>
             )}
           </div>
-          <div>
+          <div className="space-y-3">
             <div className="intel-col-title intel-risk-title">주의</div>
             {risks.length > 0 ? (
               risks.slice(0, 3).map((item) => {
@@ -2024,7 +2028,7 @@ function OpsIntelligenceSection({
                 );
                 return (
                   <div key={item} className="intel-pattern intel-risk-high">
-                    <div>{item}</div>
+                    <div className="font-medium">{item}</div>
                     <InlineCitation
                       text={getInlineCitation(
                         patternRef?.source_note_ids,
@@ -2043,7 +2047,7 @@ function OpsIntelligenceSection({
         </div>
 
         {detailItems.length > 0 && (
-          <div className="intel-details">
+          <div className="intel-details space-y-3">
             {detailItems.map((item) => (
               <div key={item.title} className="intel-detail">
                 <div className="intel-detail-title">{item.title}</div>

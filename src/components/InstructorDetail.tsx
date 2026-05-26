@@ -318,6 +318,36 @@ function buildOperationalSourceCitations(
     .filter((item) => item.text.length > 0);
 }
 
+/**
+ * Step 9 inline citation: raw_operational_notes 중 sourceNoteIds 첫 매칭 raw_text 1줄 발췌.
+ * UI 옆에 회색 작은 텍스트로 표시 — "왜 이런 의견이 나왔는지" 즉시 노출.
+ */
+function getInlineCitation(
+  sourceNoteIds: string[] | undefined,
+  rawNotes: InstructorDetailData["raw_operational_notes"],
+  maxLength = 90
+): string | null {
+  if (!sourceNoteIds || sourceNoteIds.length === 0) return null;
+  const noteById = new Map(rawNotes.map((n) => [n.id, n]));
+  for (const noteId of sourceNoteIds) {
+    const note = noteById.get(noteId);
+    if (!note || !note.raw_text) continue;
+    const text = note.raw_text.replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+  }
+  return null;
+}
+
+function InlineCitation({ text }: { text: string | null }) {
+  if (!text) return null;
+  return (
+    <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
+      「{text}」
+    </p>
+  );
+}
+
 function OperationalSourceRefs({
   data,
   sourceNoteIds,
@@ -331,12 +361,9 @@ function OperationalSourceRefs({
   if (citations.length === 0) return null;
 
   return (
-    <details
-      open
-      className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
-    >
+    <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
       <summary className="cursor-pointer text-[11px] font-semibold text-slate-600">
-        {title} {citations.length}건 · 위 의견 근거
+        {title} {citations.length}건 · 전체 출처 보기
       </summary>
       <div className="mt-2 space-y-2">
         {citations.map((citation) => (
@@ -1928,6 +1955,14 @@ function OpsIntelligenceSection({
             {behavioral.recommendation ??
               "운영 근거가 아직 충분히 수집되지 않았습니다. 추가 메모와 피드백이 쌓이면 적합·주의 포인트를 함께 보여줍니다."}
           </p>
+          {behavioral.recommendation && (
+            <InlineCitation
+              text={getInlineCitation(
+                behavioral.source_refs.recommendation,
+                data.raw_operational_notes
+              )}
+            />
+          )}
           {hasTags && (
             <div className="mt-2 space-y-2">
               {data.recommended_for.length > 0 && (
@@ -1958,11 +1993,22 @@ function OpsIntelligenceSection({
           <div>
             <div className="intel-col-title intel-strength-title">강점</div>
             {strengths.length > 0 ? (
-              strengths.slice(0, 3).map((item) => (
-                <div key={item} className="intel-pattern intel-strength">
-                  <div>{item}</div>
-                </div>
-              ))
+              strengths.slice(0, 3).map((item) => {
+                const patternRef = behavioral.source_refs.strength_patterns?.find(
+                  (ref) => ref.text === item
+                );
+                return (
+                  <div key={item} className="intel-pattern intel-strength">
+                    <div>{item}</div>
+                    <InlineCitation
+                      text={getInlineCitation(
+                        patternRef?.source_note_ids,
+                        data.raw_operational_notes
+                      )}
+                    />
+                  </div>
+                );
+              })
             ) : (
               <div className="intel-pattern bg-[var(--bg)] text-[var(--text-muted)]">
                 강점 정보 없음
@@ -1972,11 +2018,22 @@ function OpsIntelligenceSection({
           <div>
             <div className="intel-col-title intel-risk-title">주의</div>
             {risks.length > 0 ? (
-              risks.slice(0, 3).map((item) => (
-                <div key={item} className="intel-pattern intel-risk-high">
-                  <div>{item}</div>
-                </div>
-              ))
+              risks.slice(0, 3).map((item) => {
+                const patternRef = behavioral.source_refs.risk_patterns?.find(
+                  (ref) => ref.text === item
+                );
+                return (
+                  <div key={item} className="intel-pattern intel-risk-high">
+                    <div>{item}</div>
+                    <InlineCitation
+                      text={getInlineCitation(
+                        patternRef?.source_note_ids,
+                        data.raw_operational_notes
+                      )}
+                    />
+                  </div>
+                );
+              })
             ) : (
               <div className="intel-pattern bg-[var(--bg)] text-[var(--text-muted)]">
                 주의 정보 없음
@@ -1991,6 +2048,12 @@ function OpsIntelligenceSection({
               <div key={item.title} className="intel-detail">
                 <div className="intel-detail-title">{item.title}</div>
                 <div className="intel-detail-body">{item.body}</div>
+                <InlineCitation
+                  text={getInlineCitation(
+                    item.sourceNoteIds,
+                    data.raw_operational_notes
+                  )}
+                />
               </div>
             ))}
           </div>

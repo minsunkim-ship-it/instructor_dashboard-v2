@@ -20,6 +20,7 @@ import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
 import {
   generateOperationalIntelligence,
   CURRENT_OPERATIONAL_INTELLIGENCE_PROMPT_VERSION,
+  extractOperationalIntelligencePayload,
 } from "@/lib/operational-intelligence";
 
 export const dynamic = "force-dynamic";
@@ -76,12 +77,11 @@ export async function POST(request: NextRequest) {
 
   // Phase 6 일반화 rule: C_stale 감지 (stored raw_notes=0인데 promptVersion 일치 강사도 재시도).
   // 274명 분석 결과 100% C_stale 패턴 — 이전 sync가 완료 안 됐거나 빈 payload 잔존.
+  // extractOperationalIntelligencePayload로 정확히 raw_operational_notes 카운트.
   const isEmptyOI = (sourceSummary: unknown): boolean => {
     try {
-      const candidate = (sourceSummary ?? {}) as Record<string, unknown>;
-      const nested = (candidate.source_summary ?? candidate) as Record<string, unknown>;
-      const rawNotes = (nested.raw_operational_notes ?? []) as unknown[];
-      return Array.isArray(rawNotes) ? rawNotes.length === 0 : true;
+      const payload = extractOperationalIntelligencePayload(sourceSummary);
+      return payload.raw_operational_notes.length === 0;
     } catch {
       return true;
     }

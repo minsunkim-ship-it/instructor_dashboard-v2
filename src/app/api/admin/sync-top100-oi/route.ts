@@ -67,15 +67,30 @@ export async function POST(request: NextRequest) {
       instructorDbId: true,
       promptVersion: true,
       generatedAt: true,
+      sourceSummary: true,
     },
   });
   const oiByInstructor = new Map(
     existingOI.map((row) => [row.instructorDbId, row])
   );
 
+  // Phase 6 일반화 rule: C_stale 감지 (stored raw_notes=0인데 promptVersion 일치 강사도 재시도).
+  // 274명 분석 결과 100% C_stale 패턴 — 이전 sync가 완료 안 됐거나 빈 payload 잔존.
+  const isEmptyOI = (sourceSummary: unknown): boolean => {
+    try {
+      const candidate = (sourceSummary ?? {}) as Record<string, unknown>;
+      const nested = (candidate.source_summary ?? candidate) as Record<string, unknown>;
+      const rawNotes = (nested.raw_operational_notes ?? []) as unknown[];
+      return Array.isArray(rawNotes) ? rawNotes.length === 0 : true;
+    } catch {
+      return true;
+    }
+  };
+
   const staleIds: string[] = [];
   const upToDateIds: string[] = [];
   const newEntryIds: string[] = [];
+  const cStaleIds: string[] = [];
   for (const inst of topInst) {
     const oi = oiByInstructor.get(inst.id);
     if (!oi) {
@@ -85,9 +100,14 @@ export async function POST(request: NextRequest) {
     }
     if (oi.promptVersion !== CURRENT_OPERATIONAL_INTELLIGENCE_PROMPT_VERSION) {
       staleIds.push(inst.id);
-    } else {
-      upToDateIds.push(inst.id);
+      continue;
     }
+    if (isEmptyOI(oi.sourceSummary)) {
+      cStaleIds.push(inst.id);
+      staleIds.push(inst.id);
+      continue;
+    }
+    upToDateIds.push(inst.id);
   }
 
   if (dryRun) {
@@ -99,6 +119,7 @@ export async function POST(request: NextRequest) {
       stale_count: staleIds.length,
       up_to_date_count: upToDateIds.length,
       new_entry_count: newEntryIds.length,
+      c_stale_count: cStaleIds.length,
       new_entry_names: topInst
         .filter((i) => newEntryIds.includes(i.id))
         .map((i) => i.name),

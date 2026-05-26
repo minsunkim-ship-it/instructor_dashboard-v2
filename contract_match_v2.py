@@ -9,6 +9,9 @@ for sname, name_col, sched_col, loc_col, link_col in [
     ("강사_일반계약요청 (사용XXXXX)", 9, 13, 14, 7),
     ("강사_일반계약요청의 사본(달리수정중)", 10, 15, 16, 8),
     ("강사_일반계약요청_삼성전자", 8, 12, 13, 6),
+    # v24-30: 변경계약 sheets 추가
+    ("강사_변경계약요청", 9, 13, 14, 7),
+    ("강사_변경계약요청의 (달리수정중)", 10, 15, 16, 8),
 ]:
     ws = wb[sname]
     for r in range(3, ws.max_row + 1):
@@ -47,17 +50,14 @@ def date_in(target_dt, sched_str, window=0):
     return False
 
 def co_match(co, c):
-    """회사명 매칭 — strict (full) 또는 partial (core word)"""
+    """회사명 매칭 — strict only. partial는 너무 wide (KB/S/KT 잡힘)."""
     co_clean = co.replace(" ","").replace("-","").lower()
     haystack = (c["location"] + " " + c["schedule"] + " " + c["link"]).lower().replace(" ","")
-    if not co_clean: return False, ""
-    # strict
+    if not co_clean or len(co_clean) < 3: return False, ""
     if co_clean in haystack:
         return True, "strict"
-    # partial — 회사명의 핵심 단어
-    # "KB ACE Academy" → KB만 (너무 짧음 X), "ACE Academy"
-    # "삼성디스플레이" → 삼성 디스플레이 etc
-    core_words = re.findall(r"[가-힣]{3,}|[A-Za-z]{3,}", co)
+    # partial: 회사명 ≥4자 core word만
+    core_words = re.findall(r"[가-힣]{4,}|[A-Za-z]{4,}", co)
     for w in core_words:
         if w.lower() in haystack:
             return True, f"partial:{w}"
@@ -80,6 +80,21 @@ for r in target:
         target_dict = strict_cands if ctype == "strict" else partial_cands
         target_dict.setdefault(c["name"], []).append((c, ctype))
 
+    # v24-30: ambig 정리 — 일정이 응답일과 가까운 strict cand 우선
+    def closest_strict(cands_dict):
+        """strict cand 중 response_date 매칭이 가장 정확한 1명 선택"""
+        if len(cands_dict) <= 1: return None
+        # 각 cand의 일정에 정확히 dt 포함하는 contract 찾기
+        best = []
+        for name, contracts in cands_dict.items():
+            for c, _ in contracts:
+                # date_in window=0 strict
+                if date_in(dt, c["schedule"], window=0):
+                    best.append((name, c))
+        if len(best) == 1:
+            return best[0]
+        return None
+
     if len(strict_cands) == 1:
         name = list(strict_cands.keys())[0]
         c, ctype = strict_cands[name][0]
@@ -88,7 +103,16 @@ for r in target:
         name = list(partial_cands.keys())[0]
         c, ctype = partial_cands[name][0]
         plans_partial.append({"rk": rk, "name": name, "co": co, "crs": crs, "dt": dt, "ev": f"{c['sheet'][:5]}_r{c['row']}_{ctype}"})
-    elif strict_cands or partial_cands:
+    elif strict_cands:
+        # strict ambig — closest_strict로 좁히기
+        chosen = closest_strict(strict_cands)
+        if chosen:
+            name, c = chosen
+            plans_strict.append({"rk": rk, "name": name, "co": co, "crs": crs, "dt": dt, "ev": f"{c['sheet'][:5]}_r{c['row']}_strict_closest"})
+        else:
+            combo = {**strict_cands, **partial_cands}
+            ambig.append({"co": co, "dt": dt, "names": list(combo.keys())})
+    elif partial_cands:
         combo = {**strict_cands, **partial_cands}
         ambig.append({"co": co, "dt": dt, "names": list(combo.keys())})
 
@@ -103,6 +127,10 @@ print()
 print("=== partial plans ===")
 for p in plans_partial:
     print(f"  {p['co'][:14]:14s} | {p['dt']} | {p['crs'][:25]:25s} -> {p['name']:6} [{p['ev']}]")
+print()
+print("=== ambiguous (candidates 다중) ===")
+for a in ambig[:30]:
+    print(f"  {a['co'][:14]:14s} | {a['dt']} | {a['names']}")
 
 # generate curl commands
 with open(r"C:\Users\Day1_김민선\Downloads\instructor_db\curl_cmds.sh", "w", encoding="utf-8") as f:

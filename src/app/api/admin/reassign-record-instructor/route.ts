@@ -37,30 +37,20 @@ export async function POST(request: NextRequest) {
 
   const oldInstructorId = rec.instructorDbId;
 
-  // record 강사 변경 + sourceRef에 reassign 기록
-  const oldRef = (rec.sourceRef ?? {}) as Record<string, unknown>;
-  await prisma.satisfactionRecord.update({
-    where: { id: recordId },
-    data: {
-      instructorDbId: newInst.id,
-      sourceRef: {
-        ...oldRef,
-        reassign_history: [
-          ...(Array.isArray(oldRef.reassign_history) ? oldRef.reassign_history : []),
-          {
-            from_instructor_id: oldInstructorId,
-            to_instructor_id: newInst.id,
-            to_name: newInstructorName,
-            basis,
-            at: new Date().toISOString(),
-          },
-        ],
-      } as object,
-    },
-  });
-
-  // refresh aggregates (양쪽)
-  await refreshSatisfactionAggregates([oldInstructorId, newInst.id]);
+  try {
+    // 단순 update — sourceRef 변동 없이 instructor만 변경
+    await prisma.satisfactionRecord.update({
+      where: { id: recordId },
+      data: { instructorDbId: newInst.id },
+    });
+    await refreshSatisfactionAggregates([oldInstructorId, newInst.id]);
+  } catch (e) {
+    return NextResponse.json({
+      ok: false,
+      error: "update_failed",
+      detail: e instanceof Error ? e.message : String(e),
+    }, { status: 500 });
+  }
 
   return NextResponse.json({
     ok: true,

@@ -126,9 +126,11 @@ export async function POST(request: NextRequest) {
   }
 
   // v24-23: 모든 valid sheet (회차별 sub-sheet 포함)
+  const debugFlag = request.nextUrl.searchParams.get("debug") === "1";
   const validSheets = file.sheets.filter((s) => s.rows.length >= 2);
+  const debugSheets: Array<{ title: string; row_count: number; score_idx: number; header_first: string[]; ts_first: string | null; row1_score: string | null; row1_parsed_ts: boolean; row1_parsed_score: number | null; pushed: number }> = [];
   if (validSheets.length === 0) {
-    return NextResponse.json({ ok: false, error: "no_response_sheet" }, { status: 422 });
+    return NextResponse.json({ ok: false, error: "no_response_sheet", total_sheets_in_file: file.sheets.length, debug: file.sheets.map((s) => ({ title: s.title, rows: s.rows.length })) }, { status: 422 });
   }
 
   interface Resp { ts: Date; score: number }
@@ -136,19 +138,48 @@ export async function POST(request: NextRequest) {
   for (const sheet of validSheets) {
     const header = sheet.rows[0];
     const scoreIdx = findScoreColumnIndex(header);
-    if (scoreIdx === -1) continue;
-    for (let i = 1; i < sheet.rows.length; i += 1) {
-      const row = sheet.rows[i];
-      if (!row) continue;
-      const ts = parseRowTimestamp(row[0]);
-      if (!ts) continue;
-      const score = parseScore(row[scoreIdx] ?? "");
-      if (score === null) continue;
-      responses.push({ ts, score });
+    let pushed = 0;
+    let row1ParsedTs = false;
+    let row1ParsedScore: number | null = null;
+    if (scoreIdx !== -1) {
+      for (let i = 1; i < sheet.rows.length; i += 1) {
+        const row = sheet.rows[i];
+        if (!row) continue;
+        const ts = parseRowTimestamp(row[0]);
+        if (i === 1) {
+          row1ParsedTs = ts !== null;
+          row1ParsedScore = parseScore(row[scoreIdx] ?? "");
+        }
+        if (!ts) continue;
+        const score = parseScore(row[scoreIdx] ?? "");
+        if (score === null) continue;
+        responses.push({ ts, score });
+        pushed += 1;
+      }
+    }
+    if (debugFlag) {
+      debugSheets.push({
+        title: sheet.title,
+        row_count: sheet.rows.length,
+        score_idx: scoreIdx,
+        header_first: header.slice(0, 10),
+        ts_first: sheet.rows[1]?.[0] ?? null,
+        row1_score: scoreIdx !== -1 ? (sheet.rows[1]?.[scoreIdx] ?? null) : null,
+        row1_parsed_ts: row1ParsedTs,
+        row1_parsed_score: row1ParsedScore,
+        pushed,
+      });
     }
   }
   if (responses.length === 0) {
-    return NextResponse.json({ ok: false, error: "no_valid_responses" }, { status: 422 });
+    return NextResponse.json({
+      ok: false,
+      error: "no_valid_responses",
+      file_name: file.fileName,
+      total_sheets_in_file: file.sheets.length,
+      valid_sheets: validSheets.length,
+      debug_sheets: debugFlag ? debugSheets : undefined,
+    }, { status: 422 });
   }
 
   // ops_report messages — 회사 매칭만 사전 filter (response range에 한정)

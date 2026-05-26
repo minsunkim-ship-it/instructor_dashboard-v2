@@ -733,7 +733,7 @@ function resolveInstructorIdFromActivity(
   return null;
 }
 
-function buildRawNoteBuildContext(
+export function buildRawNoteBuildContext(
   instructors: Instructor[],
   satisfactionImports: SatisfactionImportSignalRow[],
   activitySignals: ActivitySignalRow[]
@@ -2814,7 +2814,7 @@ function buildGmailActivityRawNotes(
   ];
 }
 
-function buildRawOperationalNotes(
+export function buildRawOperationalNotes(
   instructor: InstructorWithSignals,
   loadedOpsNotes: OpsNotesLoadResult,
   context: RawNoteBuildContext
@@ -3996,6 +3996,148 @@ async function buildPayloadForInstructor(
     },
     usedLlm: llmResult.usedLlm || behavioralSummaryResult.usedLlm,
   };
+}
+
+/**
+ * Phase 6 probe: 강사별 buildRawOperationalNotes 결과 진단용.
+ * generateOperationalIntelligence와 동일 fetch + context build이지만 LLM 미사용.
+ * upsert 안 함. read-only.
+ */
+export interface ProbeRawNotesResult {
+  instructor_id: string;
+  instructor_name: string;
+  context_match: {
+    sat_in_context: number;
+    activity_in_context: number;
+  };
+  raw_notes: {
+    total: number;
+    by_source_type: Record<string, number>;
+    sample_first_3: Array<{
+      source_type: string;
+      client_name: string | null;
+      course_name: string | null;
+      raw_text_preview: string;
+    }>;
+  };
+  stats: GeneratorStats;
+  existing_oi: {
+    prompt_version: string | null;
+    generated_by: string | null;
+    evidence_hash_prefix: string | null;
+    data_richness: string | null;
+    stored_raw_note_count: number;
+  } | null;
+}
+
+export async function probeInstructorRawNotes(args: {
+  instructorIds: string[];
+}): Promise<{ results: ProbeRawNotesResult[] }> {
+  const loadedOpsNotes = resolveOpsNotesLoadResult(undefined);
+  const [instructors, satisfactionImports, activitySignals, existingOI] =
+    await Promise.all([
+      prisma.instructor.findMany({}),
+      prisma.satisfactionImportItem.findMany({
+        orderBy: [{ responseDate: "desc" }, { createdAt: "desc" }],
+        select: {
+          id: true,
+          sourceType: true,
+          sourceRef: true,
+          rawPayload: true,
+          normalizedPayload: true,
+          candidateName: true,
+          candidateCompanyName: true,
+          candidateCourseName: true,
+          responseDate: true,
+          createdAt: true,
+        },
+      }),
+      prisma.activityImportItem.findMany({
+        orderBy: [{ activityAt: "desc" }, { createdAt: "desc" }],
+        select: {
+          id: true,
+          sourceType: true,
+          matchedInstructorId: true,
+          candidateName: true,
+          rawPayload: true,
+          activityAt: true,
+          isOpsReport: true,
+          isDispatchRequest: true,
+          createdAt: true,
+        },
+      }),
+      prisma.instructorIntelligence.findMany({
+        where: { instructorDbId: { in: args.instructorIds } },
+        select: {
+          instructorDbId: true,
+          promptVersion: true,
+          generatedBy: true,
+          evidenceHash: true,
+          dataRichness: true,
+          sourceSummary: true,
+        },
+      }),
+    ]);
+
+  const targets = instructors.filter((i) => args.instructorIds.includes(i.id));
+  const context = buildRawNoteBuildContext(
+    instructors,
+    satisfactionImports,
+    activitySignals
+  );
+  const oiByInstructor = new Map(
+    existingOI.map((row) => [row.instructorDbId, row])
+  );
+
+  const results: ProbeRawNotesResult[] = targets.map((instructor) => {
+    const satInContext = context.satisfactionImportsByInstructor.get(instructor.id) ?? [];
+    const actInContext = context.activitySignalsByInstructor.get(instructor.id) ?? [];
+    const { rawNotes, stats } = buildRawOperationalNotes(
+      instructor,
+      loadedOpsNotes,
+      context
+    );
+    const byType: Record<string, number> = {};
+    for (const note of rawNotes) {
+      byType[note.source_type] = (byType[note.source_type] ?? 0) + 1;
+    }
+    const oi = oiByInstructor.get(instructor.id) ?? null;
+    let storedRawCount = 0;
+    if (oi?.sourceSummary) {
+      const payload = extractOperationalIntelligencePayload(oi.sourceSummary);
+      storedRawCount = payload.raw_operational_notes.length;
+    }
+    return {
+      instructor_id: instructor.id,
+      instructor_name: instructor.name,
+      context_match: {
+        sat_in_context: satInContext.length,
+        activity_in_context: actInContext.length,
+      },
+      raw_notes: {
+        total: rawNotes.length,
+        by_source_type: byType,
+        sample_first_3: rawNotes.slice(0, 3).map((n) => ({
+          source_type: n.source_type,
+          client_name: n.client_name,
+          course_name: n.course_name,
+          raw_text_preview: n.raw_text.slice(0, 200),
+        })),
+      },
+      stats,
+      existing_oi: oi
+        ? {
+            prompt_version: oi.promptVersion,
+            generated_by: oi.generatedBy,
+            evidence_hash_prefix: oi.evidenceHash?.slice(0, 10) ?? null,
+            data_richness: oi.dataRichness,
+            stored_raw_note_count: storedRawCount,
+          }
+        : null,
+    };
+  });
+
+  return { results };
 }
 
 export async function generateOperationalIntelligence(

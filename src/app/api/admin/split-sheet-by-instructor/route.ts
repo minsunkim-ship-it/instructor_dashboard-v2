@@ -55,18 +55,45 @@ function parseRowTimestamp(value: string | null | undefined): Date | null {
   return null;
 }
 
+// v24-24: drive-normalizer의 정확한 패턴 + SUB_CATEGORY 차단
+const INSTRUCTOR_SAT_PATTERNS = [
+  /강사.*만족도/,
+  /강사.*만족하/,
+  /강의.*강사.*만족/,
+  /강사.*강의.*만족/,
+];
+const OVERALL_SAT_PATTERNS = [
+  /전체\s*만족도/,
+  /전반적인?\s*(강의\s*)?만족도/,
+  /전반적인?\s*(세미나\s*)?만족도/,
+  /전반적으로\s*만족/,
+  /^\d+\.\s*(강의\s*)?만족도\s*평가/,
+  /^강의\s*만족도\s*평가/,
+  /^만족도\s*평가/,
+  /^\d+\.\s*전체\s*강의\s*만족도/,
+];
+const SATISFACTION_KEY = /만족(도|하|스|합)/;
+const SUB_CATEGORY = /\[커리큘럼\]|\[인사이트\]|\[이론.*실습\]|\[현업적용\]|\[교수법\]|\[추천지수\]|난이도|속도|추천|어려운|이유/;
+
 function findScoreColumnIndex(headerRow: string[]): number {
-  // 강사 만족도 우선
-  for (let i = 0; i < headerRow.length; i += 1) {
-    if (/강사.*만족/.test(headerRow[i] ?? "")) return i;
+  // 1순위: 강사 만족도
+  for (const p of INSTRUCTOR_SAT_PATTERNS) {
+    for (let i = 0; i < headerRow.length; i += 1) {
+      const cell = headerRow[i]?.trim() ?? "";
+      if (p.test(cell) && !SUB_CATEGORY.test(cell)) return i;
+    }
   }
-  // 전반적 만족도
-  for (let i = 0; i < headerRow.length; i += 1) {
-    if (/전반적|전체|만족하/.test(headerRow[i] ?? "")) return i;
+  // 2순위: 전체/전반적 만족도
+  for (const p of OVERALL_SAT_PATTERNS) {
+    for (let i = 0; i < headerRow.length; i += 1) {
+      const cell = headerRow[i]?.trim() ?? "";
+      if (p.test(cell) && !SUB_CATEGORY.test(cell)) return i;
+    }
   }
-  // generic 만족
+  // 3순위: 만족 keyword (sub-category 제외)
   for (let i = 0; i < headerRow.length; i += 1) {
-    if (/만족/.test(headerRow[i] ?? "")) return i;
+    const cell = headerRow[i]?.trim() ?? "";
+    if (SATISFACTION_KEY.test(cell) && !SUB_CATEGORY.test(cell)) return i;
   }
   return -1;
 }

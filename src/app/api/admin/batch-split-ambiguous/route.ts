@@ -225,37 +225,36 @@ export async function POST(request: NextRequest) {
       skipped.push({ registry_key: reg.registryKey, reason: "file_not_found" });
       continue;
     }
-    const sheet = file.sheets.find((s) => s.rows.length >= 2);
-    if (!sheet) {
+    // v24-23: 모든 sheet 처리 (회차별 sub-sheet 포함)
+    const validSheets = file.sheets.filter((s) => s.rows.length >= 2);
+    if (validSheets.length === 0) {
       skipped.push({ registry_key: reg.registryKey, reason: "no_response_sheet" });
       continue;
     }
-    const header = sheet.rows[0];
-    const scoreIdx = findScoreColumnIndex(header);
-    if (scoreIdx === -1) {
-      skipped.push({ registry_key: reg.registryKey, reason: "no_score_column" });
-      continue;
-    }
-    const tsIdx = findTimestampColumnIndex(header);
 
     interface Resp { ts: Date; score: number }
     const responses: Resp[] = [];
-    for (let i = 1; i < sheet.rows.length; i += 1) {
-      const row = sheet.rows[i];
-      if (!row) continue;
-      let ts = parseRowTimestamp(row[tsIdx]);
-      // fallback: 다른 column에서 timestamp 찾기
-      if (!ts) {
-        for (let j = 0; j < row.length; j += 1) {
-          if (j === tsIdx) continue;
-          ts = parseRowTimestamp(row[j]);
-          if (ts) break;
+    for (const sheet of validSheets) {
+      const header = sheet.rows[0];
+      const scoreIdx = findScoreColumnIndex(header);
+      if (scoreIdx === -1) continue;
+      const tsIdx = findTimestampColumnIndex(header);
+      for (let i = 1; i < sheet.rows.length; i += 1) {
+        const row = sheet.rows[i];
+        if (!row) continue;
+        let ts = parseRowTimestamp(row[tsIdx]);
+        if (!ts) {
+          for (let j = 0; j < row.length; j += 1) {
+            if (j === tsIdx) continue;
+            ts = parseRowTimestamp(row[j]);
+            if (ts) break;
+          }
         }
+        if (!ts) continue;
+        const score = parseScore(row[scoreIdx] ?? "");
+        if (score === null) continue;
+        responses.push({ ts, score });
       }
-      if (!ts) continue;
-      const score = parseScore(row[scoreIdx] ?? "");
-      if (score === null) continue;
-      responses.push({ ts, score });
     }
     if (responses.length === 0) {
       skipped.push({ registry_key: reg.registryKey, reason: "no_valid_responses" });

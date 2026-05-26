@@ -125,28 +125,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "file_not_found" }, { status: 404 });
   }
 
-  // 첫 응답 sheet (rows >= 2)
-  const sheet = file.sheets.find((s) => s.rows.length >= 2);
-  if (!sheet) {
+  // v24-23: 모든 valid sheet (회차별 sub-sheet 포함)
+  const validSheets = file.sheets.filter((s) => s.rows.length >= 2);
+  if (validSheets.length === 0) {
     return NextResponse.json({ ok: false, error: "no_response_sheet" }, { status: 422 });
   }
-  const header = sheet.rows[0];
-  const scoreIdx = findScoreColumnIndex(header);
-  if (scoreIdx === -1) {
-    return NextResponse.json({ ok: false, error: "no_score_column" }, { status: 422 });
-  }
 
-  // 응답 row마다 timestamp + score 추출
   interface Resp { ts: Date; score: number }
   const responses: Resp[] = [];
-  for (let i = 1; i < sheet.rows.length; i += 1) {
-    const row = sheet.rows[i];
-    if (!row) continue;
-    const ts = parseRowTimestamp(row[0]);
-    if (!ts) continue;
-    const score = parseScore(row[scoreIdx] ?? "");
-    if (score === null) continue;
-    responses.push({ ts, score });
+  for (const sheet of validSheets) {
+    const header = sheet.rows[0];
+    const scoreIdx = findScoreColumnIndex(header);
+    if (scoreIdx === -1) continue;
+    for (let i = 1; i < sheet.rows.length; i += 1) {
+      const row = sheet.rows[i];
+      if (!row) continue;
+      const ts = parseRowTimestamp(row[0]);
+      if (!ts) continue;
+      const score = parseScore(row[scoreIdx] ?? "");
+      if (score === null) continue;
+      responses.push({ ts, score });
+    }
   }
   if (responses.length === 0) {
     return NextResponse.json({ ok: false, error: "no_valid_responses" }, { status: 422 });

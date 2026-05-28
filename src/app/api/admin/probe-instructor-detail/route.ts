@@ -45,7 +45,16 @@ export async function GET(request: NextRequest) {
         flag: true,
         satisfactionAvg: true,
         satisfactionCount: true,
+        satisfactionIsImputed: true,
         totalCourses: true,
+        contractSheetRows: true,
+        salesmapDealCount: true,
+        salesmapLastDealAt: true,
+        score: true,
+        scoreBreakdown: true,
+        scoreCalculatedAt: true,
+        rank: true,
+        isPracticeCoach: true,
       },
     });
     const ths = await prisma.teachingHistory.findMany({
@@ -72,6 +81,7 @@ export async function GET(request: NextRequest) {
         ? {
             ...inst,
             satisfactionAvg: inst.satisfactionAvg !== null ? Number(inst.satisfactionAvg) : null,
+            score: inst.score !== null ? Number(inst.score) : null,
           }
         : null,
       teaching_histories: ths.map((t) => ({

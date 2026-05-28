@@ -90,15 +90,26 @@ function parseDateLabel(label: string | null): {
     if (s && e) return { start: s, end: e };
   }
 
-  // Single date "YYYY.M.D" or "YYYY년 M월 D일"
-  const single =
-    /(\d{4})\s*[.년]\s*(\d{1,2})\s*[.월]\s*(\d{1,2})\.?/u.exec(cleaned);
-  if (single) {
-    const y = parseInt(single[1], 10);
-    const m = parseInt(single[2], 10);
-    const d = parseInt(single[3], 10);
-    const s = makeDate(y, m, d);
-    if (s) return { start: s, end: s };
+  // Multi-day pattern: 한 셀에 여러 일자 (개행으로 구분)
+  // 예: "2025.07.14 (월) 8H\n2025.07.15 (화) 8H\n2025.07.21 (월) 8H"
+  // 모든 매치 수집 → 첫번째=start, 마지막=end
+  const allDates = [
+    ...cleaned.matchAll(/(\d{4})\s*[.년]\s*(\d{1,2})\s*[.월]\s*(\d{1,2})\.?/gu),
+  ];
+  if (allDates.length > 0) {
+    const valid: Date[] = [];
+    for (const m of allDates) {
+      const d = makeDate(
+        parseInt(m[1], 10),
+        parseInt(m[2], 10),
+        parseInt(m[3], 10)
+      );
+      if (d) valid.push(d);
+    }
+    if (valid.length > 0) {
+      valid.sort((a, b) => a.getTime() - b.getTime());
+      return { start: valid[0], end: valid[valid.length - 1] };
+    }
   }
 
   return { start: null, end: null };
@@ -126,10 +137,14 @@ export function normalizeFulltimeRow(
 ): NormalizedFulltimeRow | null {
   const v = raw.values;
 
-  // 진행확정여부 = O 또는 빈칸만 허용 (row_with_instructor)
+  // 진행확정여부 = O / true / ㅇ / 1 통과. X / false / 0 거부. 빈칸도 통과.
+  // 신동원·김재성 탭은 "O" 입력, 공지연 탭은 체크박스("true") 입력 — 두 표기 모두 허용.
   if (raw.kind === "row_with_instructor") {
     const confirmation = emptyToNull(v["진행확정여부"]);
-    if (confirmation && confirmation.toUpperCase() !== "O") return null;
+    if (confirmation) {
+      const c = confirmation.trim().toLowerCase();
+      if (c === "x" || c === "false" || c === "0" || c === "no") return null;
+    }
   }
 
   const instructorName =

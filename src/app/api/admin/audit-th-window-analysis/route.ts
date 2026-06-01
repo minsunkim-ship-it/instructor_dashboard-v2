@@ -16,19 +16,30 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
+import {
+  normalizeCompanyWithAlias,
+  companyMatchesWithAlias,
+} from "@/lib/company-aliases";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 90;
 
 function normalize(s: string | null | undefined): string {
-  return (s ?? "")
-    .toLowerCase()
-    .replace(/[\s()[\]{}.,:;'"`~!?+\-_/\\|]+/g, "");
+  return normalizeCompanyWithAlias(s);
 }
 
 function companyMatch(a: string, b: string): boolean {
+  // alias-aware. raw 인풋이 이미 normalize 됐지만 group SET은 normalize 통과 후
+  // 외형이 다른 그룹사도 매칭하려면 원문에 SET 매칭을 시도. 여기는 normalize된
+  // string끼리 비교라 SET 매칭이 효과 없음 — companyMatchesWithAlias가 raw 원문
+  // 받는 곳에서 적용해야. 이 함수는 fallback substring 매칭만.
   if (!a || !b || a.length < 2 || b.length < 2) return false;
   return a === b || a.includes(b) || b.includes(a);
+}
+
+// 원문 그대로 받아서 alias + group SET 매칭. 우선 사용.
+function companyMatchRaw(a: string | null | undefined, b: string | null | undefined): boolean {
+  return companyMatchesWithAlias(a, b);
 }
 
 export async function GET(request: NextRequest) {
@@ -59,15 +70,20 @@ export async function GET(request: NextRequest) {
     },
   });
 
-  // group TH by instructor
-  const thByInst = new Map<string, Array<{ company: string; start: number; end: number }>>();
+  // group TH by instructor — keep raw companyName for alias-aware matching
+  const thByInst = new Map<string, Array<{ companyRaw: string; company: string; start: number; end: number }>>();
   for (const t of allTHs) {
     if (!t.companyName) continue;
     const start = t.startDate?.getTime();
     if (!start) continue;
     const end = t.endDate?.getTime() ?? start;
     const arr = thByInst.get(t.instructorDbId) ?? [];
-    arr.push({ company: normalize(t.companyName), start, end });
+    arr.push({
+      companyRaw: t.companyName,
+      company: normalize(t.companyName),
+      start,
+      end,
+    });
     thByInst.set(t.instructorDbId, arr);
   }
 
@@ -97,7 +113,12 @@ export async function GET(request: NextRequest) {
     }
     const respMs = r.responseDate?.getTime();
     const ths = thByInst.get(r.instructorDbId) ?? [];
-    const sameCompanyTHs = ths.filter((t) => companyMatch(t.company, recCo));
+    // alias-aware: raw companyRaw 로 group SET 매칭 + normalize 비교 fallback
+    const sameCompanyTHs = ths.filter(
+      (t) =>
+        companyMatchRaw(t.companyRaw, r.companyName) ||
+        companyMatch(t.company, recCo)
+    );
 
     if (sameCompanyTHs.length === 0) {
       tiers.tier5_company_no_th += 1;

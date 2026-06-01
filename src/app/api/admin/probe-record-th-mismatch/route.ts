@@ -26,7 +26,10 @@ function authorize(request: NextRequest): boolean {
   return false;
 }
 
-import { normalizeCompanyWithAlias } from "@/lib/company-aliases";
+import {
+  normalizeCompanyWithAlias,
+  companyMatchesWithAlias,
+} from "@/lib/company-aliases";
 
 function normalizeCompany(value: string | null | undefined): string {
   return normalizeCompanyWithAlias(value);
@@ -35,6 +38,14 @@ function normalizeCompany(value: string | null | undefined): string {
 function companyMatches(a: string, b: string): boolean {
   if (!a || !b) return false;
   return a === b || a.includes(b) || b.includes(a);
+}
+
+// raw 원문 받아서 group SET (KB / JB / 웰컴 등) 매칭 포함
+function companyMatchesRaw(
+  a: string | null | undefined,
+  b: string | null | undefined
+): boolean {
+  return companyMatchesWithAlias(a, b);
 }
 
 export async function GET(request: NextRequest) {

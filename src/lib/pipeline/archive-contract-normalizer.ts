@@ -199,33 +199,74 @@ function extractCompanyFromText(
   return null;
 }
 
+// 강사명 정제: "김권현\n- 데이터분석을 위한 확률/통계" → "김권현"
+// 삼성전자 sheet 등에서 강사명에 직무/과목 suffix가 결합된 케이스 대응.
+function cleanInstructorName(raw: string | null): string | null {
+  if (!raw) return null;
+  let n = raw.trim();
+  // newline 이전만
+  n = n.split("\n")[0].trim();
+  // ' - ' / ' / ' / ' (' 직무 suffix 제거
+  n = n.split(" - ")[0].split(" /")[0].split(" (")[0].trim();
+  // 한자/특수문자/공백만 남으면 reject
+  if (n.length === 0 || n.length > 20) return null;
+  return n;
+}
+
+// sheet name에서 회사명 inference. "강사_일반계약요청_삼성전자" → "삼성전자"
+function inferCompanyFromSheetName(sheetName: string): string | null {
+  // 패턴: 마지막 _ 뒤
+  const lastUnder = sheetName.lastIndexOf("_");
+  if (lastUnder < 0) return null;
+  const tail = sheetName.slice(lastUnder + 1).trim();
+  // 흔한 회사명 keyword (간단 화이트리스트)
+  const known = ["삼성전자", "삼성디스플레이", "삼성생명", "삼성화재", "현대자동차", "LG전자", "KB", "SK"];
+  for (const kw of known) {
+    if (tail.includes(kw)) return tail;
+  }
+  // 일반적 길이/문자 패턴
+  if (tail.length >= 2 && tail.length <= 15 && !/계약|요청|등록|변경|일반|조교|실습/.test(tail)) {
+    return tail;
+  }
+  return null;
+}
+
 export function normalizeArchiveRow(
   raw: RawArchiveRow,
   dynamicCompanyKeywords?: string[]
 ): NormalizedArchiveRow | null {
   const v = raw.values;
-  const instructorName = emptyToNull(v["강사명"]);
+
+  // 강사명 정제 (newline / 직무 suffix 제거)
+  const instructorName = cleanInstructorName(emptyToNull(v["강사명"]));
   if (!instructorName) return null;
 
+  // 일정: 일반 sheet는 "강의 일정", 변경계약은 "변경 후" 또는 "변경 전" (변경 후 우선)
   const dateLabel =
-    emptyToNull(v["강의 일정"]) ?? emptyToNull(v["강의일정"]);
+    emptyToNull(v["강의 일정"]) ??
+    emptyToNull(v["강의일정"]) ??
+    emptyToNull(v["변경 후"]) ??
+    emptyToNull(v["변경 전"]);
   const { start, end } = parseDateLabel(dateLabel);
-  if (!start) return null; // 일정 파싱 실패 → skip
+  if (!start) return null;
 
   const venue = emptyToNull(v["강의 장소 or 강의 방식"]) ?? emptyToNull(v["강의 장소"]);
-  const memo = emptyToNull(v["비고"]);
+  const memo = emptyToNull(v["비고"]) ?? emptyToNull(v["변경 사유 및 내용"]);
   const courseLink = emptyToNull(v["계약 코스 링크"]);
-
-  // 회사명: 장소 → 비고 → 과정명 → 코스 링크에서 추출 시도
   const courseName = emptyToNull(v["과정명"]) ?? emptyToNull(v["코스명"]);
-  const companyName =
+
+  // 회사명: 장소 → 비고/변경사유 → 과정명 → 코스 링크 → sheet name inference
+  let companyName =
     extractCompanyFromText(venue, dynamicCompanyKeywords) ??
     extractCompanyFromText(memo, dynamicCompanyKeywords) ??
     extractCompanyFromText(courseName, dynamicCompanyKeywords) ??
     extractCompanyFromText(courseLink, dynamicCompanyKeywords);
+  if (!companyName) {
+    companyName = inferCompanyFromSheetName(raw.sheetName);
+  }
 
   // F5: totalHours > 999.99 (Decimal(5,2)) 방어
-  let totalHours = parseNumberLike(v["총 강의 시수"] ?? v["총강의시수"]);
+  let totalHours = parseNumberLike(v["총 강의 시수"] ?? v["총강의시수"] ?? v["총시수"]);
   if (totalHours !== null && totalHours > 999.99) totalHours = 999.99;
   if (totalHours !== null && totalHours < 0) totalHours = null;
 

@@ -10,12 +10,18 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CRON_SECRET_HEADER, isValidCronSecret } from "@/lib/cron-auth";
+import {
+  normalizeCompanyWithAlias,
+  companyMatchesWithAlias,
+} from "@/lib/company-aliases";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+// alias-aware normalize. KB금융그룹 ↔ 케이비국민은행 / 웰컴저축은행 ↔ 웰컴금융그룹
+// 같은 그룹사 매칭 통합 (group SET 적용).
 function normalize(value: string | null | undefined): string {
-  return (value ?? "").toLowerCase().replace(/[\s()[\]{}.,:;'"`~!?+\-_/\\|]+/g, "");
+  return normalizeCompanyWithAlias(value);
 }
 
 export async function GET(request: NextRequest) {
@@ -96,8 +102,8 @@ export async function GET(request: NextRequest) {
       const THIRTY = 30 * 24 * 60 * 60 * 1000;
       for (const t of candidateTHs) {
         if (!t.companyName) continue;
-        const tn = normalize(t.companyName);
-        if (!(tn === recCompany || tn.includes(recCompany) || recCompany.includes(tn))) {
+        // alias + group SET 적용된 매칭
+        if (!companyMatchesWithAlias(t.companyName, r.companyName)) {
           continue;
         }
         const start = t.startDate?.getTime() ?? null;

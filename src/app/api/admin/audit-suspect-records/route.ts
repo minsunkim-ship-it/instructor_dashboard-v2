@@ -188,9 +188,29 @@ export async function GET(request: NextRequest) {
       if (cnt >= SELF_STRONG_THRESHOLD) self_record_strong = true;
     }
 
+    // drive_satisfaction sheet 신뢰: file_name에 회사명 명시되어 있고
+    // record.companyName과 매칭하면 sheet split 결과 신뢰 = 정상 매칭 (단발도 OK).
+    // 회사명이 generic이면 (2자 미만, 또는 short numeric) skip.
+    let drive_sheet_trust = false;
+    if (r.sourceType === "drive_satisfaction" && recCompany.length >= 3) {
+      const sr = r.sourceRef as Record<string, unknown> | null;
+      const refs = Array.isArray(sr?.source_refs)
+        ? (sr.source_refs as Record<string, unknown>[])
+        : [];
+      const inner =
+        refs[0] && typeof refs[0].source_ref === "object"
+          ? (refs[0].source_ref as Record<string, unknown>)
+          : null;
+      const fileName = typeof inner?.file_name === "string" ? inner.file_name : "";
+      if (fileName && r.companyName && companyMatchesWithAlias(fileName, r.companyName)) {
+        drive_sheet_trust = true;
+      }
+    }
+
     const instructor_in_candidates =
       self_has_company_th_any_date ||
       self_record_strong ||
+      drive_sheet_trust ||
       uniqueCands.some((c) => c.instructor === matched_instructor);
     const suggested_alternative =
       !instructor_in_candidates && uniqueCands.length > 0 ? uniqueCands[0].instructor : null;

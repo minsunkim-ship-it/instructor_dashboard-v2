@@ -44,6 +44,7 @@
     "test:unit:generic-forms-parser": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-generic-forms-parser.ts",
     "test:unit:xlsx-reader": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-xlsx-reader.ts",
     "test:unit:source-key-extraction": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-source-key-extraction.ts",
+    "test:unit:ground-truth-stage-c": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/unit-test-ground-truth-stage-c.ts",
     "audit:satisfaction-coverage": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/audit-satisfaction-coverage.ts",
     "verify:park-sanghoon-e2e": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/verify-park-sanghoon-e2e.ts",
     "verify:satisfaction-coverage-all": "node --experimental-strip-types --loader ./scripts/ts-path-loader.mjs ./scripts/verify-satisfaction-coverage-all.ts",

@@ -23,6 +23,9 @@ export default function AdminLayout({
             <Link href="/admin/review" className="admin-nav-link">
               만족도 검토
             </Link>
+            <Link href="/admin/th-mismatch" className="admin-nav-link">
+              TH mismatch 잔존
+            </Link>
             <Link href="/" className="admin-nav-link admin-nav-link-secondary">
               ↗ 대시보드
             </Link>

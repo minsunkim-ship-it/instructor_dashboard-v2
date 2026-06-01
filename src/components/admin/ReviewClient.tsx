@@ -103,6 +103,35 @@ interface GapsResponse {
   error?: string;
 }
 
+// 잔존 mismatch 분류 (자동 처리 불가)
+interface ResidualItem {
+  record_id: string;
+  instructor_id: string;
+  instructor_name: string;
+  company: string | null;
+  course: string | null;
+  score: number;
+  respondent_count: number | null;
+  response_date: string | null;
+  source_type: string;
+  file_name?: string | null;
+  sheet_title?: string | null;
+  category: string;
+}
+interface ResidualCategory {
+  code: string;
+  label: string;
+  description: string;
+  count: number;
+  items: ResidualItem[];
+}
+interface ResidualResponse {
+  ok: boolean;
+  total?: number;
+  categories?: ResidualCategory[];
+  error?: string;
+}
+
 const LIMIT = 25;
 
 function sourceTypeLabel(t: string): string {
@@ -134,6 +163,11 @@ export default function ReviewClient() {
   const [gapsData, setGapsData] = useState<GapsResponse | null>(null);
   const [gapsOpen, setGapsOpen] = useState(false);
   const [gapsLoading, setGapsLoading] = useState(false);
+  // 잔존 mismatch 분류 (자동 처리 불가)
+  const [residualData, setResidualData] = useState<ResidualResponse | null>(null);
+  const [residualOpen, setResidualOpen] = useState(false);
+  const [residualLoading, setResidualLoading] = useState(false);
+  const [residualExpanded, setResidualExpanded] = useState<Record<string, boolean>>({});
 
   const fetchSuspect = useCallback(async () => {
     setSuspectLoading(true);
@@ -162,10 +196,24 @@ export default function ReviewClient() {
     }
   }, []);
 
+  const fetchResidual = useCallback(async () => {
+    setResidualLoading(true);
+    try {
+      const res = await fetch("/api/backoffice/list-residual-mismatch");
+      const j: ResidualResponse = await res.json();
+      setResidualData(j);
+    } catch {
+      setResidualData({ ok: false, error: "fetch_failed" });
+    } finally {
+      setResidualLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchSuspect();
     fetchGaps();
-  }, [fetchSuspect, fetchGaps]);
+    fetchResidual();
+  }, [fetchSuspect, fetchGaps, fetchResidual]);
 
   const handleSuspectCleanup = async (recordId: string) => {
     try {
@@ -417,6 +465,123 @@ export default function ReviewClient() {
               ))}
             </tbody>
           </table>
+        )}
+      </section>
+
+      {/* 잔존 mismatch 분류 (자동 처리 불가) */}
+      <section style={{
+        marginTop: "0.75rem",
+        padding: "0.875rem 1rem",
+        background: "#fdf4ff",
+        border: "1px solid #c084fc",
+        borderRadius: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <strong style={{ color: "#6b21a8", fontSize: "0.9rem" }}>
+              🧩 잔존 mismatch 분류 ({residualLoading ? "..." : residualData?.total ?? 0}건)
+            </strong>
+            <span style={{ marginLeft: "0.5rem", color: "#581c87", fontSize: "0.8rem" }}>
+              자동 처리 불가 — 운영자 결정 영역
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setResidualOpen((v) => !v)}
+            style={{
+              padding: "0.25rem 0.75rem",
+              fontSize: "0.8rem",
+              background: "#f3e8ff",
+              border: "1px solid #c084fc",
+              borderRadius: 4,
+              cursor: "pointer",
+              color: "#581c87",
+            }}
+          >
+            {residualOpen ? "접기" : "펼치기"}
+          </button>
+        </div>
+        {residualOpen && residualData?.categories && (
+          <div style={{ marginTop: "0.75rem" }}>
+            {residualData.categories.map((cat) => {
+              const expanded = residualExpanded[cat.code] ?? false;
+              return (
+                <div
+                  key={cat.code}
+                  style={{
+                    marginTop: "0.5rem",
+                    background: "white",
+                    border: "1px solid #e9d5ff",
+                    borderRadius: 6,
+                    padding: "0.625rem 0.875rem",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      cursor: "pointer",
+                    }}
+                    onClick={() =>
+                      setResidualExpanded((p) => ({ ...p, [cat.code]: !expanded }))
+                    }
+                  >
+                    <div>
+                      <strong style={{ color: "#581c87", fontSize: "0.85rem" }}>
+                        {cat.label} ({cat.count})
+                      </strong>
+                      <div style={{ color: "#6b7280", fontSize: "0.75rem", marginTop: "0.125rem" }}>
+                        {cat.description}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: "0.75rem", color: "#7c3aed" }}>
+                      {expanded ? "▾" : "▸"}
+                    </span>
+                  </div>
+                  {expanded && cat.items.length > 0 && (
+                    <table className="review-table" style={{ marginTop: "0.625rem", fontSize: "0.78rem" }}>
+                      <thead>
+                        <tr>
+                          <th>강사</th>
+                          <th>회사 / 과정</th>
+                          <th>점수</th>
+                          <th>n</th>
+                          <th>일자</th>
+                          <th>source</th>
+                          <th>file/sheet</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cat.items.map((item) => (
+                          <tr key={item.record_id}>
+                            <td>
+                              <strong>{item.instructor_name}</strong>
+                            </td>
+                            <td>
+                              <div>{item.company ?? <span style={{ color: "#9ca3af" }}>(null)</span>}</div>
+                              {item.course && (
+                                <div style={{ color: "#6b7280", fontSize: "0.7rem" }}>
+                                  {item.course.slice(0, 60)}
+                                </div>
+                              )}
+                            </td>
+                            <td>{item.score.toFixed(2)}</td>
+                            <td>{item.respondent_count ?? "—"}</td>
+                            <td>{item.response_date ?? "—"}</td>
+                            <td>{sourceTypeLabel(item.source_type)}</td>
+                            <td style={{ color: "#6b7280", fontSize: "0.72rem" }}>
+                              {item.file_name?.slice(0, 50) ?? "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </section>
 

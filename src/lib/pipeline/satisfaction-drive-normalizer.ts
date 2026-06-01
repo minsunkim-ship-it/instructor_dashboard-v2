@@ -174,6 +174,22 @@ function parseFileName(fileName: string): FileNameMetadata {
   // 1. companyName이 비정상이면 null로 (UXUI/디자인씽킹/2026/AI 등)
   if (companyName && !isLikelyDriveCompanyName(companyName)) {
     companyName = null;
+    // v28 ground-truth chain: 브래킷 안 사람·차수(또는 blocklist) 때문에 companyName이
+    // 비정상 판정되어 null로 돌아간 경우, 남은 name에 underscore가 있으면 회사명
+    // fallback 재시도. 예: "[3일차] 한국투자저축은행_신입사원DT교육과정" → name="한국투자저축은행_신입사원DT교육과정"
+    // 에서 left="한국투자저축은행" 회복.
+    const retryUnderscore = courseName?.match(/^(.+?)_(.+)$/);
+    if (retryUnderscore) {
+      const left = retryUnderscore[1].trim();
+      if (
+        !PLATFORM_NAMES.includes(left) &&
+        isLikelyDriveCompanyName(left)
+      ) {
+        companyName = left;
+        courseName = retryUnderscore[2].trim();
+        name = courseName;
+      }
+    }
   }
   // 2. courseName이 차수/일차만 남거나 비정상이면 null로
   if (courseName && !isLikelyDriveCourseName(courseName)) {

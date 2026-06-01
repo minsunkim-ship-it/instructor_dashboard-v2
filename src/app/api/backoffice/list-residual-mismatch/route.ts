@@ -164,7 +164,8 @@ export async function GET(request: NextRequest) {
     },
     null_co_gmail_raw_lost: {
       label: "회사명 손실 (gmail raw cleanup)",
-      description: "SatisfactionImportItem cleanup으로 회사 추적 불가. 점수 정상이면 진짜 강의 가능성.",
+      description:
+        "SatisfactionImportItem cleanup으로 회사 추적 불가. record.courseName에 회사명이 박혀있으면 bulk-enrich-null-company가 즉시 회복 가능. 그 외에는 ground-truth-resolve(?suspect_only=1)로 계약시트 backfill 시도.",
       items: [],
     },
     empty_drive_generic: {

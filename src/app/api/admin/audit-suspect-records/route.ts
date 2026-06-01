@@ -87,6 +87,23 @@ export async function GET(request: NextRequest) {
     });
   }
 
+  // 본인 회사 TH any-date 매칭용 별도 fetch (window 결함 회피)
+  const recordInstructorIds = Array.from(new Set(records.map((r) => r.instructorDbId)));
+  const selfAllTHs = await prisma.teachingHistory.findMany({
+    where: {
+      instructorDbId: { in: recordInstructorIds },
+      companyName: { not: null },
+    },
+    select: { instructorDbId: true, companyName: true },
+  });
+  const selfTHByInst = new Map<string, string[]>();
+  for (const t of selfAllTHs) {
+    if (!t.companyName) continue;
+    const arr = selfTHByInst.get(t.instructorDbId) ?? [];
+    arr.push(t.companyName);
+    selfTHByInst.set(t.instructorDbId, arr);
+  }
+
   const items = records.map((r) => {
     const recCompany = normalize(r.companyName);
     const respMs = r.responseDate?.getTime() ?? null;
@@ -135,9 +152,22 @@ export async function GET(request: NextRequest) {
     });
 
     const matched_instructor = r.instructor.name;
-    const instructor_in_candidates = uniqueCands.some(
-      (c) => c.instructor === matched_instructor
-    );
+
+    // 진짜 audit 의도: 본인이 같은 회사 TH가 있으면 (날짜 ±30일 무관) 정상 매칭.
+    // selfTHByInst는 instructor 본인의 ALL TH 회사명 (date filter 없음).
+    let self_has_company_th_any_date = false;
+    if (recCompany.length >= 2) {
+      const selfTHCompanies = selfTHByInst.get(r.instructorDbId) ?? [];
+      for (const co of selfTHCompanies) {
+        if (companyMatchesWithAlias(co, r.companyName)) {
+          self_has_company_th_any_date = true;
+          break;
+        }
+      }
+    }
+    const instructor_in_candidates =
+      self_has_company_th_any_date ||
+      uniqueCands.some((c) => c.instructor === matched_instructor);
     const suggested_alternative =
       !instructor_in_candidates && uniqueCands.length > 0 ? uniqueCands[0].instructor : null;
 

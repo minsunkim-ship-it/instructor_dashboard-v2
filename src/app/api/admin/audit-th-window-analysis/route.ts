@@ -87,6 +87,18 @@ export async function GET(request: NextRequest) {
     thByInst.set(t.instructorDbId, arr);
   }
 
+  // self-consistency: 본인이 같은 회사로 record N건 이상이면 misattribute 아님
+  const SELF_STRONG_THRESHOLD = 2;
+  const selfRecordCompanyCount = new Map<string, Map<string, number>>();
+  for (const r of records) {
+    if (!r.companyName) continue;
+    const bucket =
+      selfRecordCompanyCount.get(r.instructorDbId) ?? new Map<string, number>();
+    const key = normalize(r.companyName);
+    bucket.set(key, (bucket.get(key) ?? 0) + 1);
+    selfRecordCompanyCount.set(r.instructorDbId, bucket);
+  }
+
   const D30 = 30 * 24 * 3600 * 1000;
   const D90 = 90 * 24 * 3600 * 1000;
   const D180 = 180 * 24 * 3600 * 1000;
@@ -121,6 +133,22 @@ export async function GET(request: NextRequest) {
     );
 
     if (sameCompanyTHs.length === 0) {
+      // self-strong: 본인 record가 같은 회사 N건 이상이면 tier1 인정
+      const selfCnt =
+        selfRecordCompanyCount.get(r.instructorDbId)?.get(recCo) ?? 0;
+      if (selfCnt >= SELF_STRONG_THRESHOLD) {
+        tiers.tier1_30d += 1;
+        const bucket = byInstructorTier.get(r.instructor.name) ?? {
+          tier1_30d: 0,
+          tier2_90d: 0,
+          tier3_180d: 0,
+          tier4_any: 0,
+          tier5_no_th: 0,
+        };
+        bucket.tier1_30d += 1;
+        byInstructorTier.set(r.instructor.name, bucket);
+        continue;
+      }
       tiers.tier5_company_no_th += 1;
       const bucket = byInstructorTier.get(r.instructor.name) ?? {
         tier1_30d: 0,

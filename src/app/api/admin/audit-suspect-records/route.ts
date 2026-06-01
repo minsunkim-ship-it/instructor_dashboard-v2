@@ -104,6 +104,19 @@ export async function GET(request: NextRequest) {
     selfTHByInst.set(t.instructorDbId, arr);
   }
 
+  // self-consistency: 본인 record가 같은 회사로 N건 이상이면 misattribute 아님
+  // (강사가 한 회사에서 다회 강의 = 강의 source. record 자체가 신뢰 가능)
+  const SELF_STRONG_THRESHOLD = 2;
+  const selfRecordCompanyCount = new Map<string, Map<string, number>>();
+  for (const r of records) {
+    if (!r.companyName) continue;
+    const bucket =
+      selfRecordCompanyCount.get(r.instructorDbId) ?? new Map<string, number>();
+    const key = normalize(r.companyName);
+    bucket.set(key, (bucket.get(key) ?? 0) + 1);
+    selfRecordCompanyCount.set(r.instructorDbId, bucket);
+  }
+
   const items = records.map((r) => {
     const recCompany = normalize(r.companyName);
     const respMs = r.responseDate?.getTime() ?? null;
@@ -165,8 +178,19 @@ export async function GET(request: NextRequest) {
         }
       }
     }
+
+    // self-consistency: 본인 record가 같은 회사로 N건 이상이면 정상 매칭
+    // (TH 없어도 self-record가 다수면 강사가 그 회사 강의한 증거)
+    let self_record_strong = false;
+    if (recCompany.length >= 2) {
+      const bucket = selfRecordCompanyCount.get(r.instructorDbId);
+      const cnt = bucket?.get(recCompany) ?? 0;
+      if (cnt >= SELF_STRONG_THRESHOLD) self_record_strong = true;
+    }
+
     const instructor_in_candidates =
       self_has_company_th_any_date ||
+      self_record_strong ||
       uniqueCands.some((c) => c.instructor === matched_instructor);
     const suggested_alternative =
       !instructor_in_candidates && uniqueCands.length > 0 ? uniqueCands[0].instructor : null;

@@ -29,6 +29,10 @@ model Instructor {
   scoreBreakdown       Json      @default("{}") @map("score_breakdown")
   scorePolicyVersion   String?   @map("score_policy_version")
   scoreCalculatedAt    DateTime? @map("score_calculated_at") @db.Timestamptz
+  /// 데이터 부족 hide flag — score-recalculator가 write.
+  /// contractSheetRows + satisfactionCount + totalCourses + TH count 모두 0이면 true.
+  /// list 노출에서 제외 (instructor-list-visibility.ts).
+  isDataInsufficient    Boolean   @default(false) @map("is_data_insufficient")
   satisfactionAvg      Decimal?  @map("satisfaction_avg") @db.Decimal(3, 2)
   satisfactionCount    Int       @default(0) @map("satisfaction_count")
   satisfactionIsImputed Boolean  @default(false) @map("satisfaction_is_imputed")

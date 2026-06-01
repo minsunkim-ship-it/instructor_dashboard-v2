@@ -426,6 +426,7 @@ export async function recalculateAllScores(options?: {
         scorePolicyVersion: true,
         salesmapDealCount: true,
         salesmapLastDealAt: true,
+        isDataInsufficient: true,
       },
     });
     timings.loadInstructorsMs = Date.now() - startedAt;
@@ -610,12 +611,14 @@ export async function recalculateAllScores(options?: {
       score,
       breakdown,
       isImputed: !hasSatisfaction,
+      isDataInsufficient,
       originalIndex: index,
       currentScore: inst.score !== null ? Number(inst.score) : null,
       currentBreakdown: inst.scoreBreakdown,
       currentRank: inst.rank,
       currentIsImputed: inst.satisfactionIsImputed,
       currentPolicyVersion: inst.scorePolicyVersion,
+      currentIsDataInsufficient: inst.isDataInsufficient,
     };
   });
   timings.scoringMs = Date.now() - scoringStartedAt;
@@ -636,7 +639,8 @@ export async function recalculateAllScores(options?: {
         !breakdownEquals(inst.currentBreakdown, inst.breakdown) ||
         inst.currentRank !== inst.nextRank ||
         inst.currentIsImputed !== inst.isImputed ||
-        inst.currentPolicyVersion !== SCORE_VERSION
+        inst.currentPolicyVersion !== SCORE_VERSION ||
+        inst.currentIsDataInsufficient !== inst.isDataInsufficient
       );
     });
 
@@ -662,7 +666,8 @@ export async function recalculateAllScores(options?: {
         ${now.toISOString()}::timestamptz,
         ${inst.nextRank},
         ${inst.isImputed},
-        ${SCORE_VERSION}
+        ${SCORE_VERSION},
+        ${inst.isDataInsufficient}
       )`;
     });
 
@@ -673,9 +678,10 @@ export async function recalculateAllScores(options?: {
         score_calculated_at = v.calculated_at,
         rank = v.rank,
         satisfaction_is_imputed = v.is_imputed,
-        score_policy_version = v.policy_version
+        score_policy_version = v.policy_version,
+        is_data_insufficient = v.is_data_insufficient
       FROM (VALUES ${Prisma.join(rows)})
-        AS v(id, score, breakdown, calculated_at, rank, is_imputed, policy_version)
+        AS v(id, score, breakdown, calculated_at, rank, is_imputed, policy_version, is_data_insufficient)
       WHERE t.id = v.id
     `;
   }

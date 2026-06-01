@@ -698,6 +698,14 @@ textarea {
   background: #f1f5f9;
   color: var(--text-primary);
 }
+.admin-nav-link-active {
+  background: #1f2937;
+  color: white;
+}
+.admin-nav-link-active:hover {
+  background: #111827;
+  color: white;
+}
 .admin-nav-link-secondary {
   color: var(--text-muted);
   font-weight: 500;

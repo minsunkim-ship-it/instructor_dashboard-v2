@@ -21,6 +21,15 @@ export default function AdminHome() {
           </div>
           <div className="admin-home-card-cta">바로가기 →</div>
         </Link>
+        <Link href="/admin/th-mismatch" className="admin-home-card">
+          <div className="admin-home-card-tag">자동 처리 불가</div>
+          <div className="admin-home-card-title">TH mismatch 잔존</div>
+          <div className="admin-home-card-desc">
+            audit 사이클 후 자동 처리 불가 영역. 회사명 손실 / 회사명 결함 /
+            자가평가 / 추천 강사 있음 4 카테고리로 분류된 운영자 결정 영역.
+          </div>
+          <div className="admin-home-card-cta">바로가기 →</div>
+        </Link>
       </div>
     </div>
   );

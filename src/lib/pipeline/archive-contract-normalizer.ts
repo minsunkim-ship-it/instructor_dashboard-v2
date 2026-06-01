@@ -161,8 +161,20 @@ const COMPANY_KEYWORDS = [
   "부산대",
 ];
 
-function extractCompanyFromText(text: string | null): string | null {
+function extractCompanyFromText(
+  text: string | null,
+  dynamicKeywords?: string[]
+): string | null {
   if (!text) return null;
+  // 1) 동적 keyword 우선 (record DB / 강사 affiliation에서 학습한 회사 list)
+  if (dynamicKeywords) {
+    // 긴 keyword 우선 매칭 (KB데이타시스템 우선 → KB)
+    const sorted = [...dynamicKeywords].sort((a, b) => b.length - a.length);
+    for (const kw of sorted) {
+      if (kw.length >= 2 && text.includes(kw)) return kw;
+    }
+  }
+  // 2) 정적 keyword fallback
   for (const kw of COMPANY_KEYWORDS) {
     if (text.includes(kw)) return kw;
   }
@@ -170,7 +182,8 @@ function extractCompanyFromText(text: string | null): string | null {
 }
 
 export function normalizeArchiveRow(
-  raw: RawArchiveRow
+  raw: RawArchiveRow,
+  dynamicCompanyKeywords?: string[]
 ): NormalizedArchiveRow | null {
   const v = raw.values;
   const instructorName = emptyToNull(v["강사명"]);
@@ -185,9 +198,18 @@ export function normalizeArchiveRow(
   const memo = emptyToNull(v["비고"]);
   const courseLink = emptyToNull(v["계약 코스 링크"]);
 
-  // 회사명: 강의 장소 → 비고 순서로 추출 시도
+  // 회사명: 장소 → 비고 → 과정명 → 코스 링크에서 추출 시도
+  const courseName = emptyToNull(v["과정명"]) ?? emptyToNull(v["코스명"]);
   const companyName =
-    extractCompanyFromText(venue) ?? extractCompanyFromText(memo);
+    extractCompanyFromText(venue, dynamicCompanyKeywords) ??
+    extractCompanyFromText(memo, dynamicCompanyKeywords) ??
+    extractCompanyFromText(courseName, dynamicCompanyKeywords) ??
+    extractCompanyFromText(courseLink, dynamicCompanyKeywords);
+
+  // F5: totalHours > 999.99 (Decimal(5,2)) 방어
+  let totalHours = parseNumberLike(v["총 강의 시수"] ?? v["총강의시수"]);
+  if (totalHours !== null && totalHours > 999.99) totalHours = 999.99;
+  if (totalHours !== null && totalHours < 0) totalHours = null;
 
   return {
     fileId: raw.fileId,
@@ -195,11 +217,11 @@ export function normalizeArchiveRow(
     rowNumber: raw.rowNumber,
     instructorName,
     companyName,
-    courseName: null, // archive 시트엔 별도 과정명 컬럼 없음
+    courseName,
     startDate: start,
     endDate: end ?? start,
     dateLabel,
-    totalHours: parseNumberLike(v["총 강의 시수"] ?? v["총강의시수"]),
+    totalHours,
     dealFeeHourly: parseFeeHourly(v["시간당 강사료"] ?? null),
     category: emptyToNull(v["카테고리"]),
     courseLink,
@@ -207,11 +229,12 @@ export function normalizeArchiveRow(
 }
 
 export function normalizeArchiveRows(
-  rows: RawArchiveRow[]
+  rows: RawArchiveRow[],
+  dynamicCompanyKeywords?: string[]
 ): NormalizedArchiveRow[] {
   const out: NormalizedArchiveRow[] = [];
   for (const r of rows) {
-    const n = normalizeArchiveRow(r);
+    const n = normalizeArchiveRow(r, dynamicCompanyKeywords);
     if (n) out.push(n);
   }
   return out;

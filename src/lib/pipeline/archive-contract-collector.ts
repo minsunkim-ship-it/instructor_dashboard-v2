@@ -69,8 +69,24 @@ function normalizeHeader(value: unknown): string {
  * "강사명" 또는 "강의 일정"·"날짜"·"시간당 강사료" 중 2개 이상 포함된 row.
  */
 function detectHeaderRowIndex(rows: string[][]): number {
-  const SIGNAL = ["강사명", "강의 일정", "강의일정", "시간당 강사료", "총 강의 시수", "카테고리"];
-  const limit = Math.min(rows.length, 15);
+  // F3: 변경계약 시트도 잡히도록 신호 키워드 확장
+  // (변경계약: "변경 사유", "강사명", "변경 후", "변경 전" 등)
+  const SIGNAL = [
+    "강사명",
+    "강의 일정",
+    "강의일정",
+    "시간당 강사료",
+    "총 강의 시수",
+    "카테고리",
+    "변경 사유",
+    "변경사유",
+    "변경 후",
+    "변경 전",
+    "과정명",
+    "코스명",
+    "계약 코스 링크",
+  ];
+  const limit = Math.min(rows.length, 20);
   for (let i = 0; i < limit; i++) {
     const cells = rows[i].map(normalizeHeader);
     const hits = SIGNAL.filter((s) => cells.includes(s)).length;

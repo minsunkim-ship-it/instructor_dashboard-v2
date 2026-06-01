@@ -161,6 +161,24 @@ const COMPANY_KEYWORDS = [
   "부산대",
 ];
 
+// 단어 경계 안전 매칭: 짧은 영문 keyword (KT, SK, LG, GS, CJ, NH 등)는
+// 앞뒤 영문/숫자가 없을 때만 매칭. "SKT 타워"에서 "KT" 매칭 방지.
+function safeIncludes(text: string, keyword: string): boolean {
+  if (!text || !keyword) return false;
+  if (keyword.length >= 4) return text.includes(keyword);
+  // 짧은 keyword: 단어 경계 확인
+  const idx = text.indexOf(keyword);
+  if (idx < 0) return false;
+  const before = idx > 0 ? text[idx - 1] : "";
+  const after = idx + keyword.length < text.length ? text[idx + keyword.length] : "";
+  const isAlnum = (c: string) => /[A-Za-z0-9]/.test(c);
+  // 영문 keyword: 앞뒤가 영문/숫자면 안 됨 (SKT의 KT 거부)
+  if (/^[A-Za-z]+$/.test(keyword)) {
+    if (isAlnum(before) || isAlnum(after)) return false;
+  }
+  return true;
+}
+
 function extractCompanyFromText(
   text: string | null,
   dynamicKeywords?: string[]
@@ -171,12 +189,12 @@ function extractCompanyFromText(
     // 긴 keyword 우선 매칭 (KB데이타시스템 우선 → KB)
     const sorted = [...dynamicKeywords].sort((a, b) => b.length - a.length);
     for (const kw of sorted) {
-      if (kw.length >= 2 && text.includes(kw)) return kw;
+      if (kw.length >= 2 && safeIncludes(text, kw)) return kw;
     }
   }
   // 2) 정적 keyword fallback
   for (const kw of COMPANY_KEYWORDS) {
-    if (text.includes(kw)) return kw;
+    if (safeIncludes(text, kw)) return kw;
   }
   return null;
 }

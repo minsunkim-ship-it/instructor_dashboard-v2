@@ -52,6 +52,8 @@ export async function GET(request: NextRequest) {
   }
   const targetInstructor = request.nextUrl.searchParams.get("instructor");
   const showSkipped = request.nextUrl.searchParams.get("skipped") === "1";
+  const sheetFilter = request.nextUrl.searchParams.get("sheet");
+  const sheetDump = request.nextUrl.searchParams.get("dump_raw") === "1";
 
   const collected = await collectArchiveContract();
   const keywords = await buildDynamicCompanyKeywords();
@@ -120,6 +122,28 @@ export async function GET(request: NextRequest) {
       .sort((a, b) => b.count - a.count);
   }
 
+  // Sheet raw dump (변경계약 등 normalize 실패 sheet 진단)
+  let rawDump: Array<{
+    sheet: string;
+    row: number;
+    headers: string[];
+    values: Record<string, string>;
+  }> | undefined;
+  if (sheetFilter && sheetDump) {
+    rawDump = [];
+    for (const sh of collected.sheets) {
+      if (!sh.sheetName.includes(sheetFilter)) continue;
+      for (const r of sh.rows.slice(0, 5)) {
+        rawDump.push({
+          sheet: sh.sheetName,
+          row: r.rowNumber,
+          headers: Object.keys(r.values),
+          values: r.values,
+        });
+      }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     sheet_summaries: sheetSummaries,
@@ -132,5 +156,6 @@ export async function GET(request: NextRequest) {
     skipped_total_rows: showSkipped
       ? skippedList.reduce((s, x) => s + x.count, 0)
       : undefined,
+    raw_dump: rawDump,
   });
 }

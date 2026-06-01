@@ -103,12 +103,11 @@ export async function POST(request: NextRequest) {
     const currentTHs = thByInst.get(r.instructorDbId) ?? [];
     if (currentTHs.some((co) => companyMatchesWithAlias(co, r.companyName))) continue;
 
-    // same base 후보 중 다른 인격 + strong + 회사 TH 매칭
+    // same base 후보 중 다른 인격 (contact 없어도 인정 — 소속강사는 개인 contact 없음)
     const candidates = (byBase.get(currentBase) ?? []).filter(
       (c) =>
         c.id !== r.instructorDbId &&
-        !(c.flag && c.flag.startsWith("merged_into:")) &&
-        !!(c.contactEmail || c.contactPhone)
+        !(c.flag && c.flag.startsWith("merged_into:"))
     );
     const targets = candidates.filter((c) => {
       const ths = thByInst.get(c.id) ?? [];

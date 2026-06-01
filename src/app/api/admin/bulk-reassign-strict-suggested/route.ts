@@ -77,16 +77,27 @@ export async function POST(request: NextRequest) {
     if (PROTECTED_NAMES.has(currentName)) continue;
     const currentTHs = thByInst.get(r.instructorDbId) ?? [];
     if (currentTHs.some((c) => companyMatchesWithAlias(c, r.companyName))) continue;
-    // suggested: 회사 TH 있는 다른 instructor 중 strong + 정확히 1명
-    const targets = allInstructors.filter((i) => {
-      if (i.id === r.instructorDbId) return false;
-      if (i.flag && i.flag.startsWith("merged_into:")) return false;
-      if (!(i.contactEmail || i.contactPhone)) return false;
-      if (PROTECTED_NAMES.has(i.name)) return false;
-      const ths = thByInst.get(i.id) ?? [];
-      return ths.some((c) => companyMatchesWithAlias(c, r.companyName));
-    });
-    if (targets.length !== 1) continue;
+    // 회사 TH 있는 다른 instructor 중 매칭 TH 가장 많은 단일 후보 (정합성 score)
+    const cands = allInstructors
+      .filter(
+        (i) =>
+          i.id !== r.instructorDbId &&
+          !(i.flag && i.flag.startsWith("merged_into:")) &&
+          !PROTECTED_NAMES.has(i.name)
+      )
+      .map((i) => {
+        const ths = thByInst.get(i.id) ?? [];
+        const matchCount = ths.filter((c) =>
+          companyMatchesWithAlias(c, r.companyName)
+        ).length;
+        return { inst: i, matchCount };
+      })
+      .filter((x) => x.matchCount > 0)
+      .sort((a, b) => b.matchCount - a.matchCount);
+    if (cands.length === 0) continue;
+    // top1이 top2 대비 우세 (>=2배 또는 단독)일 때만 인정
+    if (cands.length >= 2 && cands[0].matchCount < cands[1].matchCount * 2) continue;
+    const targets = [cands[0].inst];
     candidates.push({
       record_id: r.id,
       from: currentName,

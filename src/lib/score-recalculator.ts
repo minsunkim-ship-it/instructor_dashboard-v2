@@ -556,8 +556,18 @@ export async function recalculateAllScores(options?: {
     );
 
     const isCoach = inst.flag === "실습코치" || inst.isPracticeCoach;
-    const score = isCoach ? 0 : preCoachScore;
-    const breakdown: ScoreBreakdown = isCoach
+
+    // 데이터 부족 강사 hide rule:
+    // courses + satisfaction + TH 모두 0이면 강사 활동 증거 없음.
+    // satisfaction median imputation + 1회 슬랙 멘션 같은 약한 신호로
+    // rank 부여하는 결함 (이은지 13위 케이스) 방지.
+    const isDataInsufficient =
+      contractCount === 0 &&
+      inst.satisfactionCount === 0 &&
+      (inst.totalCourses ?? 0) === 0;
+
+    const score = isCoach || isDataInsufficient ? 0 : preCoachScore;
+    const breakdown: ScoreBreakdown = isCoach || isDataInsufficient
       ? {
           courses: 0,
           satisfaction: 0,
